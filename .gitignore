@@ -1,18 +1,11 @@
-# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
+.coverage
+.jax_cache/
+.pytest_cache/
+.ruff_cache/
 .venv/
-venv/
-
-# 렌더 산출물 (demo_match.py 기본 출력 경로)
+build/
+dist/
 replays/
-*.mp4
-*.gif
-state.jsonl
-events.txt
-
-# 편집기 / OS
-.vscode/
-.idea/
-.DS_Store
