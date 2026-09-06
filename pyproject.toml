@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "messi-football"
+dynamic = ["version"]
+description = "MESSI: A Multi-agent Match Environment for Soccer Simulation and Intelligence"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{name = "Hyunwoo Park"}]
+keywords = [
+    "football",
+    "soccer",
+    "multi-agent",
+    "simulation",
+    "reinforcement-learning",
+    "jax",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "jax>=0.4.38",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+render = [
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
+    "matplotlib>=3.8",
+    "pillow>=10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["footballworld*"]
+namespaces = true
+
+[tool.setuptools.dynamic]
+version = {attr = "footballworld._version.__version__"}
+
+[tool.ruff.lint]
+# All flagged defaults are frozen, immutable configuration value objects.
+ignore = ["B008"]

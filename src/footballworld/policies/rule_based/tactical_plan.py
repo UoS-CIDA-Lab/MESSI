@@ -1,0 +1,204 @@
+"""Mechanism-defined tactical plans shared by rule player and manager policies.
+
+Continuous axes such as line height, tempo, width, aggression, and directness
+do not by themselves guarantee a build-up mechanism. The policy keeps those
+axes as internal bundle components and names plans after the observable
+structure they create. Every number below is an uncalibrated design prior;
+none is presented as a tracking-data fit.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, fields
+from enum import Enum
+from types import MappingProxyType
+
+
+class TacticalPlan(str, Enum):
+    """Rule-policy plans whose names state their implemented mechanism."""
+
+    SALIDA_LAVOLPIANA = "salida_lavolpiana"
+    """A central midfielder drops between centre backs as full backs advance."""
+
+    JUEGO_DE_POSICION = "juego_de_posicion"
+    """Wide and half-space occupation preserves three staggered pass lines."""
+
+    GEGENPRESS = "gegenpress"
+    """A compact local squeeze follows a recent observed possession loss."""
+
+    CATENACCIO = "catenaccio"
+    """A deeper compact block protects the centre before vertical transition."""
+
+    ZONA_MISTA = "zona_mista"
+    """A zonal block adds wide-role marking and wide progression."""
+
+
+@dataclass(frozen=True, slots=True)
+class TacticalProfile:
+    """Fixed-shape numeric bundle resolved on the host before policy tracing."""
+
+    progressive_pass_gain: float
+    wide_pass_gain: float
+    attack_depth_scale: float
+    attack_width_scale: float
+    defend_depth_scale: float
+    defend_width_scale: float
+    defend_line_shift_m: float
+    counterpress_gain: float
+    pivot_drop_m: float
+    fullback_advance_m: float
+    halfspace_gain: float
+    overlap_run_m: float
+    mixed_wide_mark_gain: float
+
+
+# These bundles intentionally express relative policy differences only. Their
+# values belong to the current action, observation, stamina, and contact
+# semantics and must be calibrated as a coupled policy model.
+_TACTICAL_PROFILES = MappingProxyType(
+    {
+        TacticalPlan.SALIDA_LAVOLPIANA: TacticalProfile(
+            progressive_pass_gain=0.08,
+            wide_pass_gain=0.07,
+            attack_depth_scale=1.04,
+            attack_width_scale=1.10,
+            defend_depth_scale=0.88,
+            defend_width_scale=0.90,
+            defend_line_shift_m=0.0,
+            counterpress_gain=0.85,
+            pivot_drop_m=5.0,
+            fullback_advance_m=4.5,
+            halfspace_gain=0.25,
+            overlap_run_m=10.0,
+            mixed_wide_mark_gain=0.0,
+        ),
+        TacticalPlan.JUEGO_DE_POSICION: TacticalProfile(
+            progressive_pass_gain=0.10,
+            wide_pass_gain=0.08,
+            attack_depth_scale=1.08,
+            attack_width_scale=1.16,
+            defend_depth_scale=0.86,
+            defend_width_scale=0.88,
+            defend_line_shift_m=0.0,
+            counterpress_gain=1.00,
+            pivot_drop_m=0.0,
+            fullback_advance_m=1.5,
+            halfspace_gain=0.72,
+            overlap_run_m=7.0,
+            mixed_wide_mark_gain=0.0,
+        ),
+        TacticalPlan.GEGENPRESS: TacticalProfile(
+            progressive_pass_gain=0.09,
+            wide_pass_gain=0.04,
+            attack_depth_scale=1.10,
+            attack_width_scale=1.06,
+            defend_depth_scale=0.92,
+            defend_width_scale=0.90,
+            defend_line_shift_m=2.5,
+            counterpress_gain=1.45,
+            pivot_drop_m=0.0,
+            fullback_advance_m=2.0,
+            halfspace_gain=0.35,
+            overlap_run_m=6.0,
+            mixed_wide_mark_gain=0.0,
+        ),
+        TacticalPlan.CATENACCIO: TacticalProfile(
+            progressive_pass_gain=0.16,
+            wide_pass_gain=0.03,
+            attack_depth_scale=1.03,
+            attack_width_scale=1.02,
+            defend_depth_scale=0.76,
+            defend_width_scale=0.78,
+            defend_line_shift_m=-6.0,
+            counterpress_gain=0.42,
+            pivot_drop_m=0.0,
+            fullback_advance_m=0.0,
+            halfspace_gain=0.15,
+            overlap_run_m=0.0,
+            mixed_wide_mark_gain=0.0,
+        ),
+        TacticalPlan.ZONA_MISTA: TacticalProfile(
+            progressive_pass_gain=0.10,
+            wide_pass_gain=0.16,
+            attack_depth_scale=1.07,
+            attack_width_scale=1.13,
+            defend_depth_scale=0.84,
+            defend_width_scale=0.84,
+            defend_line_shift_m=-1.5,
+            counterpress_gain=0.86,
+            pivot_drop_m=0.0,
+            fullback_advance_m=2.5,
+            halfspace_gain=0.42,
+            overlap_run_m=9.0,
+            mixed_wide_mark_gain=0.62,
+        ),
+    }
+)
+
+
+def canonical_tactical_plan(value: TacticalPlan | str) -> TacticalPlan:
+    """Return one canonical enum value or reject an unknown plan name."""
+
+    if isinstance(value, TacticalPlan):
+        return value
+    if isinstance(value, str):
+        try:
+            return TacticalPlan(value)
+        except ValueError as error:
+            choices = ", ".join(plan.value for plan in TacticalPlan)
+            raise ValueError(
+                f"unknown tactical_plan {value!r}; choose from {choices}"
+            ) from error
+    raise TypeError("tactical_plan must be a TacticalPlan or its string value")
+
+
+TACTICAL_PLAN_COUNT = len(TacticalPlan)
+
+
+def tactical_plan_code(value: TacticalPlan | str) -> int:
+    """Return the stable table row for a canonical tactical plan."""
+
+    return tuple(TacticalPlan).index(canonical_tactical_plan(value))
+
+
+def tactical_profiles() -> tuple[TacticalProfile, ...]:
+    """Return profiles in the stable integer-code order."""
+
+    return tuple(_TACTICAL_PROFILES[plan] for plan in TacticalPlan)
+
+
+def gather_tactical_profile(plan_code):
+    """Gather one profile by dynamic int code without changing graph shape."""
+
+    import jax.numpy as jnp
+
+    safe_code = jnp.clip(
+        jnp.asarray(plan_code, dtype=jnp.int32), 0, TACTICAL_PLAN_COUNT - 1
+    )
+    profiles = tactical_profiles()
+    values = {}
+    for field in fields(TacticalProfile):
+        table = jnp.asarray(
+            tuple(getattr(profile, field.name) for profile in profiles),
+            dtype=jnp.float32,
+        )
+        values[field.name] = table[safe_code]
+    return TacticalProfile(**values)
+
+
+def tactical_profile(plan: TacticalPlan | str) -> TacticalProfile:
+    """Resolve a plan to the immutable fixed-shape numeric bundle."""
+
+    return _TACTICAL_PROFILES[canonical_tactical_plan(plan)]
+
+
+__all__ = [
+    "TACTICAL_PLAN_COUNT",
+    "TacticalPlan",
+    "TacticalProfile",
+    "canonical_tactical_plan",
+    "gather_tactical_profile",
+    "tactical_plan_code",
+    "tactical_profile",
+    "tactical_profiles",
+]

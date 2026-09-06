@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="250" height="120" viewBox="0 0 250 120" role="img" aria-labelledby="title desc">
+  <title id="title">Causal rollout data</title>
+  <desc id="desc">MESSI produces actions, trajectories, and causal events.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0369a1"/>
+      <stop offset="1" stop-color="#4f46e5"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="135%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#172554" flood-opacity=".3"/>
+    </filter>
+    <linearGradient id="shine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity=".95"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="cardClip"><rect x="5" y="5" width="240" height="108" rx="18"/></clipPath>
+  </defs>
+  <rect x="5" y="5" width="240" height="108" rx="18" fill="url(#bg)" filter="url(#shadow)"/>
+  <g clip-path="url(#cardClip)" transform="rotate(18 125 60)" opacity=".24">
+    <rect x="-100" y="-55" width="42" height="230" fill="url(#shine)">
+      <animate attributeName="x" values="-100;330" dur="5.4s" begin=".5s" repeatCount="indefinite"/>
+    </rect>
+  </g>
+  <rect x="6" y="6" width="238" height="106" rx="17" fill="none" stroke="#fff" stroke-width="1.5" stroke-opacity=".35">
+    <animate attributeName="stroke-opacity" values=".3;.72;.3" dur="3.6s" begin=".5s" repeatCount="indefinite"/>
+  </rect>
+  <g fill="none" stroke="#fff" stroke-width="2" opacity=".27">
+    <path d="M181 84l17-24 15 10 20-34"/><path d="M181 91h54M181 91V27"/>
+    <circle cx="198" cy="60" r="4" fill="#fff"/><circle cx="213" cy="70" r="4" fill="#fff"/><circle cx="233" cy="36" r="4" fill="#fff"/>
+  </g>
+  <circle cx="28" cy="28" r="15" fill="#fff" opacity=".2"/>
+  <text x="28" y="33" text-anchor="middle" fill="#fff" font-family="Arial, sans-serif" font-size="13" font-weight="800">03</text>
+  <text x="51" y="33" fill="#fff" font-family="Arial, sans-serif" font-size="11" font-weight="800" letter-spacing="1.5">OUTPUT</text>
+  <rect x="178" y="18" width="57" height="21" rx="10.5" fill="#fff" opacity=".2"/>
+  <text x="206.5" y="32" text-anchor="middle" fill="#fff" font-family="Arial, sans-serif" font-size="10" font-weight="800" letter-spacing=".6">OPEN &#8599;</text>
+  <text x="20" y="73" fill="#fff" font-family="Arial, sans-serif" font-size="22" font-weight="800">CAUSAL DATA</text>
+  <text x="20" y="99" fill="#fff" font-family="Arial, sans-serif" font-size="13" font-weight="600">Actions · tracks · events</text>
+</svg>

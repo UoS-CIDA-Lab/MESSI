@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="34" height="120" viewBox="0 0 34 120" role="img" aria-label="then">
+  <defs>
+    <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <path d="M2 60h25" fill="none" stroke="url(#flow)" stroke-width="4" stroke-linecap="round"/>
+  <path d="M21 52l9 8-9 8" fill="none" stroke="#8b5cf6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cy="60" r="3" fill="#fff" stroke="#22d3ee" stroke-width="2">
+    <animate attributeName="cx" values="4;23;4" dur="2.2s" repeatCount="indefinite"/>
+  </circle>
+</svg>

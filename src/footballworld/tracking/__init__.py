@@ -1,0 +1,41 @@
+"""Host-only tracking adapters and inferred trajectory augmentation."""
+
+from footballworld.tracking.view_inference import (
+    BODY_SOURCE_BALL_PRIOR,
+    BODY_SOURCE_CARRIED,
+    BODY_SOURCE_INVALID,
+    BODY_SOURCE_NAMES,
+    BODY_SOURCE_POSITION_DIFFERENCE,
+    BODY_SOURCE_TRACKING_VELOCITY,
+    INFERRED_VIEW_SCHEMA,
+    VIEW_SOURCE_BALL,
+    VIEW_SOURCE_BODY_CENTRE,
+    VIEW_SOURCE_INVALID,
+    VIEW_SOURCE_NAMES,
+    InferredViewTrajectories,
+    ViewInferenceConfig,
+    ViewInferenceProvenance,
+    infer_body_view_trajectories,
+    sequence_start_from_identity,
+    view_inference_config_from_environment,
+)
+
+__all__ = [
+    "BODY_SOURCE_BALL_PRIOR",
+    "BODY_SOURCE_CARRIED",
+    "BODY_SOURCE_INVALID",
+    "BODY_SOURCE_NAMES",
+    "BODY_SOURCE_POSITION_DIFFERENCE",
+    "BODY_SOURCE_TRACKING_VELOCITY",
+    "INFERRED_VIEW_SCHEMA",
+    "VIEW_SOURCE_BALL",
+    "VIEW_SOURCE_BODY_CENTRE",
+    "VIEW_SOURCE_INVALID",
+    "VIEW_SOURCE_NAMES",
+    "InferredViewTrajectories",
+    "ViewInferenceConfig",
+    "ViewInferenceProvenance",
+    "infer_body_view_trajectories",
+    "sequence_start_from_identity",
+    "view_inference_config_from_environment",
+]

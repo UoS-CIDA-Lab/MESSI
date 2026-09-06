@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use MESSI in research, please cite this software."
+type: software
+title: "MESSI: A Multi-agent Match Environment for Soccer Simulation and Intelligence"
+version: 1.0.0
+date-released: 2026-09-06
+authors:
+  - family-names: Park
+    given-names: Hyunwoo
+    affiliation: "CIDA Lab, University of Seoul"
+license: Apache-2.0
+abstract: >-
+  A JAX-based multi-agent football match environment for simulation,
+  learning, evaluation, and reproducible match analysis.
+keywords:
+  - football
+  - soccer
+  - multi-agent systems
+  - simulation
+  - reinforcement learning
+  - JAX

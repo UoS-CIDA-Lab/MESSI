@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+output/
+calib/artifacts/
+.jax_cache/
+.validation_tests/

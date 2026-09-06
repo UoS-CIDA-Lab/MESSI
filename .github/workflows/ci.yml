@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Public contract smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install and test
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest .
+          python -m pytest -q tests
+
+  import:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+      - name: Compile and import
+        run: |
+          python -m compileall -q src/footballworld
+          python -c "import importlib.metadata as m, footballworld as f; assert m.version('messi-football') == f.__version__"
+
+  distribution:
+    name: Build and inspect distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build ruff
+          ruff check src calib
+          python -m build
+      - name: Inspect metadata and archives
+        run: |
+          python - <<'PY'
+          import email
+          import pathlib
+          import runpy
+          import tarfile
+          import zipfile
+
+          dist = pathlib.Path("dist")
+          version = runpy.run_path("src/footballworld/_version.py")["__version__"]
+          wheel = next(dist.glob(f"messi_football-{version}-*.whl"))
+          sdist = dist / f"messi_football-{version}.tar.gz"
+
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              metadata_name = next(
+                  name for name in names if name.endswith(".dist-info/METADATA")
+              )
+              metadata = email.message_from_bytes(archive.read(metadata_name))
+              assert metadata["Name"] == "messi-football"
+              assert metadata["Version"] == version
+              assert metadata["License-Expression"] == "Apache-2.0"
+              assert any(name.startswith("footballworld/") for name in names)
+              assert not any(
+                  pathlib.PurePosixPath(name).is_absolute()
+                  or ".." in pathlib.PurePosixPath(name).parts
+                  for name in names
+              )
+              assert not any(
+                  ".validation_tests" in pathlib.PurePosixPath(name).parts
+                  for name in names
+              )
+              assert not any(
+                  "tests" in pathlib.PurePosixPath(name).parts
+                  for name in names
+              )
+
+          with tarfile.open(sdist) as archive:
+              names = archive.getnames()
+              assert not any(
+                  pathlib.PurePosixPath(name).is_absolute()
+                  or ".." in pathlib.PurePosixPath(name).parts
+                  for name in names
+              )
+              assert not any(
+                  ".validation_tests" in pathlib.PurePosixPath(name).parts
+                  for name in names
+              )
+              assert not any(
+                  "tests" in pathlib.PurePosixPath(name).parts
+                  for name in names
+              )
+              for required in (
+                  "README.md",
+                  "LICENSE",
+                  "NOTICE",
+                  "CONTRIBUTING.md",
+                  "CITATION.cff",
+                  "SECURITY.md",
+                  "CHANGELOG.md",
+                  "pyproject.toml",
+              ):
+                  assert any(name.endswith("/" + required) for name in names)
+          PY
+      - name: Smoke installed wheel
+        run: |
+          python -m venv /tmp/messi-wheel
+          /tmp/messi-wheel/bin/python -m pip install dist/*.whl
+          cd /tmp
+          /tmp/messi-wheel/bin/python -c "import importlib.metadata as m, footballworld as f; assert m.version('messi-football') == f.__version__"
+      - name: Rebuild from sdist
+        run: |
+          python -m pip wheel --no-deps dist/*.tar.gz --wheel-dir /tmp/messi-sdist-wheel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: messi-football-distributions
+          path: dist/
+          if-no-files-found: error

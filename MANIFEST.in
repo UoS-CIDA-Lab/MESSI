@@ -1,0 +1,14 @@
+include README.md
+include LICENSE
+include NOTICE
+include CONTRIBUTING.md
+include CITATION.cff
+include SECURITY.md
+include CHANGELOG.md
+recursive-include docs *.md *.json *.csv
+include calib/README.md
+include calib/render_full_match.py
+prune .validation_tests
+prune tests
+prune output
+global-exclude __pycache__ *.py[cod]
