@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" width="720" height="180" role="img" aria-label="MESSI — A Multi-Agent Environment for Soccer Simulation and Intelligence">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 180" width="780" height="180" role="img" aria-label="MESSI — A Multi-Agent Environment for Soccer Simulation and Intelligence">
   <defs>
     <linearGradient id="g-pitch" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#15803d"/>
@@ -16,7 +16,7 @@
 
   <!-- emblem: pitch tile with 11 agents (dots) and a ball -->
   <g transform="translate(18,18)">
-    <rect x="0" y="0" width="144" height="144" rx="26" fill="url(#g-pitch)"/>
+    <rect x="0" y="0" width="144" height="144" rx="26" fill="#0f6b3a" style="fill:url(#g-pitch)"/>
     <g fill="none" stroke="#ecfdf5" stroke-width="2.5" opacity="0.85">
       <rect x="14" y="14" width="116" height="116" rx="6"/>
       <line x1="72" y1="14" x2="72" y2="130"/>
@@ -44,11 +44,11 @@
 
   <!-- wordmark -->
   <g transform="translate(190,0)" font-family="Inter, 'Helvetica Neue', Arial, sans-serif">
-    <text x="0" y="86" font-size="72" font-weight="800" letter-spacing="4" fill="url(#g-word)">MESSI</text>
-    <text x="3" y="116" font-size="17" font-weight="600" fill="currentColor" opacity="0.8">
+    <text x="0" y="86" font-size="72" font-weight="800" letter-spacing="2" fill="#16a34a" style="fill:url(#g-word)">MESSI</text>
+    <text x="3" y="116" font-size="17" font-weight="600" fill="#475569">
       A Multi-Agent Environment for Soccer Simulation and Intelligence
     </text>
-    <text x="3" y="142" font-size="13.5" font-weight="400" fill="currentColor" opacity="0.55">
+    <text x="3" y="142" font-size="13.5" font-weight="400" fill="#94a3b8">
       JAX-native · 11 v 11 · full 90-minute matches · imitation &amp; multi-agent RL
     </text>
   </g>
