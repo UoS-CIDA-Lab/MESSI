@@ -6,21 +6,13 @@
     <!-- defenders left behind -->
     <g fill="#fca5a5" opacity="0.85"><circle cx="30" cy="52" r="3.6"/><circle cx="38" cy="96" r="3.6"/><circle cx="52" cy="122" r="3.6"/><circle cx="26" cy="118" r="3.6"/></g>
     <!-- the number 10, seen from behind, striped shirt, ball on the LEFT foot -->
-    <g transform="translate(12,10)">
-      <!-- legs (stride) -->
-      <path d="M50 72 l-8 20 l-10 12 l6 4 l13 -14 l6 -20z" fill="#0b1220"/>
-      <path d="M62 72 l10 14 l2 20 l8 -1 l-3 -24 l-11 -13z" fill="#0b1220"/>
-      <!-- shorts -->
-      <path d="M44 62 h32 l2 14 h-14 l-4 -6 l-4 6 h-14z" fill="#0b1220"/>
+    <g transform="translate(12,16) scale(1.08)">
       <!-- shirt: white with sky-blue stripes (drawn as shapes, no clipPath) -->
       <path d="M31 40 l11 -8 h36 l11 8 l-4 8 l-7 -3 v27 h-36 v-27 l-7 3z" fill="#ffffff" stroke="#0b1220" stroke-width="1.6" stroke-linejoin="round"/>
       <g fill="#7dd3fc"><rect x="46" y="33" width="6" height="39"/><rect x="57" y="33" width="6" height="39"/><rect x="68" y="33" width="6" height="39"/></g>
       <path d="M42 32 h36 v2 h-36z" fill="#ffffff"/>
       <rect x="47" y="46" width="26" height="22" rx="4" fill="#ffffff"/>
       <text x="60" y="63" text-anchor="middle" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="20" font-weight="800" fill="#0b1220">10</text>
-      <!-- head -->
-      <circle cx="60" cy="22" r="9.5" fill="#0b1220"/>
-      <path d="M50.5 21 q2 -10 11 -9.5 q7 0.5 8 7 q-4 -3 -9 -2.5 q-6 0.5 -10 5z" fill="#0b1220"/>
     </g>
     <!-- ball at the left foot -->
     <circle cx="46" cy="124" r="7" fill="#ffffff" stroke="#0f172a" stroke-width="1.2"/>
