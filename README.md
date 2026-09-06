@@ -53,20 +53,22 @@ Every decision that a coach or a player would make enters through one fixed-shap
 
 ```mermaid
 flowchart LR
-    subgraph Inputs
-        A[Player actions<br/>22 × 8 continuous] --> C
-        M[Manager decisions<br/>formation · substitution · taker] --> C
+    subgraph IN["Inputs"]
+        A["Player actions<br/>22 x 8 continuous"]
+        M["Manager decisions<br/>formation / substitution / set-piece taker"]
     end
-    C[StepCommand] --> E
-    subgraph MESSI engine (JAX)
-        E[Legality &amp; command routing] --> P[Physics<br/>ball flight · contests · stamina]
-        P --> L[Laws of the game<br/>offside · fouls · cards · restarts]
-        L --> S[(Match state)]
+    A --> C["StepCommand"]
+    M --> C
+    subgraph ENG["MESSI engine (JAX)"]
+        E["Legality and command routing"] --> P["Physics<br/>ball flight / contests / stamina"]
+        P --> L["Laws of the game<br/>offside / fouls / cards / restarts"]
+        L --> S[("Match state")]
     end
-    S --> R[TransitionResult<br/>observation · reward · records]
-    R --> RL[RL / MARL]
-    R --> IL[Imitation learning]
-    R --> V[Rendering &amp; replays]
+    C --> E
+    S --> R["TransitionResult<br/>observation / reward / records"]
+    R --> RL["RL / MARL"]
+    R --> IL["Imitation learning"]
+    R --> V["Rendering and replays"]
 ```
 
 ## Project status
