@@ -3,26 +3,31 @@
     <linearGradient id="g-pitch" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#15803d"/><stop offset="100%" stop-color="#064e3b"/></linearGradient>
     <linearGradient id="g-word" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#16a34a"/><stop offset="100%" stop-color="#0ea5e9"/></linearGradient>
   </defs>
-  <!-- emblem: pitch tile, agent dots, and a dribbling-player silhouette -->
   <g transform="translate(18,18)">
     <rect x="0" y="0" width="144" height="144" rx="26" fill="#0f6b3a" style="fill:url(#g-pitch)"/>
-    <g fill="none" stroke="#ecfdf5" stroke-width="2.5" opacity="0.6"><rect x="14" y="14" width="116" height="116" rx="6"/><line x1="72" y1="14" x2="72" y2="130"/><circle cx="72" cy="72" r="18"/><rect x="14" y="46" width="20" height="52"/><rect x="110" y="46" width="20" height="52"/></g>
-    <g fill="#fde68a" opacity="0.9"><circle cx="30" cy="40" r="3.6"/><circle cx="34" cy="104" r="3.6"/><circle cx="52" cy="28" r="3.6"/><circle cx="50" cy="116" r="3.6"/><circle cx="96" cy="34" r="3.6"/><circle cx="100" cy="112" r="3.6"/></g>
-    <g fill="#93c5fd" opacity="0.9"><circle cx="118" cy="60" r="3.6"/><circle cx="120" cy="88" r="3.6"/><circle cx="104" cy="74" r="3.6"/></g>
-    <!-- dribbling player silhouette: head, torso, arms, stride legs -->
-    <g fill="#0b1220" transform="translate(46,30) scale(1.05)">
-      <circle cx="30" cy="12" r="9.5"/>
-      <!-- hair/ear hint -->
-      <path d="M21 10 q3 -9 12 -9 q7 0 8.5 6 q-4 -3 -9 -2.5 q-6 0.5 -11.5 5.5z"/>
-      <!-- torso + arms -->
-      <path d="M22 22 q8 -5 16 0 l6 8 q10 6 16 4 l2 6 q-11 4 -21 -4 l-1 10 l-9 22 l-9 -2 l6 -20 l-4 -8 q-9 6 -18 8 l-2 -6 q10 -4 16 -10z"/>
-      <!-- legs in stride -->
-      <path d="M26 58 l-6 18 l-10 10 l6 4 l13 -12 l6 -18z"/>
-      <path d="M34 56 l12 12 l3 18 l8 -1 l-4 -22 l-12 -13z"/>
+    <g fill="none" stroke="#ecfdf5" stroke-width="2.5" opacity="0.55"><rect x="14" y="14" width="116" height="116" rx="6"/><line x1="72" y1="14" x2="72" y2="130"/><circle cx="72" cy="72" r="18"/><rect x="14" y="46" width="20" height="52"/><rect x="110" y="46" width="20" height="52"/></g>
+    <!-- defenders left behind -->
+    <g fill="#fca5a5" opacity="0.85"><circle cx="30" cy="52" r="3.6"/><circle cx="38" cy="96" r="3.6"/><circle cx="52" cy="122" r="3.6"/><circle cx="26" cy="118" r="3.6"/></g>
+    <!-- the number 10, seen from behind, striped shirt, ball on the LEFT foot -->
+    <g transform="translate(12,10)">
+      <!-- legs (stride) -->
+      <path d="M50 72 l-8 20 l-10 12 l6 4 l13 -14 l6 -20z" fill="#0b1220"/>
+      <path d="M62 72 l10 14 l2 20 l8 -1 l-3 -24 l-11 -13z" fill="#0b1220"/>
+      <!-- shorts -->
+      <path d="M44 62 h32 l2 14 h-14 l-4 -6 l-4 6 h-14z" fill="#0b1220"/>
+      <!-- shirt: white with sky-blue stripes (drawn as shapes, no clipPath) -->
+      <path d="M31 40 l11 -8 h36 l11 8 l-4 8 l-7 -3 v27 h-36 v-27 l-7 3z" fill="#ffffff" stroke="#0b1220" stroke-width="1.6" stroke-linejoin="round"/>
+      <g fill="#7dd3fc"><rect x="46" y="33" width="6" height="39"/><rect x="57" y="33" width="6" height="39"/><rect x="68" y="33" width="6" height="39"/></g>
+      <path d="M42 32 h36 v2 h-36z" fill="#ffffff"/>
+      <rect x="47" y="46" width="26" height="22" rx="4" fill="#ffffff"/>
+      <text x="60" y="63" text-anchor="middle" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="20" font-weight="800" fill="#0b1220">10</text>
+      <!-- head -->
+      <circle cx="60" cy="22" r="9.5" fill="#0b1220"/>
+      <path d="M50.5 21 q2 -10 11 -9.5 q7 0.5 8 7 q-4 -3 -9 -2.5 q-6 0.5 -10 5z" fill="#0b1220"/>
     </g>
-    <!-- ball at the foot -->
-    <circle cx="106" cy="118" r="7" fill="#ffffff" stroke="#0f172a" stroke-width="1.2"/>
-    <path d="M103.5 115.5 l2.5 -1.8 l2.5 1.8 l-1 2.9 h-3 z" fill="#0f172a"/>
+    <!-- ball at the left foot -->
+    <circle cx="46" cy="124" r="7" fill="#ffffff" stroke="#0f172a" stroke-width="1.2"/>
+    <path d="M43.5 121.5 l2.5 -1.8 l2.5 1.8 l-1 2.9 h-3 z" fill="#0f172a"/>
   </g>
   <g transform="translate(190,0)" font-family="Inter, 'Helvetica Neue', Arial, sans-serif">
     <text x="0" y="86" font-size="72" font-weight="800" letter-spacing="2" fill="#16a34a" style="fill:url(#g-word)">MESSI</text>
