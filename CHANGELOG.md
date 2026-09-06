@@ -1,9 +1,22 @@
 # Changelog
 
-All notable changes to SoccerWorld will be recorded here. The project is pre-release; the public
-API may change before the first release candidate.
+All notable changes to MESSI are recorded here. Versions follow semantic versioning; the
+`StepCommand` → `TransitionResult` boundary is the public API we intend to keep stable.
 
-## Unreleased
+## 0.1.0 — 2026-09-07
+
+First tagged release. The project is renamed from **SoccerWorld** to
+**MESSI: A Multi-Agent Environment for Soccer Simulation and Intelligence**. The Python import
+name `soccerworld` is unchanged; `messi` is provided as an alias package and the distribution is
+published as `messi-env`.
+
+### Known behaviours to be aware of
+
+- The rule-based team stops collecting a stationary loose ball once it is inside the unattended-ball
+  radius; downstream users may want to lower `unattended_ball_radius` / `possession_release_radius`
+  (the CIDA Lab training stack uses 1.5 m) or nudge a static loose ball.
+- `kick_gate` (action dim 0) fires only above 0.5; learned policies trained by regressing 0/1 gate
+  labels typically need a decision threshold at evaluation time.
 
 ### Added
 

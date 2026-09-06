@@ -1,13 +1,16 @@
 cff-version: 1.2.0
-message: "If you use SoccerWorld in research, please cite this software."
+message: "If you use MESSI in research, please cite this software."
 type: software
-title: SoccerWorld
-version: 0.0.0.dev0
+title: "MESSI: A Multi-Agent Environment for Soccer Simulation and Intelligence"
+version: 0.1.0
+date-released: 2026-09-07
+repository-code: "https://github.com/UoS-CIDA-Lab/MESSI"
 authors:
   - family-names: Park
     given-names: Hyunwoo
     affiliation: "CIDA Lab, University of Seoul"
 license: Apache-2.0
 abstract: >-
-  A JAX-native football world engine for full-match simulation, imitation
-  learning, reinforcement learning, and reproducible football research.
+  MESSI is a JAX-native multi-agent football environment for full 90-minute
+  11-vs-11 simulation, imitation learning, multi-agent reinforcement learning,
+  and reproducible football research. Formerly published as SoccerWorld.

@@ -1,4 +1,4 @@
-"""Lazy public package boundary for SoccerWorld.
+"""Lazy public package boundary for MESSI (package name: soccerworld).
 
 The top-level package imports no numerical or rendering stack. This lets command-line bootstrap
 modules select a JAX backend before JAX is imported, while documented exports remain available on

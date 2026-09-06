@@ -3,16 +3,17 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "soccerworld"
+name = "messi-env"
 dynamic = ["version"]
-description = "A JAX-native full-match football world engine for learning and simulation"
+description = "MESSI: A Multi-Agent Environment for Soccer Simulation and Intelligence — JAX-native full-match 11v11 football for imitation and multi-agent RL"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Hyunwoo Park" }]
+keywords = ["football", "soccer", "multi-agent", "reinforcement-learning", "imitation-learning", "jax", "simulation"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -26,6 +27,11 @@ dependencies = [
     "jaxtyping>=0.2.36",
     "numpy>=1.26",
 ]
+
+[project.urls]
+Homepage = "https://github.com/UoS-CIDA-Lab/MESSI"
+Repository = "https://github.com/UoS-CIDA-Lab/MESSI"
+Changelog = "https://github.com/UoS-CIDA-Lab/MESSI/blob/main/CHANGELOG.md"
 
 [project.scripts]
 soccerworld-demo = "soccerworld.demo.__main__:main"

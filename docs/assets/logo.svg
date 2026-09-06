@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" width="720" height="180" role="img" aria-label="MESSI — A Multi-Agent Environment for Soccer Simulation and Intelligence">
+  <defs>
+    <linearGradient id="g-pitch" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#15803d"/>
+      <stop offset="100%" stop-color="#064e3b"/>
+    </linearGradient>
+    <linearGradient id="g-word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#16a34a"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <radialGradient id="g-ball" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#cbd5e1"/>
+    </radialGradient>
+  </defs>
+
+  <!-- emblem: pitch tile with 11 agents (dots) and a ball -->
+  <g transform="translate(18,18)">
+    <rect x="0" y="0" width="144" height="144" rx="26" fill="url(#g-pitch)"/>
+    <g fill="none" stroke="#ecfdf5" stroke-width="2.5" opacity="0.85">
+      <rect x="14" y="14" width="116" height="116" rx="6"/>
+      <line x1="72" y1="14" x2="72" y2="130"/>
+      <circle cx="72" cy="72" r="18"/>
+      <rect x="14" y="46" width="20" height="52"/>
+      <rect x="110" y="46" width="20" height="52"/>
+    </g>
+    <!-- home agents -->
+    <g fill="#fde68a">
+      <circle cx="26" cy="72" r="4.2"/>
+      <circle cx="42" cy="40" r="4.2"/><circle cx="42" cy="62" r="4.2"/><circle cx="42" cy="82" r="4.2"/><circle cx="42" cy="104" r="4.2"/>
+      <circle cx="60" cy="52" r="4.2"/><circle cx="58" cy="92" r="4.2"/><circle cx="66" cy="72" r="4.2"/>
+      <circle cx="84" cy="44" r="4.2"/><circle cx="88" cy="100" r="4.2"/><circle cx="96" cy="70" r="4.2"/>
+    </g>
+    <!-- away agents (partial, receding) -->
+    <g fill="#93c5fd" opacity="0.9">
+      <circle cx="118" cy="72" r="4.2"/><circle cx="104" cy="52" r="4.2"/><circle cx="104" cy="92" r="4.2"/>
+      <circle cx="90" cy="60" r="4.2"/><circle cx="90" cy="84" r="4.2"/>
+    </g>
+    <!-- ball with flight arc -->
+    <path d="M66 72 Q 84 46 104 58" fill="none" stroke="#ffffff" stroke-width="2" stroke-dasharray="3 3" opacity="0.8"/>
+    <circle cx="104" cy="58" r="6.5" fill="url(#g-ball)" stroke="#0f172a" stroke-width="1"/>
+    <path d="M101.5 55.5 l2.5 -1.8 l2.5 1.8 l-1 2.9 h-3 z" fill="#0f172a"/>
+  </g>
+
+  <!-- wordmark -->
+  <g transform="translate(190,0)" font-family="Inter, 'Helvetica Neue', Arial, sans-serif">
+    <text x="0" y="86" font-size="72" font-weight="800" letter-spacing="4" fill="url(#g-word)">MESSI</text>
+    <text x="3" y="116" font-size="17" font-weight="600" fill="currentColor" opacity="0.8">
+      A Multi-Agent Environment for Soccer Simulation and Intelligence
+    </text>
+    <text x="3" y="142" font-size="13.5" font-weight="400" fill="currentColor" opacity="0.55">
+      JAX-native · 11 v 11 · full 90-minute matches · imitation &amp; multi-agent RL
+    </text>
+  </g>
+</svg>
