@@ -214,15 +214,6 @@ sidecar로 대조했다.
 이 한 장면은 회귀 증거이며 전체 경기 분포나 측정 축구 상수의 근거로
 해석하지 않는다.
 
-README publication capture는 clean source `14a373bc083f434b6f72d7cfdaef9359dea0c89f`
-에서 같은 seed/전술로 다시 실행했다. 환경이 58,603 control step에서
-`regulation_complete`로 종료했고 event budget exhausted는 0, 시작·종료
-source revision과 fixture hash는 동일했다. publication guard는 `valid`다.
-검증된 원본은 `output/readme-kickoff-current-seed3/match.mp4`이며,
-README MP4 SHA-256은
-`91e0e21ada9b2c096413b9e1bb0f9f9e7b9ef09c135296358fa963b7eedf5e7e`다.
-GIF는 이 MP4에서 960×540/10 fps/100 frame으로 파생했다.
-
 ## 성능·컴파일 주장 경계
 
 구조적으로 추가된 hot-path 작업은 carrier row의 scalar utility 산술과
@@ -304,3 +295,87 @@ median 0.0507851초, 630.106 step/s였다. fixture 작성 명령과 backend 상�
 직전 동결 source에서 sdist와 wheel을 build했고 wheel metadata의 배포
 버전이 `0.1.0`임을 확인했다. wheel에는 `.orig`, test, `calib`, output
 경로가 포함되지 않았다.
+
+## PASS 수신 계획과 CONTROL 의사 패스 진단
+
+README 선두 10초 경기의 tracking과 event sidecar를 영상과 함께 다시
+대조했다. 0.1초 킥오프 PASS는 제출 방향과 이동 수신점 방향의 차이가
+0.015도뿐이어서 방향 좌표계나 지상 패스 역산이 원인이 아니었다. 문제는
+정책이 PASS를 제출한 프레임에는 의도 수신자를 recurrent state에 기록하지
+않아, 다음 loose-ball 관측에서 일반 최근접 추격수가 원래 수신자를
+대체했다는 것이다. 수정 뒤에는 같은 팀의 유효한 observer row에만 현재
+PASS 수신자, 도착점, ETA를 즉시 저장하고, 다음 관측의 공개된
+`PASS/RELEASE/kick_applied` 계보가 실제 릴리스를 증명할 때만 유지한다.
+
+영상의 2.0초와 5.1초 접촉은 PASS가 아니라 파란 링의 `CONTROL/TRAP`이었다.
+각 공은 loose 상태로 8.29 m와 10.16 m 이동해 동료 또는 상대에게 닿았으므로,
+시각적으로는 표기되지 않은 패스가 되었다. `dribble_power`는 public CONTROL
+속도 척도에 이미 정규화돼 있는데 정책이 이를 다시
+`kick_speed_max/control_request_speed_max` 비율로 변환해 요청을 약 3.86배
+키운 단위 오류였다. 이 변환을 제거하고 설정값을 CONTROL 척도에서 그대로
+사용한다.
+
+첫 수정 뒤 위의 장거리 CONTROL 두 건과 킥오프 수신자 교체는 사라졌다.
+다만 3.4초에 수신자가 새 진행 방향으로 급회전하면서, 공이 최종 터치
+방향축 기준 0.331 m 뒤에 있는데도 CONTROL을 제출하는 좁은 잔여 사례가
+확인됐다. 이동 목표와 CONTROL 목표는 42.5도 달랐고, 선수와 공의 거리는
+3.8초 0.459 m에서 4.4초 1.229 m로 벌어져 물리 carry edge 1.21 m를 넘었다.
+정책은 이제 최종 경계 보정까지 적용된 터치 방향 앞에 공이 있을 때만
+주기적 드리블 CONTROL을 허용한다. 공이 뒤에 있으면 별도 상태나 난수 없이
+공 상대 위치로 먼저 이동해 다시 정렬한다. 재접촉 간격을 완전히 없애는
+중간안은 3.1--3.5초에 매 프레임 CONTROL을 만들어 폐기했다.
+
+### SoccerWorld 상속 및 변경 경계
+
+- 유지: 공개된 상대 운동으로 재접촉을 재허용하고 캐리어가 공 위치를
+  회수하는 원칙은 오버런을 막으므로 sound하다. 패스 비행 중 한 명의
+  trajectory receiver를 유지하는 원칙도 프레임별 수신자 교체를 막는다.
+- 변경: SoccerWorld의 전역적인 공 직접 호밍은 FootballWorld의 전술 이동을
+  지우므로, 최종 터치 방향과 공이 불정렬인 캐리어에게만 제한한다.
+- 거부: SoccerWorld의 절대 공속 2.5 m/s 드리블 gate는 FootballWorld의
+  player-relative CONTROL 의미와 직접 호환되지 않으며, 측정 상수로 이전할
+  근거도 없으므로 복사하지 않는다.
+- 유지: FootballWorld의 가산형 공 충격과 현재 공속을 보상하는 패스 솔버는
+  두 실제 PASS에서 목표 이동점과 궤적 방향이 일치했으므로 변경하지 않는다.
+
+구현은 기존 고정 shape PyTree와 observer-local 상태를 유지한다. 정렬 보정은
+2차원 scalar 곱셈 두 번과 `where` 기반 회수 이동만 추가하며 새 동적 loop,
+PRNG stream, 선수 쌍 행렬, 데이터 계수는 추가하지 않는다. PASS 계획도 이미
+계산한 단일 선택 수신자와 도착 정보를 broadcast할 뿐 후보 계산을 반복하지
+않는다.
+
+### 동결 검증
+
+전용 회귀 테스트 3개는 135.83초에 모두 통과했다. 각각 동일 프레임 PASS
+계획과 실제 릴리스 뒤 유지, CONTROL 전용 정규화 척도, 불정렬 캐리어의
+무접촉 공 회수를 검증한다. Ruff check와 format check, `git diff --check`도
+통과했다.
+
+최종 진단 영상은
+`output/pass-control-alignment-fix-seed3/match.mp4`에 생성됐다. seed 3,
+`salida_lavolpiana` 대 `gegenpress`, 100 control frame, 1080p, 20 fps이며
+200 video frame을 완전 decode 검증했다. production Python source와 git
+porcelain은 capture 시작부터 종료까지 동일했다. 실제 PASS는 0.1초, 6.3초,
+9.8초에 발생했고, 직후 공 진행 방향과 해당 시점 의도 수신자 방향의 차이는
+각각 0.02도, 0.65도, 1.27도였다. 앞의 두 패스는 window 안에서 지정 선수
+1002와 1018이 직접 수신했다. 마지막 패스의 수신 시점은 10초 window 밖이다.
+기존 8.29 m와 10.16 m CONTROL 의사 패스는 재현되지 않았다. 남은 CONTROL은
+짧은 trap/recovery이고, 4.8초 골키퍼 접촉은 소유 전달이 아니라 `PARRY` 뒤
+원 캐리어가 다시 회수한 장면이다.
+
+같은 MP4를 `docs/assets/rendering/latest-kickoff-10s.mp4`로 복사해 README
+최상단 링크를 교체했다. 원본과 README MP4의 SHA-256은 모두
+`37799d4b6b344b3cc660c4d66f511d75dec75d8105e001a8a5466720593091ca`다.
+README GIF는 이 MP4에서 960x540, 10 fps, 100 frame, 10초로 파생했으며
+SHA-256은
+`ac515ae25324fb70adbf20a71ec2f6b9e35043ad664600cafe4b256a9e84e763`다.
+
+변경 전 HEAD와 현재 소스를 같은 CPU batch-1, 32-step outer `lax.map`,
+7회 warm fixture로 진단했다. warm median은 0.051119초에서 0.050698초로,
+처리량은 625.99에서 631.19 frame/s로 측정됐다. compiler temporary 추정은
+161,272 byte에서 161,632 byte로 360 byte 늘었고 executable text는
+33,870,737자에서 33,511,159자로 줄었다. cold compile+first는 32.71초와
+35.51초였으나 단 한 번의 순차 측정이므로 증가를 정책의 인과 효과로
+주장하지 않는다. warm 차이도 성능 개선률로 주장하지 않으며, 새 graph가
+고정 shape이고 이 fixture에서 뚜렷한 rollout 손실을 보이지 않았다는
+진단 경계로만 사용한다.

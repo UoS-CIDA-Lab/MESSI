@@ -1151,12 +1151,9 @@ def make_rule_based_policy(
         round(config.kickoff_path_window_s * control_fps),
     )
 
-    control_power = min(
-        1.0,
-        config.dribble_power
-        * env.action_scale.kick_speed_max_mps
-        / env.action_scale.control_request_speed_max_mps,
-    )
+    # CONTROL power is already normalized against control_request_speed_max_mps.
+    # Kick-scale conversion overhit dribbles into unlabelled pseudo-passes.
+    control_power = config.dribble_power
     gaze_limit_radians = math.radians(env.perception.gaze_yaw_limit_degrees)
 
     def action_for_state(
@@ -2440,6 +2437,15 @@ def make_rule_based_policy(
             carrier_inward_touchline,
             config.touchline_dribble_control_power,
         )
+        # A carrier can turn before the next foot contact while the ball still
+        # sits behind that new travel axis.  Touching in the new direction at
+        # that instant sends a player-relative CONTROL across the ball instead
+        # of continuing the carry.  Re-align physically first; no hidden timer
+        # or fitted distance threshold is needed.
+        dribble_touch_aligned = (
+            ball_xy[:, 0] * strike_direction[:, 0]
+            + ball_xy[:, 1] * strike_direction[:, 1]
+        ) >= 0.0
         strike_launch = jnp.where(
             pass_ball,
             pass_launch,
@@ -2456,6 +2462,20 @@ def make_rule_based_policy(
             jnp.float32(config.carrier_power),
         )
         secure_move = _encode(secure_ball_velocity, secure_move_power)
+        recover_misaligned_dribble = (
+            own_possessor
+            & ball_visible
+            & ball_live
+            & (observations.restart.kind == RK_NONE)
+            & (carrier_kind == POSSESSION_DRIBBLE)
+            & (~dribble_touch_aligned)
+        )
+        carrier_recovery_move = _encode(ball_xy, config.carrier_power)
+        carrier_move = jnp.where(
+            recover_misaligned_dribble[:, None],
+            carrier_recovery_move,
+            carrier_move,
+        )
         carrier_move = jnp.where(secure_follow[:, None], secure_move, carrier_move)
         carrier_force = _encode(strike_direction, strike_power)
 
@@ -3447,6 +3467,7 @@ def make_rule_based_policy(
                 == 0
             )
             & recontact_ready
+            & dribble_touch_aligned
             # A newly secured receiver first gets a decision opportunity to
             # follow the cushioned ball. Re-kicking it during this stabilization
             # window recreated the loose state the trap had just resolved.
@@ -3725,14 +3746,81 @@ def make_rule_based_policy(
             roster.player_id[safe_intended_receiver],
             jnp.int32(NO_PLAYER),
         ).astype(jnp.int32)
+        # Seed a receiver plan in the same frame that submits PASS.  Waiting
+        # for the following loose-ball observation let the generic intercept
+        # planner replace the declared receiver before any plan existed.
+        # Broadcasting only to observers on the passer's team preserves the
+        # row-local partial-observation contract; the next observation keeps
+        # this pending plan only when public contact provenance proves that the
+        # PASS was actually released.
+        has_current_pass = (intent[decision_row] == INTENT_PASS) & (
+            intended_receiver[decision_row] >= 0
+        )
+        safe_current_receiver = jnp.clip(
+            intended_receiver[decision_row], 0, player_count - 1
+        )
+        current_pass_for_observer = (
+            has_current_pass & observations.valid & (self_team == carrier_team)
+        )
+        current_restart_target = jnp.where(
+            goalkeeper_hold_distribution[decision_row],
+            pass_target[safe_current_receiver],
+            restart_target,
+        )
+        current_pass_target = jnp.where(
+            restart_release[decision_row],
+            current_restart_target,
+            best_pass_target,
+        )
+        selected_pass_travel_time = jnp.where(
+            possession_decision.cross,
+            selected_cross.travel_time_s,
+            selected_pass.arrival_time_s,
+        )
+        selected_restart_travel_time = jnp.where(
+            restart_is_aerial,
+            selected_restart_aerial.travel_time_s,
+            selected_restart_ground.arrival_time_s,
+        )
+        selected_restart_travel_time = jnp.where(
+            goalkeeper_hold_distribution[decision_row],
+            selected_distribution.arrival_time_s,
+            selected_restart_travel_time,
+        )
+        current_pass_travel_time = jnp.where(
+            restart_release[decision_row],
+            selected_restart_travel_time,
+            selected_pass_travel_time,
+        )
+        current_pass_eta_ticks = jnp.maximum(
+            jnp.ceil(current_pass_travel_time * jnp.float32(control_fps)).astype(
+                jnp.int32
+            ),
+            jnp.int32(1),
+        )
+        stored_planned_receiver = jnp.where(
+            current_pass_for_observer,
+            intended_receiver[decision_row],
+            predicted_chaser_index,
+        )
+        stored_planned_arrival = jnp.where(
+            current_pass_for_observer[:, None],
+            current_pass_target,
+            predicted_target,
+        )
+        stored_planned_eta_ticks = jnp.where(
+            current_pass_for_observer,
+            current_pass_eta_ticks,
+            planned_eta_ticks,
+        )
         action_decision = _ActionDecision(
             action=action,
             loose_chaser=loose_chaser_index,
             loose_chase_active=loose_ball & has_loose_chaser & ground_ball,
-            planned_receiver=predicted_chaser_index,
-            planned_arrival=predicted_target,
-            planned_eta_ticks=planned_eta_ticks,
-            pass_plan_active=own_ground_pass_flight,
+            planned_receiver=stored_planned_receiver,
+            planned_arrival=stored_planned_arrival,
+            planned_eta_ticks=stored_planned_eta_ticks,
+            pass_plan_active=own_ground_pass_flight | current_pass_for_observer,
             service_opportunity=service_opportunity_by_row,
             intended_receiver_ids=intended_receiver_ids,
         )
