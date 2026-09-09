@@ -79,8 +79,8 @@ Python 3.10, 3.11, and 3.12 are targeted. During pre-release, install from the
 repository so the source revision remains explicit:
 
 ```bash
-git clone https://github.com/UoS-CIDA-Lab/UOS-FootballMARL-Env.git
-cd UOS-FootballMARL-Env
+git clone https://github.com/UoS-CIDA-Lab/MESSI.git
+cd MESSI
 python -m pip install -e .
 ```
 
@@ -266,7 +266,7 @@ and records migration status without duplicating normative contracts.
 ## Contributing
 
 Issues and pull requests are welcome through the
-[GitHub repository](https://github.com/UoS-CIDA-Lab/UOS-FootballMARL-Env). Reproducible defect
+[GitHub repository](https://github.com/UoS-CIDA-Lab/MESSI). Reproducible defect
 reports should include the MESSI and JAX versions, backend, immutable
 configuration, roster shape, and a seed when one is available.
 
@@ -283,7 +283,7 @@ experiment together with the machine-readable [CITATION.cff](CITATION.cff).
   title     = {{MESSI}: A Multi-agent Match Environment for Soccer Simulation and Intelligence},
   year      = {2026},
   license   = {Apache-2.0},
-  url       = {https://github.com/UoS-CIDA-Lab/UOS-FootballMARL-Env},
+  url       = {https://github.com/UoS-CIDA-Lab/MESSI},
   publisher = {CIDA Lab, University of Seoul},
   note      = {Pre-release source; cite the exact Git commit used}
 }
