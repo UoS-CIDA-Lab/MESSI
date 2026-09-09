@@ -512,10 +512,10 @@ def decide_possession(
         & (roster_slot != jnp.asarray(context.self_index, dtype=jnp.int32))
     )
     has_previous_actor = jnp.any(previous_actor & active_same_team_actor)
-    # A loose dribble touch can break the carrier-control counter without
-    # ending the observed team episode. Only an episode with no preceding
-    # teammate is allowed to extend solo tenure, so a normal reception does
-    # not inherit the whole team's build-up age.
+    # possession_seconds is the caller's observer-causal player carry age,
+    # which bridges same-player dribble recontacts. Team episode age remains a
+    # fallback only when no preceding teammate exists, so a normal reception
+    # never inherits the whole build-up as personal tenure.
     solo_tenure_seconds = jnp.maximum(
         possession_seconds,
         jnp.where(has_previous_actor, 0.0, possession_episode_seconds),
@@ -1187,7 +1187,7 @@ def decide_possession(
     release_due = (
         decision_due
         & safe_release
-        & (possession_seconds >= jnp.float32(config.solo_carry_soft_limit_s))
+        & (solo_tenure_seconds >= jnp.float32(config.solo_carry_soft_limit_s))
     )
     release_kind = jnp.where(
         shot_plan.value > best_pass_value,

@@ -15,7 +15,12 @@ import jax
 import jax.numpy as jnp
 
 from footballworld.core.constants import NO_PLAYER, NO_TEAM, RK_NONE, TEAM_0, TEAM_1
-from footballworld.core.contact import INTENT_PASS, OUTCOME_RELEASE
+from footballworld.core.contact import (
+    INTENT_CONTROL,
+    INTENT_PASS,
+    OUTCOME_RELEASE,
+    OUTCOME_TRAP,
+)
 from footballworld.environment.management import PlayerTacticalObservation
 from footballworld.environment.observation import Observation, RosterMetadata
 from footballworld.environment.tactics import (
@@ -49,10 +54,11 @@ class RulePolicyState(NamedTuple):
     observed tick of a restart, controlled-possession episode, or counterpress.
     ``possession_team`` is each observer's most recently known team and may be
     retained while its current possession observation is hidden.  Its age also
-    bridges a visible, kick-applied PASS release by that same team while the
-    ball remains live; unknown or non-pass loose-ball phases do not receive
-    that inference. A visible restart PASS bootstraps the same bridge from its
-    public last-contact actor because restart possession begins at NO_TEAM.
+    bridges a visible, kick-applied PASS release by that same team and a visible
+    CONTROL/TRAP lineage whose last actor is still the remembered carrier while
+    the ball remains live. Other known loose-ball phases do not receive that
+    inference. A visible restart PASS bootstraps the same bridge from its public
+    last-contact actor because restart possession begins at NO_TEAM.
     """
 
     formation_anchor: jax.Array
@@ -64,6 +70,7 @@ class RulePolicyState(NamedTuple):
     restart_age: jax.Array
     possession_team: jax.Array
     possession_age: jax.Array
+    carrier_age: jax.Array
     attack_phase: jax.Array
     current_possessor: jax.Array
     previous_possessor: jax.Array
@@ -129,6 +136,56 @@ def _advance_age(age: jax.Array, elapsed: jax.Array) -> jax.Array:
     return jnp.where(age > remaining, jnp.int32(_INT32_MAX), age + elapsed)
 
 
+def _next_carrier_age(
+    age: jax.Array,
+    current_actor: jax.Array,
+    observed_actor: jax.Array,
+    observed_control_ticks: jax.Array,
+    actor_known: jax.Array,
+    same_possession: jax.Array,
+    possession_known: jax.Array,
+    same_actor_control_lineage: jax.Array,
+    elapsed: jax.Array,
+) -> jax.Array:
+    """Track one player's carry across observable CONTROL/TRAP recontacts.
+
+    Environment control_ticks describes an uninterrupted physical control
+    segment. A deliberate dribble can remain loose for several control frames,
+    so that counter legitimately restarts even though the same player is still
+    the tactical carrier. Policy carry age has the latter meaning: it advances
+    only when the observer still sees the same player for the same team, and
+    resets on a visible handoff or loss.
+    """
+
+    observed_age = jnp.maximum(
+        jnp.asarray(observed_control_ticks, dtype=jnp.int32) - jnp.int32(1),
+        jnp.int32(0),
+    )
+    same_carrier = (
+        actor_known
+        & same_possession
+        & (age >= 0)
+        & (current_actor != NO_PLAYER)
+        & (observed_actor == current_actor)
+    )
+    continued_age = jnp.maximum(
+        _advance_age(jnp.maximum(age, 0), elapsed),
+        observed_age,
+    )
+    visible_age = jnp.where(
+        actor_known,
+        jnp.where(same_carrier, continued_age, observed_age),
+        jnp.where(
+            same_actor_control_lineage & (age >= 0),
+            continued_age,
+            jnp.int32(INACTIVE_AGE),
+        ),
+    ).astype(jnp.int32)
+    # Hidden rows cannot prove elapsed control, but visibility loss must not
+    # erase remembered tenure and reopen the soft-limit loophole.
+    return jnp.where(possession_known, visible_age, age).astype(jnp.int32)
+
+
 def initialize_rule_policy_state(
     observations: Observation,
     roster: RosterMetadata,
@@ -180,6 +237,15 @@ def initialize_rule_policy_state(
         restart_age=jnp.where(restart_active, jnp.int32(0), jnp.int32(INACTIVE_AGE)),
         possession_team=possession_team,
         possession_age=jnp.where(controlled, jnp.int32(0), jnp.int32(INACTIVE_AGE)),
+        carrier_age=jnp.where(
+            has_possessor,
+            jnp.maximum(
+                jnp.asarray(observations.possession.control_ticks, dtype=jnp.int32)
+                - jnp.int32(1),
+                jnp.int32(0),
+            ),
+            jnp.int32(INACTIVE_AGE),
+        ),
         attack_phase=jnp.where(controlled, jnp.int32(0), jnp.int32(INACTIVE_AGE)),
         current_possessor=current_possessor,
         previous_possessor=jnp.full((player_count,), NO_PLAYER, dtype=jnp.int32),
@@ -202,12 +268,12 @@ def update_rule_policy_state(
 ) -> RulePolicyState:
     """Advance policy memory using only each actor's current observation row.
 
-    Unknown possession preserves that row's prior belief and lets its age
-    advance with the public clock.  A fully observed loose ball bridges the
-    prior episode only when public last-contact provenance proves a live,
-    kick-applied same-team PASS release.  A newly observed loss from the
-    actor's own team starts counterpress age zero; it remains active through a
-    loose or hidden ball and ends when own-team possession is observed again.
+    Unknown possession preserves the prior team episode and freezes carrier
+    age. A fully observed loose ball bridges the prior episode only when public
+    last-contact provenance proves a live, kick-applied same-team PASS release
+    or the same remembered actor's CONTROL/TRAP lineage. A newly observed loss
+    from the actor's own team starts counterpress age zero; it remains active
+    through a loose or hidden ball and ends when own-team possession returns.
     """
 
     player_count = _player_count(observations, roster)
@@ -217,6 +283,8 @@ def update_rule_policy_state(
         raise ValueError("policy role state does not match the roster")
     if state.current_possessor.shape != (player_count,):
         raise ValueError("policy current possessor must match the roster")
+    if state.carrier_age.shape != (player_count,):
+        raise ValueError("policy carrier age must match the roster")
     if state.previous_possessor.shape != (player_count,):
         raise ValueError("policy previous possessor must match the roster")
     if state.loose_chaser.shape != (player_count,):
@@ -295,10 +363,29 @@ def update_rule_policy_state(
         & (last_actor_team != NO_TEAM)
     )
     reliable_pass_flight = continued_pass_flight | restart_pass_flight
+    same_actor_control_lineage = (
+        known
+        & (~current_controlled)
+        & observations.ball.live
+        & (observations.restart.kind == RK_NONE)
+        & last_contact.known
+        & (last_contact.intent == INTENT_CONTROL)
+        & (last_contact.outcome == OUTCOME_TRAP)
+        & (~last_contact.kick_applied)
+        & last_actor_known
+        & (state.current_possessor != NO_PLAYER)
+        & (last_actor_index == state.current_possessor)
+        & (last_actor_team == state.possession_team)
+        & (state.carrier_age >= 0)
+    )
+    reliable_possession_lineage = reliable_pass_flight | same_actor_control_lineage
     pass_flight_team = jnp.where(
         continued_pass_flight,
         state.possession_team,
         last_actor_team,
+    ).astype(jnp.int32)
+    lineage_team = jnp.where(
+        same_actor_control_lineage, state.possession_team, pass_flight_team
     ).astype(jnp.int32)
     restart_pass_started = restart_pass_flight & (
         (state.possession_team == NO_TEAM) | (state.possession_age < 0)
@@ -311,7 +398,7 @@ def update_rule_policy_state(
         current_controlled,
         jnp.where(same_possession, continued_possession_age, jnp.int32(0)),
         jnp.where(
-            reliable_pass_flight,
+            reliable_possession_lineage,
             jnp.where(
                 restart_pass_started,
                 jnp.int32(0),
@@ -328,7 +415,7 @@ def update_rule_policy_state(
     possession_age = jnp.where(known, observed_possession_age, hidden_possession_age)
     possession_team = jnp.where(
         known,
-        jnp.where(reliable_pass_flight, pass_flight_team, current_possession),
+        jnp.where(reliable_possession_lineage, lineage_team, current_possession),
         state.possession_team,
     ).astype(jnp.int32)
     possessor_flag = jnp.asarray(observations.players.possessor, dtype=jnp.bool_)
@@ -339,6 +426,17 @@ def update_rule_policy_state(
         & same_possession
         & (state.current_possessor != NO_PLAYER)
         & (observed_actor != state.current_possessor)
+    )
+    carrier_age = _next_carrier_age(
+        state.carrier_age,
+        state.current_possessor,
+        observed_actor,
+        observations.possession.control_ticks,
+        actor_known,
+        same_possession,
+        known,
+        same_actor_control_lineage,
+        elapsed,
     )
     previous_possessor = jnp.where(
         restart_pass_started,
@@ -380,7 +478,7 @@ def update_rule_policy_state(
             jnp.int32(0),
         ),
         jnp.where(
-            reliable_pass_flight,
+            reliable_possession_lineage,
             jnp.where(restart_pass_started, jnp.int32(0), continued_attack_phase),
             jnp.int32(INACTIVE_AGE),
         ),
@@ -418,11 +516,14 @@ def update_rule_policy_state(
     )
     possession_lost = (
         known
-        & (~reliable_pass_flight)
+        & (~reliable_possession_lineage)
         & (state.possession_team == own_team)
         & (current_possession != own_team)
     )
-    own_possession_observed = known & (current_possession == own_team)
+    own_possession_observed = known & (
+        (current_possession == own_team)
+        | (same_actor_control_lineage & (state.possession_team == own_team))
+    )
     continued_counterpress_age = _advance_age(
         jnp.maximum(state.counterpress_age, 0), elapsed
     )
@@ -482,6 +583,7 @@ def update_rule_policy_state(
         restart_age=restart_age,
         possession_team=possession_team,
         possession_age=possession_age,
+        carrier_age=carrier_age,
         attack_phase=attack_phase.astype(jnp.int32),
         current_possessor=current_possessor,
         previous_possessor=previous_possessor,

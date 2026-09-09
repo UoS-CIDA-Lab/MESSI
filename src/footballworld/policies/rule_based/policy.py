@@ -1436,17 +1436,25 @@ def make_rule_based_policy(
         # touch and is therefore not a valid candidate gate for a new pass.
         # Every downstream receiver/restart decision consumes only this row;
         # evaluating all observer rows first was an unused O(P²) policy cost.
-        # Carrier-control draws belong to one observed player-control segment
-        # and one dribble-decision bucket, not to a render/control frame. Folding both
-        # physical slot and public player id prevents a substituted identity
-        # from inheriting the outgoing players stream without growing state.
-        carrier_control_ticks = observations.possession.control_ticks[decision_row]
+        # Carrier-control draws belong to one observer-causal carrier episode
+        # and one dribble-decision bucket, not to a render/control frame.
+        # Folding both physical slot and public player id prevents a
+        # substituted identity from inheriting the outgoing player's random
+        # stream.
+        # Physical control_ticks restarts when a dribble touch briefly
+        # releases and recovers the ball inside one frame. Policy carry age is
+        # observer-causal and player-specific, so cadence, random buckets and
+        # solo-release pressure cannot be evaded by repeated self recontacts.
+        carrier_tenure_ticks = jnp.maximum(
+            _policy_state.carrier_age[decision_row] + jnp.int32(1),
+            jnp.int32(0),
+        )
         carrier_slot = self_index[decision_row]
         carrier_episode_start_tick = jnp.maximum(
-            absolute_tick - jnp.maximum(carrier_control_ticks - 1, 0),
+            absolute_tick - jnp.maximum(carrier_tenure_ticks - 1, 0),
             0,
         )
-        carrier_decision_bucket = jnp.maximum(carrier_control_ticks, 0) // jnp.int32(
+        carrier_decision_bucket = jnp.maximum(carrier_tenure_ticks, 0) // jnp.int32(
             dribble_touch_interval_ticks
         )
         carrier_episode_key = _stable_decision_key(
@@ -1601,8 +1609,8 @@ def make_rule_based_policy(
         carrier_tactical = gather_tactical_profile(
             _policy_state.team_tactical_plan[carrier_team]
         )
-        carrier_regular_decision_due = (carrier_control_ticks > 0) & (
-            carrier_control_ticks % dribble_touch_interval_ticks == 0
+        carrier_regular_decision_due = (carrier_tenure_ticks > 0) & (
+            carrier_tenure_ticks % dribble_touch_interval_ticks == 0
         )
 
         # restart_age is recurrent observation-only memory. Subtracting it
@@ -1842,16 +1850,23 @@ def make_rule_based_policy(
         # relays by context; adapt that principle to FootballWorld without
         # weakening its intentionally difficult 1v1 carry/contest physics.
         last_contact = observations.possession.last_contact
+        linked_reception = (
+            _policy_state.previous_possessor[decision_row] != NO_PLAYER
+        ) & (
+            _policy_state.previous_possessor[decision_row]
+            != _policy_state.current_possessor[decision_row]
+        )
         carrier_received_control = (
-            last_contact.known[decision_row]
+            linked_reception
+            & last_contact.known[decision_row]
             & (last_contact.intent[decision_row] == jnp.int32(INTENT_CONTROL))
             & (last_contact.outcome[decision_row] == jnp.int32(OUTCOME_TRAP))
             & observations.players.last_actor[decision_row, carrier_slot]
         )
         early_relay_window = (
             carrier_received_control
-            & (carrier_control_ticks > 0)
-            & (carrier_control_ticks <= jnp.int32(quick_relay_window_ticks))
+            & (carrier_tenure_ticks > 0)
+            & (carrier_tenure_ticks <= jnp.int32(quick_relay_window_ticks))
         )
         source_pressure = pressure(
             ball_position[decision_row],
@@ -1970,7 +1985,7 @@ def make_rule_based_policy(
             cross_target_xy=cross_target,
             cross_completion=cross_arrival,
             cross_candidate=effective_cross_candidate,
-            possession_seconds=carrier_control_ticks / control_fps,
+            possession_seconds=carrier_tenure_ticks / control_fps,
             possession_episode_seconds=(
                 jnp.maximum(_policy_state.possession_age[decision_row], 0) / control_fps
             ),

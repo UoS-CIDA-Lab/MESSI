@@ -10,8 +10,10 @@
 - 탈취 직후 낮은 품질의 슛이 과도하게 선택되는 행동
 - 연결된 패스 수신자를 현재 프레임의 가시성·오프사이드로 다시 판정하던 인과 오류
 
-환경의 접촉, 득점, 오프사이드, 재시작 합법성은 바꾸지 않았다. 새 recurrent
-state, 새 난수 스트림, 동적 반복, 선수 쌍 텐서도 추가하지 않았다.
+환경의 접촉, 득점, 오프사이드, 재시작 합법성은 바꾸지 않았다.
+드리블 재접촉의 정책 의미를 보존하기 위해 고정형
+`RulePolicyState.carrier_age` `(P,)` int32 leaf 하나를 추가했다. 새 난수
+스트림, 동적 반복, 선수 쌍 텐서는 추가하지 않았다.
 `policy_config_fingerprint`는 dataclass 전체를 canonical JSON으로 직렬화하므로
 새 public config 필드도 자동으로 정책 식별자에 포함된다.
 
@@ -22,7 +24,7 @@ state, 새 난수 스트림, 동적 반복, 선수 쌍 텐서도 추가하지 �
 | 확인 자료 | 유지한 장점 | 그대로 이식하지 않은 부분과 이유 |
 |---|---|---|
 | `src/soccerworld/_engine/rule_policy/guide.md` | 슛·패스·드리블·클리어를 하나의 bounded common currency에서 비교하고, 수치 지표와 경기 양상을 함께 평가한다. | 문서의 DFL 집계는 유용한 비교 기준이지만 일부 builder/동일 계약 재현 근거가 완결되지 않았다. 다른 관측·행동 계약의 계수를 측정 상수로 가져오지 않았다. |
-| `src/soccerworld/_engine/rule_policy/policy.py` | 패스는 물리적 lane과 수신 경쟁을 함께 통과해야 하며, formation-relative role과 상황별 release hazard를 사용한다. | SoccerWorld의 carrier cadence를 줄 단위로 복사하지 않았다. FootballWorld에는 이미 public observation에서 유도한 `control_ticks`, `possession_age`, `previous_possessor`가 있어 이 인과 상태를 재사용하는 편이 API·컴파일·현실성에 맞다. |
+| `src/soccerworld/_engine/rule_policy/policy.py` | 패스는 물리적 lane과 수신 경쟁을 함께 통과해야 하며, formation-relative role, 상황별 release hazard, 맥락적 빠른 릴레이를 사용한다. | SoccerWorld의 carrier cadence·계수·일반 패스에 더하는 릴레이 release 구조를 줄 단위로 복사하지 않았다. FootballWorld는 0.4초 cadence의 연쇄 패스를 막는 bounded 수신 창을 유지한다. 또한 물리 `control_ticks`는 공이 발에서 잠시 떨어질 때 합법적으로 초기화되므로 개인 전술 운반 시간으로 재사용하지 않고, public contact provenance로 별도 causal carry age를 유지한다. |
 | `src/soccerworld/_engine/manager.py` 및 `src/soccerworld/_engine/formation.py` | static callable과 dynamic parameter PyTree를 분리하고, 감독 결정과 formation 의미를 저빈도 경계에 둔다. | bench·formation·host validation을 lean player step 안으로 옮기지 않았다. FootballWorld의 고정형 관리 경계를 유지했다. |
 | `tests/unit/policies/test_rule_policy_tactics.py`, `test_rule_policy_formation_roles.py`, `test_rule_policy_dribble_recontact.py` | 역할이 절대 좌표가 아니라 formation에 상대적이어야 하고, loose touch가 정책 기억을 임의로 지우면 안 된다는 의미 계약을 유지했다. | FootballWorld의 public-observation 행 구조와 다른 fixture 수치를 복사하지 않았다. |
 | `tests/unit/control/test_manager.py`, `tests/contracts/public_api/test_roster_configuration.py`, `experiments/phase_s/tests/test_ability_profiles.py` | 외부 작성 roster/ability는 그대로 보존하고, 무작위 profile은 명시 key와 bounded prior로 재현하며, 관리 policy는 외부 callable로 교체할 수 있어야 한다. | 다른 엔진의 roster 모양이나 비공개 상태를 FootballWorld transition에 추가하지 않았다. |
@@ -42,6 +44,10 @@ state, 새 난수 스트림, 동적 반복, 선수 쌍 텐서도 추가하지 �
 - 안전한 패스가 있어도 soft limit 뒤 dribble utility가 일정한 비율로만
   남던 plateau를 거부했다. 강제 PASS나 숨은 timer 대신 안전한 lane,
   개인 control age, 관측 기반 team episode age를 결합한 연속 utility를 쓴다.
+- 물리적 제어가 잠시 풀릴 때마다 개인 운반 시간과 decision random bucket이
+  새로 시작되는 동작을 거부했다. 같은 visible actor의 `CONTROL/TRAP`
+  provenance만 carry lineage로 인정하고, handoff·손실·다른 loose event는
+  fail-closed로 끊는다.
 - 현재 프레임의 `visible` 또는 prospective offside가 과거 연결 수신의
   provenance를 지우는 동작을 거부했다. 과거 행위자 identity와 현재 패스
   합법성은 서로 다른 estimand다.
@@ -55,15 +61,23 @@ state, 새 난수 스트림, 동적 반복, 선수 쌍 텐서도 추가하지 �
 
 ### Solo possession과 연결 수신
 
-`decide_possession`은 caller가 주는 두 public-causal 입력을 추가로 사용한다.
+`decide_possession`은 caller가 주는 public-causal 입력을 사용한다.
 
 - `possession_episode_seconds`: observer-local `RulePolicyState.possession_age`
 - `formation_anchor_y`: 현재 carrier의 시작 formation anchor
+- `possession_seconds`: observer-local `RulePolicyState.carrier_age`에서
+  유도한 현재 선수의 연속 전술 운반 시간
 
-solo tenure는 개인 `carrier_control_ticks`를 기본으로 한다. `previous_actor`가
-없는 동일 팀 episode에서만 episode age가 순간적인 loose dribble touch를
-이어 준다. 연결된 수신자가 있으면 긴 team build-up age를 새 carrier 개인
-운반 시간으로 상속하지 않는다.
+`carrier_age`는 uninterrupted physical control 시간이 아니다. 같은
+visible actor가 계속 소유하거나, 공이 live인 동안 그 actor의
+`CONTROL/TRAP` last-contact provenance가 확인되면 증가한다. 보이는 handoff나
+소유 손실에서는 초기화되고, possession이 hidden이면 새 제어 시간을
+추정하지 않고 기존 값을 동결한다. 따라서 반복 self-recontact가 soft limit,
+decision cadence, episode-keyed 난수 bucket을 다시 시작하지 못한다.
+
+`previous_actor`가 없는 동일 팀 episode에서는 team episode age도 solo
+tenure의 보수적 fallback이다. 연결된 수신자가 있으면 긴 team build-up age를
+새 carrier 개인 운반 시간으로 상속하지 않는다.
 
 연결 판정은 다음 identity mask만 사용한다.
 
@@ -159,10 +173,11 @@ bounded tuning controls일 뿐, DFL 또는 다른 제공자에서 측정된 보�
 ## 검증
 
 - `PYTHONPATH=src pytest -q tests/test_rule_policy_realism_validation.py`
-  — **11 passed**
+  — **13 passed**
 - previous teammate invisible/offside adversarial subset와 인접 settle/carry
   검증 — **4 passed**
 - `tests/test_rule_policy_pass_diagnostics.py` — **1 passed**
+- 전체 CPU suite — **82 passed in 206.64 s**
 - 변경 Python 파일 `py_compile` — passed
 - Ruff lint — passed
 - `git diff --check` — passed
@@ -171,16 +186,48 @@ invisible/offside adversarial case는 두 조건에서 모두 오래된 team epi
 새 carrier solo tenure로 상속하지 않고, 연결된 수신이 fresh-shot settle
 할인에서 면제됨을 검증한다.
 
+추가된 전용 의미 검증은 eager/JIT 양쪽에서 같은 actor의 controlled 및
+loose `CONTROL/TRAP` 재접촉이 carry age를 이어 가고, handoff·unrelated
+loose event가 이를 초기화하며, hidden row는 추정 증가 없이 동결함을
+확인한다. 연결 수신자도 자신의 개인 soft limit에 도달하면 안전한 pass를
+release하는 것도 별도로 확인한다.
+
+### README seed 3 장면 회귀
+
+사용자가 지적한 기존 10초 영상과 같은 seed 3,
+`salida_lavolpiana` 대 `gegenpress`의 첫 두 접촉을 tracking/event
+sidecar로 대조했다.
+
+| 두 번째 toucher의 첫 carrier episode | 수정 전 영상 | 최종 절충안 | 변화 |
+|---|---:|---:|---:|
+| 첫 control부터 본인 PASS/다른 actor touch까지 | 4.6 s | 2.5 s | -2.1 s (-45.7%) |
+| 같은 선수 control 횟수 | 9 | 3 | -6 (-66.7%) |
+| tracking 공 누적 경로 | 24.44 m | 10.95 m | -13.48 m (-55.2%) |
+| 해당 선수 누적 경로 | 23.63 m | 6.70 m | -16.93 m (-71.7%) |
+| 해당 선수 y 순이동 | 22.60 m | 3.49 m | -19.11 m (-84.6%) |
+
+수정 전에는 2.3–2.5초, 3.9–4.2초, 5.3–5.4초의 짧은 loose 구간마다
+물리 `control_ticks`가 다시 시작되어 최대 연속 값이 1.3초에 머물렀다.
+정책 soft limit 2.2초에 도달할 수 없었던 직접 원인이다. 최종 절충안에서는
+동일 actor lineage가 개인 시간을 이어 세 번의 control 뒤 3.9초에 같은 팀의
+다른 미드필더가 공을 이어받았다. 중간안의 0.4초 연쇄 패스도 재현되지 않았다.
+이 한 장면은 회귀 증거이며 전체 경기 분포나 측정 축구 상수의 근거로
+해석하지 않는다.
+
 ## 성능·컴파일 주장 경계
 
 구조적으로 추가된 hot-path 작업은 carrier row의 scalar utility 산술과
-선수별 고정 길이 waypoint vector 연산이다. 새 state leaf, 새 RNG, 새
-data-dependent branch, 새 선수 쌍 materialization은 없다.
+선수별 고정 길이 waypoint vector 연산, `(P,)` int32 `carrier_age`
+갱신이다. 22인 fixture에서 이 leaf는 88 byte이며, 전체 정책 state는
+1,900 byte다. 새 RNG, data-dependent branch, 선수 쌍 materialization은 없다.
 `kickoff_path_window_ticks`는 policy factory에서 host scalar로 미리 계산한다.
 
-그러나 변경 전후 cold compile, warm runtime, memory, StableHLO op/byte에 대한
-동일 source/backend A/B 영수증은 이 문서에 없다. 따라서 이 변경이 성능을
-개선했다거나 StableHLO/컴파일에 퇴행이 없다고 주장하지 않는다.
+CPU public 11v11, seed 29, 32-step `make_advance` fixture를 새 compilation
+cache에서 측정했다. lower+compile+첫 실행은 28.1949초, 7회 warm median은
+0.0437602초(731.258 step/s), StableHLO text는 3,868,278 byte/42,615 line이다.
+compiled memory analysis는 argument 4,747 byte, output 4,697 byte, temporary
+155,384 byte, alias 0 byte를 보고했다. 동일 source/backend의 엄밀한 변경 전
+A/B는 없으므로 성능 개선이나 무퇴행을 주장하지 않으며 GPU 수치도 주장하지 않는다.
 
 ## whole-match vmap 옵션 폐기
 
@@ -236,16 +283,15 @@ set-piece taker 변경 54회다. 이 수치는 당시 검증 입력에 한정된
 
 ## 최종 동결 검증·성능·패키징
 
-최종 동결 source에서 CPU public 11v11, seed 29, 32-step fixture를 격리된
-새 cache로 측정했다. compile과 첫 실행을 합친 cold time은 29.2999초였고,
-7회 warm 실행의 median은 0.0507851초, 처리량은 630.106 step/s였다. 이는
-해당 환경의 절대 측정치이며 동일 조건의 변경 전 A/B가 없으므로 성능 개선이나
-무퇴행의 근거로 사용하지 않는다.
+이번 carrier-lineage 변경 직전 동결 source에서 CPU public 11v11, seed 29,
+32-step fixture를 격리된 새 cache로 측정한 값은 cold 29.2999초, 7회 warm
+median 0.0507851초, 630.106 step/s였다. fixture 작성 명령과 backend 상태가
+완전히 보존된 paired benchmark가 아니므로 위의 현재 측정치와 산술 비교해
+성능 개선률을 주장하지 않는다.
 
-현재 source의 CPU test suite는 204.74초에 80 passed였다. whole-tree
-Ruff와 `git diff --check`도 통과했다. GPU 전체 검증은 이 source에서 다시
-측정하지 않았으므로 GPU 무퇴행을 주장하지 않는다.
+직전 source의 CPU test suite는 204.74초에 80 passed였다. 현재 source의
+검증은 위 검증 절에 별도로 기록했다.
 
-현재 source에서 sdist와 wheel을 다시 build했고 wheel metadata의 배포
+직전 동결 source에서 sdist와 wheel을 build했고 wheel metadata의 배포
 버전이 `0.1.0`임을 확인했다. wheel에는 `.orig`, test, `calib`, output
 경로가 포함되지 않았다.

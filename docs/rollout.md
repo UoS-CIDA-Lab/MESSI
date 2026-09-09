@@ -123,15 +123,17 @@ Reception is also distinct from an automatic relay. A 60-second policy
 diagnostic had 23 of 25 different-teammate receptions pass again within two
 seconds, with 17 delays exactly 0.4 seconds, exposing decision-cadence pinball
 rather than football timing. FootballWorld therefore inherits the SoccerWorld
-contextual quick-relay principle: during the first two seconds after a
-CONTROL/TRAP, an early pass needs pressure, body alignment, a
+contextual quick-relay criteria: during the first two seconds after a linked
+`CONTROL/TRAP` reception, the quick route needs pressure, body alignment, a
 completion-qualified first lane, a safe bounded second leg, and one
 episode-stable seeded draw. The rounded 0.31 probability is a transfer prior
 from the SoccerWorld receipt, not a FootballWorld measurement or physical
-constant. FootballWorld rejects the full SoccerWorld quick-relay mechanism and
-dense producer because its harder 1v1 contest/carry semantics are intentional;
-failed early-relay gates retain normal carry and support movement, and all
-contact/tackle geometry remains unchanged.
+constant. Unlike SoccerWorld's additive carrier release path, FootballWorld
+keeps ordinary pass/cross candidates closed inside this bounded window when
+the relay gate fails; carry and support movement continue, then ordinary macro
+choice reopens after the window. This explicit rejection prevents the
+FootballWorld 0.4-second decision cadence from recreating the measured pinball
+sequence. Contact and tackle geometry remain unchanged.
 
 Ordinary restart positioning follows the same ownership boundary. SoccerWorld
 keeps non-kickers in an attacking or defending set-piece phase while its rules
@@ -166,15 +168,21 @@ key, the observed episode start tick, and team, so it is invariant to rollout
 chunk boundaries and repeats exactly with the same seed. It uses one scalar
 pattern draw and, at most, one scalar run-behind receiver draw rather than a
 per-player categorical search. No action, observation, or environment-state
-leaf is added. The rule policy adds one observer-local int32 `attack_phase`
-leaf: 88 bytes for 22 players.
+leaf is added. The rule policy holds observer-local int32 `attack_phase` and
+`carrier_age` leaves, each 88 bytes for 22 players.
 
-The episode age continues across a loose ball only when public last-contact
-facts prove a live, kick-applied same-team `PASS` release. A known deflection,
-non-pass contact, restart, or dead ball ends that inference. If the possession
-fact is hidden by partial observation, the long-plan path fails closed and the
-ordinary frame policy remains authoritative; retained observer memory is not
-used to invent a currently observable attack pattern.
+The team episode age continues across a loose ball only when public
+last-contact facts prove a live, kick-applied same-team `PASS` release or a
+visible `CONTROL/TRAP` whose actor is still the remembered carrier. Other
+known contacts, restarts, and dead balls end that inference. The separate
+`carrier_age` advances across controlled frames and that same visible
+`CONTROL/TRAP` lineage, resets on a visible handoff or loss, and freezes rather
+than inventing elapsed control while possession is hidden. This prevents
+repeated dribble recontacts from resetting decision cadence and the solo-carry
+soft limit. If possession is hidden by partial observation, the long-plan path
+still fails closed and the ordinary frame policy remains authoritative;
+retained observer memory is not used to invent a currently observable attack
+pattern.
 
 The program advances only after an observed different same-team possessor:
 setup 0, execution 1, then inactive/completed -1. A requested pass that never

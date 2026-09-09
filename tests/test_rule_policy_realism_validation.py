@@ -32,6 +32,7 @@ from footballworld.policies.rule_based.state import (
     ROLE_GOALKEEPER,
     ROLE_WIDE_FORWARD,
     RulePolicyState,
+    _next_carrier_age,
 )
 from footballworld.policies.rule_based.tactical_plan import gather_tactical_profile
 
@@ -216,6 +217,53 @@ def test_receiver_does_not_inherit_team_episode_carry_urgency(monkeypatch):
 
     for left, right in zip(new_episode, old_team_episode, strict=True):
         np.testing.assert_array_equal(np.asarray(left), np.asarray(right))
+
+
+def test_carrier_age_bridges_self_control_lineage_and_is_fail_closed():
+    """Self recontacts continue age; handoffs, losses and hidden rows are safe."""
+
+    args = (
+        jnp.asarray((13, 13, 13, 13, 13), dtype=jnp.int32),
+        jnp.asarray((5, 5, 5, 5, 5), dtype=jnp.int32),
+        jnp.asarray((5, 7, 0, 0, 0), dtype=jnp.int32),
+        jnp.asarray((1, 1, 0, 0, 0), dtype=jnp.int32),
+        jnp.asarray((True, True, False, False, False), dtype=jnp.bool_),
+        jnp.asarray((True, True, False, False, False), dtype=jnp.bool_),
+        jnp.asarray((True, True, True, True, False), dtype=jnp.bool_),
+        jnp.asarray((False, False, True, False, False), dtype=jnp.bool_),
+        jnp.ones((5,), dtype=jnp.int32),
+    )
+    expected = np.asarray((14, 0, 14, INACTIVE_AGE, 13), dtype=np.int32)
+
+    eager = _next_carrier_age(*args)
+    compiled = jax.jit(_next_carrier_age)(*args)
+
+    np.testing.assert_array_equal(np.asarray(eager), expected)
+    np.testing.assert_array_equal(np.asarray(compiled), expected)
+
+
+def test_linked_receiver_must_release_at_personal_soft_limit(monkeypatch):
+    """A prior teammate cannot exempt the current carrier from safe release."""
+
+    import footballworld.policies.rule_based.possession as possession_module
+
+    _fixed_ranking_metrics(monkeypatch)
+    monkeypatch.setattr(
+        possession_module, "plan_shot", _fixed_shot(value=0.01, quality=0.01)
+    )
+    config = RulePolicyConfig()
+    result = decide_possession(
+        _carrier_context(teammate_available=True),
+        jnp.zeros((4,), dtype=jnp.bool_),
+        jnp.zeros((4,), dtype=jnp.bool_),
+        config,
+        possession_seconds=jnp.float32(config.solo_carry_soft_limit_s),
+        possession_episode_seconds=jnp.float32(20.0),
+        previous_actor=jnp.asarray((False, True, False, False), dtype=jnp.bool_),
+        **_possession_kwargs(teammate_available=True),
+    )
+
+    assert int(result.kind) == POSSESSION_PASS
 
 
 @pytest.mark.parametrize(
@@ -482,6 +530,7 @@ def _shape_fixture() -> tuple[RulePolicyContext, RulePolicyState]:
         restart_age=inactive,
         possession_team=jnp.full((player_count,), NO_TEAM, dtype=jnp.int32),
         possession_age=inactive,
+        carrier_age=inactive,
         attack_phase=inactive,
         current_possessor=no_player,
         previous_possessor=no_player,

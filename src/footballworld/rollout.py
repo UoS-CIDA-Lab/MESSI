@@ -315,6 +315,7 @@ def refresh_policy_state(
         "restart_age",
         "possession_team",
         "possession_age",
+        "carrier_age",
         "attack_phase",
         "current_possessor",
         "previous_possessor",
@@ -347,6 +348,7 @@ def refresh_policy_state(
         possession_age=jnp.where(
             changed, fresh.possession_age, policy_state.possession_age
         ),
+        carrier_age=jnp.where(changed, fresh.carrier_age, policy_state.carrier_age),
         attack_phase=jnp.where(changed, fresh.attack_phase, policy_state.attack_phase),
         current_possessor=jnp.where(
             changed, fresh.current_possessor, policy_state.current_possessor
