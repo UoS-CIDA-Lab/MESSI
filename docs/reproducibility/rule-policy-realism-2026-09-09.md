@@ -447,3 +447,40 @@ clean이었다. MP4 SHA-256은
 같은 byte를 `docs/assets/rendering/latest-kickoff-10s.mp4`에 배치했고 README
 GIF는 그 MP4에서 960x540, 10 fps, 100 frame으로만 파생했다. GIF SHA-256은
 `17ca713ddfc4f86b98d09a2999c74e36b94c5ee9bb4ab615a2abebf0335e4d77`다.
+
+## 지정 수신자의 동적 패스 궤적 선취
+
+seed 3의 이전 clean replay에서 3번(slot 2, id 1002)이 11번(slot 10,
+id 1010)을 지정해 패스했지만, 11번은 release-time 종착점
+근처에서 기다렸고 18번(slot 17, id 2008)이 공을 먼저 차단했다. 원인은
+수신자 identity뿐 아니라 최초 예상 종착 좌표와 ETA까지 비행 중 보존한
+것이다. 상태 ETA는 감소했지만 예측 비행시간 전체가 지나기 전에는 더 이른
+접촉점을 사용하지 못했다.
+
+SoccerWorld가 live pass에서 공의 현재 궤적을 매 프레임 다시 계산해
+`receive_runner`를 실제 접촉점으로 보내는 원칙은 타당하므로 상속했다. 다만
+FootballWorld는 제출된 PASS의 명시적 intended receiver receipt가 있으므로,
+매 프레임 가장 가까운 팀원으로 수신자 identity까지 바꾸는 동작은 거부했다.
+공개 `PASS/RELEASE/kick_applied` provenance가 유지되는 동안 지정 선수는
+고정하고, 그 선수가 현재 공 궤적에서 처음 도달할 수 있는 위치와 ETA만
+매 프레임 재계산한다. 기존 10-sample, 2.5초 고정-shape forecast를 그대로
+재사용하며 새 계수, 상태, loop, 선수 쌍 tensor는 추가하지 않았다.
+
+같은 seed의 수정 후 진단에서는 경기 인과가 바뀌어 해당 패스가 4.4초가
+아니라 3.3초에 발생했다. 3번의 실제 `PASS/RELEASE` 뒤 11번은 공에서
+33.046 m 떨어진 위치에서 전진해 4.4초 속도 8.045 m/s, 현재 공 방향
+cosine 0.995를 기록했고 5.0초 최초 후속 접촉에서 `CONTROL/TRAP`했다.
+release 이후 이동은 9.293 m였다. 같은 시점 18번은 공에서 8.337 m,
+11번에서 7.373 m 떨어져 접촉하지 못했다. 비행 중 90도 이상 방향 반전은
+없었고, 4.4초 이후 양 팀 최소 동료 거리는 각각 6.512 m와 6.199 m로 새
+군집도 없었다.
+
+수신자 identity 유지와 궤적 선취를 함께 고정한 focused policy 테스트 4개,
+평면 intent-ring과 기존 renderer/font 테스트 4개, 전체 86개 테스트가 모두
+통과했다. 직전 commit과 같은 CPU batch-1 policy step을 31회 warm 조건으로
+비교했을 때 StableHLO text는 1,316,027자에서 1,314,086자로, cost-analysis
+FLOP은 1,073,310에서 1,072,848로, compiler temporary는 120,608 byte에서
+120,096 byte로 줄었다. one-shot compile은 5.590초와 5.277초, warm median은
+4.705 ms와 2.748 ms였지만 순차 단일-host 측정이므로 속도 개선률은 인과
+주장하지 않는다. 도착점 보존 연산 제거가 graph나 memory를 늘리지 않았다는
+배포 guard로만 사용한다.
