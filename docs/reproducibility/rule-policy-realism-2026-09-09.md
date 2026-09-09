@@ -484,3 +484,15 @@ FLOP은 1,073,310에서 1,072,848로, compiler temporary는 120,608 byte에서
 4.705 ms와 2.748 ms였지만 순차 단일-host 측정이므로 속도 개선률은 인과
 주장하지 않는다. 도착점 보존 연산 제거가 graph나 memory를 늘리지 않았다는
 배포 guard로만 사용한다.
+
+
+최종 clean-source replay는 commit
+`54b4d91571216612236c5f07be2087a88b32cf70`에서
+`output/pass-receiver-ring-fix-seed3/match.mp4`로 생성했다. 100 control
+frame, 200 video frame, 1920x1080, 20 fps, 10초이며 전체 decode 검증과
+capture 전후 source/git clean 검증을 통과했다. MP4 SHA-256은
+`e54ea746d813e037863d5bcd95fc871de1f527f7bbc3a368cdfe8cb92461fe6b`,
+event는 `0c697944598fb7d362c9178437bbaf08685a4f57d5b9b13c3a3b68c5ad8b2666`,
+tracking은 `92dd85c06061c26c9df2fb40740172579d41aa070f542e43a35726f363c24261`다.
+README MP4는 같은 byte이며 960x540, 10 fps GIF SHA-256은
+`df218478767101b5ceb357a9489ca5f1ef2a90c08b7009255205e6ebf7062dec`다.
