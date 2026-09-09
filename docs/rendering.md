@@ -269,7 +269,10 @@ the resolved radii are recorded in render-settings `/3`.
 
 Requested intent is shown independently from realized contact. Each ring is a
 world-space circle projected onto the turf, so it foreshortens with the fixed
-camera. Its radius comes from the configured horizontal reach plus the physical
+camera. Every vertex remains on the turf plane, and the shared ring collections
+are painted before the elevated player-marker collection so a player sphere
+occludes the ring instead of the ring being composited over the player. Its
+radius comes from the configured horizontal reach plus the physical
 ball radius: 1.21 m for ordinary `CONTROL`, `PASS`, `SHOT`, and `CLEAR`; 1.51 m
 for `CHALLENGE`; and 2.11 m for goalkeeper `CONTROL` under the defaults. This is
 a maximum horizontal interference envelope, not a promise that contact will
@@ -294,9 +297,13 @@ Intent rings read only `ActionTrace.requested_intent` for an executed action,
 do not claim that contact occurred, and are not extended into later frames.
 
 The host-only design retains SoccerWorld's sound use of persistent, turf-
-projected artists. FootballWorld deliberately rejects a single fixed display
-radius because its environment exposes distinct carry, challenge, goalkeeper,
-and ball radii that can be configured independently.
+projected artists and its back-to-front painter order in which ground rings are
+drawn before player bodies. FootballWorld deliberately rejects SoccerWorld's
+impulse-sized transient ring: requested intent and realized contact are separate
+facts here, so the persistent per-frame intent envelope keeps its configured
+reach radius and action palette. It also rejects a single fixed display radius
+because its environment exposes distinct carry, challenge, goalkeeper, and ball
+radii that can be configured independently.
 
 There is no historical event feed or scrolling event window. One transient
 adjudication banner may show for 2.5 seconds when an exact

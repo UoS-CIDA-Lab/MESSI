@@ -107,6 +107,10 @@ _STAMINA_LONG_COLOR = "#31e36c"
 _STAMINA_SHORT_COLOR = "#39d9ff"
 _MIN_PARALLEL_RENDER_FRAMES = 64
 _ASYNC_FRAME_BUFFER_COUNT = 2
+_INTENT_RING_TURF_HEIGHT_M = np.float32(0.0)
+_INTENT_RING_UNDERLAY_ZORDER = 6.0
+_INTENT_RING_ZORDER = 6.2
+_PLAYER_MARKER_ZORDER = 7.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +172,47 @@ def _intent_ring_radii(
         geometry.goalkeeper_control_ring_radius_m,
         radius,
     ).astype(np.float32)
+
+
+def _intent_ring_world_vertices(
+    player_position: np.ndarray,
+    ring_radius: np.ndarray,
+    ring_unit: np.ndarray,
+) -> np.ndarray:
+    """Return flat turf-plane circles for every player's intent envelope."""
+
+    ring_xy = (
+        player_position[:, None, :] + ring_radius[:, None, None] * ring_unit[None, :, :]
+    )
+    return np.concatenate(
+        (
+            ring_xy,
+            np.full(
+                (*ring_xy.shape[:2], 1),
+                _INTENT_RING_TURF_HEIGHT_M,
+                dtype=np.float32,
+            ),
+        ),
+        axis=2,
+    )
+
+
+def _player_intent_painter_order(
+    field_of_view_fan: Any,
+    player_shadow: Any,
+    intent_ring_underlay: Any,
+    intent_rings: Any,
+    players: Any,
+) -> tuple[Any, ...]:
+    """Return back-to-front field cues so player spheres occlude intent rings."""
+
+    return (
+        field_of_view_fan,
+        player_shadow,
+        intent_ring_underlay,
+        intent_rings,
+        players,
+    )
 
 
 _RENDER_SPAWN_ENV_LOCK = threading.Lock()
@@ -1631,7 +1676,7 @@ class ReplayRenderer:
             c=colors,
             edgecolors="#101010",
             linewidths=1.0,
-            zorder=7,
+            zorder=_PLAYER_MARKER_ZORDER,
         )
         # Intent rings live in turf coordinates rather than screen-marker
         # coordinates. The fixed camera therefore foreshortens them with the
@@ -1643,7 +1688,7 @@ class ReplayRenderer:
             linewidths=6.4,
             alpha=0.0,
             capstyle="round",
-            zorder=10.5,
+            zorder=_INTENT_RING_UNDERLAY_ZORDER,
         )
         intent_rings = LineCollection(
             empty_rings,
@@ -1651,7 +1696,7 @@ class ReplayRenderer:
             linewidths=3.8,
             alpha=0.0,
             capstyle="round",
-            zorder=11,
+            zorder=_INTENT_RING_ZORDER,
         )
         ax.add_collection(intent_ring_underlay)
         ax.add_collection(intent_rings)
@@ -1767,11 +1812,13 @@ class ReplayRenderer:
         )
 
         dynamic_main = [
-            field_of_view_fan,
-            player_shadow,
-            players,
-            intent_ring_underlay,
-            intent_rings,
+            *_player_intent_painter_order(
+                field_of_view_fan,
+                player_shadow,
+                intent_ring_underlay,
+                intent_rings,
+                players,
+            ),
             aerial_effect,
             stamina_long_rail,
             stamina_short_rail,
@@ -1893,16 +1940,10 @@ class ReplayRenderer:
                         frame.is_goalkeeper,
                         self.overlay,
                     )
-                    ring_xy = (
-                        pos[:, None, :]
-                        + ring_radius[:, None, None] * ring_unit[None, :, :]
-                    )
-                    ring_world = np.concatenate(
-                        (
-                            ring_xy,
-                            np.full((count, angles.size, 1), 0.030, dtype=np.float32),
-                        ),
-                        axis=2,
+                    ring_world = _intent_ring_world_vertices(
+                        pos,
+                        ring_radius,
+                        ring_unit,
                     )
                     ring_segments = self.camera.project(
                         ring_world.reshape(-1, 3)
