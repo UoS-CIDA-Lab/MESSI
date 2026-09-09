@@ -2924,28 +2924,11 @@ def make_rule_based_policy(
             safe_planned_receiver,
             predicted_chaser_index,
         )
-        arrival_difference = jnp.linalg.norm(
-            _policy_state.planned_arrival - predicted_target, axis=-1
-        )
-        arrival_tolerance = jnp.float32(
-            env.reach.carry_radius_m + ball_radius
-        ) + ground_motion_speed / jnp.float32(control_fps)
-        retain_planned_arrival = (
-            planned_receiver_valid
-            & (_policy_state.planned_receiver == predicted_chaser_index)
-            & (
-                (_policy_state.planned_eta_ticks > 0)
-                | (arrival_difference <= arrival_tolerance)
-            )
-        )
-        # Retain a still-physical arrival/ETA instead of moving the receiver's
-        # target every control frame. A forecast disagreement larger than one
-        # contact radius plus one observed ball step refreshes the plan.
-        predicted_target = jnp.where(
-            retain_planned_arrival[:, None],
-            _policy_state.planned_arrival,
-            predicted_target,
-        )
+        # Keep the declared receiver identity, but recompute where that player can
+        # first meet the observed ball on every live-pass frame.  Freezing the
+        # release-time endpoint made the receiver wait there while an opponent
+        # attacked the passing lane.  The trajectory forecast above is causal and
+        # fixed-shape; only the environment decides the eventual contact.
         loose_chaser_index = jnp.where(
             moving_ground_loose,
             predicted_chaser_index,
@@ -2962,11 +2945,7 @@ def make_rule_based_policy(
             jnp.ceil(predicted_eta_s * jnp.float32(control_fps)).astype(jnp.int32),
             jnp.int32(1),
         )
-        planned_eta_ticks = jnp.where(
-            retain_planned_arrival,
-            _policy_state.planned_eta_ticks,
-            fresh_eta_ticks,
-        )
+        planned_eta_ticks = fresh_eta_ticks
         # The forecast target is the meeting point, not a moving waypoint.
         # Adding the ball's future velocity here made a receiver in front of
         # an incoming pass reverse before reaching that point: the incoming

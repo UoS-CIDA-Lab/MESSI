@@ -227,6 +227,21 @@ def test_submitted_pass_seeds_team_receiver_plan_and_retains_it_in_flight(
         np.full(np.count_nonzero(flight_teammates), receiver_id, dtype=np.int32),
     )
 
+    # Retain the declared receiver, not the release-time endpoint.  On a live
+    # ground pass the receiver must attack the causal trajectory and meet the
+    # ball earlier instead of waiting for an opponent to step into the lane.
+    released_state = released.rollout.state
+    receiver_position = np.asarray(released_state.players.position[receiver])
+    ball_delta = np.asarray(released_state.ball.position[:2]) - receiver_position
+    release_target = np.asarray(submitted.state.planned_arrival[receiver])
+    live_target = np.asarray(continued.state.planned_arrival[receiver])
+    decoded = continued.action.decode()
+    receiver_move = np.asarray(decoded.move.direction[receiver])
+    assert np.linalg.norm(live_target - release_target) > 1.0
+    assert float(np.dot(live_target - receiver_position, ball_delta)) > 0.0
+    assert float(np.dot(receiver_move, ball_delta)) > 0.0
+    assert float(np.asarray(decoded.move.power[receiver])) > 0.0
+
 
 def test_carrier_control_power_uses_the_normalized_control_scale(monkeypatch):
     """A dribble CONTROL must not be rescaled through the kick-speed limit."""
