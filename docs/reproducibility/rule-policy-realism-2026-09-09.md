@@ -214,6 +214,15 @@ sidecar로 대조했다.
 이 한 장면은 회귀 증거이며 전체 경기 분포나 측정 축구 상수의 근거로
 해석하지 않는다.
 
+README publication capture는 clean source `14a373bc083f434b6f72d7cfdaef9359dea0c89f`
+에서 같은 seed/전술로 다시 실행했다. 환경이 58,603 control step에서
+`regulation_complete`로 종료했고 event budget exhausted는 0, 시작·종료
+source revision과 fixture hash는 동일했다. publication guard는 `valid`다.
+검증된 원본은 `output/readme-kickoff-current-seed3/match.mp4`이며,
+README MP4 SHA-256은
+`91e0e21ada9b2c096413b9e1bb0f9f9e7b9ef09c135296358fa963b7eedf5e7e`다.
+GIF는 이 MP4에서 960×540/10 fps/100 frame으로 파생했다.
+
 ## 성능·컴파일 주장 경계
 
 구조적으로 추가된 hot-path 작업은 carrier row의 scalar utility 산술과
