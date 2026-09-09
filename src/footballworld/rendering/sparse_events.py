@@ -8,6 +8,7 @@ import numpy as np
 
 from footballworld.core.contact import (
     INTENT_MOVE,
+    INTENT_PASS,
     INTENT_SOURCE_POLICY,
     MECHANISM_NONE,
     OUTCOME_NONE,
@@ -15,7 +16,7 @@ from footballworld.core.contact import (
 from footballworld.rendering.transfer import to_jsonable
 
 SPARSE_EVENT_ENCODING = "footballworld.occurred-events/2"
-SPARSE_ACTION_ENCODING = "footballworld.contact-actions/2"
+SPARSE_ACTION_ENCODING = "footballworld.contact-actions/3"
 
 _GROUP_ORDER = {
     "deliberate_contact": 0,
@@ -146,6 +147,7 @@ def sparse_action_trace(
     action_trace: Any,
     submitted_action: Any = None,
     frame_events: Any = None,
+    intended_receiver_ids: Any = None,
     *,
     include_move: bool = False,
 ) -> dict[str, Any] | None:
@@ -196,6 +198,12 @@ def sparse_action_trace(
             raise ValueError("submitted action intent disagrees with action trace")
         controls = (move, force_to_ball, launch, spin, gaze_center)
 
+    receivers = None
+    if intended_receiver_ids is not None:
+        receivers = np.asarray(intended_receiver_ids, dtype=np.int32)
+        if receivers.shape != requested.shape:
+            raise ValueError("intended receiver IDs must share the player axis")
+
     rows = []
     for player in np.flatnonzero(retain):
         row = {
@@ -203,6 +211,12 @@ def sparse_action_trace(
             "intent": int(requested[player]),
             "source": int(source[player]),
         }
+        if requested[player] == INTENT_PASS:
+            row["intended_receiver_player_id"] = (
+                int(receivers[player])
+                if receivers is not None and receivers[player] >= 0
+                else None
+            )
         if controls is not None:
             move, force_to_ball, launch, spin, gaze_center = controls
             row.update(
@@ -292,20 +306,42 @@ def restore_sparse_frame_events(record: dict[str, Any], template: Any) -> Any:
     }
     woodwork_occurred = np.array(template.woodwork_occurred, copy=True)
     woodwork_kind = np.array(template.woodwork_kind, copy=True)
+    if woodwork_occurred.shape != woodwork_kind.shape or woodwork_occurred.ndim != 2:
+        raise ValueError("woodwork event arrays must share [substep, slot]")
 
+    seen: set[tuple[str, tuple[int, ...]]] = set()
     for row in record["events"]:
+        if not isinstance(row, dict):
+            raise TypeError("sparse event rows must be objects")
         name = row["type"]
-        index = (int(row["substep"]),)
-        if "slot" in row:
-            index += (int(row["slot"]),)
+        if name == "woodwork":
+            shape = woodwork_occurred.shape
+        elif name in mutable:
+            original = getattr(template, groups[name])
+            shape = _mask_for(name, original).shape
+        else:
+            raise ValueError(f"unknown sparse event type: {name!r}")
+        substep = row.get("substep")
+        if type(substep) is not int or not 0 <= substep < shape[0]:
+            raise ValueError("sparse event substep is outside the template")
+        index = (substep,)
+        if len(shape) == 2:
+            slot = row.get("slot")
+            if type(slot) is not int or not 0 <= slot < shape[1]:
+                raise ValueError("sparse event slot is outside the template")
+            index += (slot,)
+        elif "slot" in row:
+            raise ValueError("one-axis sparse events must not specify a slot")
+        coordinate = (name, index)
+        if coordinate in seen:
+            raise ValueError("sparse event coordinate occurs more than once")
+        seen.add(coordinate)
         if name == "woodwork":
             if set(row.get("fields", {})) != {"occurred", "kind"}:
                 raise ValueError("woodwork sparse fields do not match encoding")
             woodwork_occurred[index] = row["fields"]["occurred"]
             woodwork_kind[index] = row["fields"]["kind"]
             continue
-        if name not in mutable:
-            raise ValueError(f"unknown sparse event type: {name!r}")
         fields = row.get("fields", {})
         if set(fields) != set(mutable[name]):
             raise ValueError(f"{name} sparse fields do not match encoding")

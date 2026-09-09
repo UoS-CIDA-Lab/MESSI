@@ -319,6 +319,7 @@ def _challenge_outcome(
     key: jax.Array,
     forced_outcome: jax.Array,
     foul_probability: jax.Array,
+    success_probability: jax.Array,
     card_probability: jax.Array,
     *,
     config: Contest,
@@ -332,7 +333,7 @@ def _challenge_outcome(
         jax.random.uniform(foul_key, dtype=jnp.asarray(foul_probability).dtype)
         < foul_probability
     )
-    success = jax.random.uniform(success_key) < config.tackle_success_probability
+    success = jax.random.uniform(success_key) < success_probability
     deflection = jax.random.uniform(deflect_key) < config.tackle_deflection_probability
     sampled = jnp.where(
         foul,
@@ -367,6 +368,88 @@ def _challenge_outcome(
         DISCIPLINE_NONE,
     ).astype(jnp.int32)
     return outcome, discipline, (~requested) | compatible
+
+
+def challenge_success_probability(
+    closing_fraction: jax.Array,
+    behind_fraction: jax.Array,
+    lunge_fraction: jax.Array,
+    ball_control_advantage: jax.Array,
+    *,
+    config: Contest = Contest(),
+) -> jax.Array:
+    """Return tackle success from bounded, observable duel context."""
+
+    dtype = jnp.result_type(
+        closing_fraction,
+        behind_fraction,
+        lunge_fraction,
+        ball_control_advantage,
+        jnp.float32,
+    )
+    closing = jnp.clip(jnp.asarray(closing_fraction, dtype=dtype), 0.0, 1.0)
+    behind = jnp.clip(jnp.asarray(behind_fraction, dtype=dtype), 0.0, 1.0)
+    lunge = jnp.clip(jnp.asarray(lunge_fraction, dtype=dtype), 0.0, 1.0)
+    control = jnp.clip(
+        0.5 + 0.5 * jnp.asarray(ball_control_advantage, dtype=dtype),
+        0.0,
+        1.0,
+    )
+    favourable = ((1.0 - closing) + (1.0 - behind) + lunge + control) / 4.0
+    raw_reference = jnp.asarray(config.tackle_success_probability, dtype=dtype)
+    reference = jnp.clip(raw_reference, 1.0e-6, 1.0 - 1.0e-6)
+    reference_logit = jnp.log(reference) - jnp.log1p(-reference)
+    modifier = jnp.asarray(config.tackle_success_context_logit_limit, dtype=dtype) * (
+        2.0 * favourable - 1.0
+    )
+    contextual = jax.nn.sigmoid(reference_logit + modifier)
+    return jnp.where(
+        raw_reference <= 0.0,
+        jnp.asarray(0.0, dtype=dtype),
+        jnp.where(raw_reference >= 1.0, jnp.asarray(1.0, dtype=dtype), contextual),
+    ).astype(jnp.float32)
+
+
+def challenge_foul_probability(
+    closing_fraction: jax.Array,
+    behind_fraction: jax.Array,
+    lunge_fraction: jax.Array,
+    *,
+    config: Contest = Contest(),
+    rare_case_coverage: bool = True,
+) -> jax.Array:
+    """Return contextual foul risk from bounded observable duel geometry."""
+
+    dtype = jnp.result_type(
+        closing_fraction, behind_fraction, lunge_fraction, jnp.float32
+    )
+    context = (
+        jnp.clip(jnp.asarray(closing_fraction, dtype=dtype), 0.0, 1.0)
+        + jnp.clip(jnp.asarray(behind_fraction, dtype=dtype), 0.0, 1.0)
+        + jnp.clip(jnp.asarray(lunge_fraction, dtype=dtype), 0.0, 1.0)
+    ) / 3.0
+    raw_reference = jnp.asarray(config.tackle_foul_probability, dtype=dtype)
+    reference = jnp.clip(raw_reference, 1.0e-6, 1.0 - 1.0e-6)
+    reference_logit = jnp.log(reference) - jnp.log1p(-reference)
+    modifier = jnp.asarray(config.tackle_foul_context_logit_limit, dtype=dtype) * (
+        2.0 * context - 1.0
+    )
+    contextual = jax.nn.sigmoid(reference_logit + modifier)
+    baseline = jnp.where(
+        raw_reference <= 0.0,
+        jnp.asarray(0.0, dtype=dtype),
+        jnp.where(raw_reference >= 1.0, jnp.asarray(1.0, dtype=dtype), contextual),
+    )
+    if rare_case_coverage:
+        baseline = jnp.clip(
+            baseline
+            * jnp.asarray(
+                config.tackle_foul_rare_case_coverage_multiplier, dtype=dtype
+            ),
+            0.0,
+            1.0,
+        )
+    return baseline.astype(jnp.float32)
 
 
 def _challenge_foul_probabilities(
@@ -415,33 +498,21 @@ def _challenge_foul_probabilities(
     )
     behind_fraction = jnp.clip(jnp.dot(approach_direction, carrier_body), 0.0, 1.0)
     lunge_fraction = jnp.clip(jnp.asarray(lunge_fraction, dtype=dtype), 0.0, 1.0)
-    context = (closing_fraction + behind_fraction + lunge_fraction) / 3.0
-    raw_reference = jnp.asarray(config.tackle_foul_probability, dtype=dtype)
-    reference = jnp.clip(
-        raw_reference,
-        jnp.asarray(1.0e-6, dtype=dtype),
-        jnp.asarray(1.0 - 1.0e-6, dtype=dtype),
+    baseline = challenge_foul_probability(
+        closing_fraction,
+        behind_fraction,
+        lunge_fraction,
+        config=config,
+        rare_case_coverage=False,
     )
-    reference_logit = jnp.log(reference) - jnp.log1p(-reference)
-    modifier_limit = jnp.asarray(config.tackle_foul_context_logit_limit, dtype=dtype)
-    modifier = modifier_limit * (2.0 * context - 1.0)
-    contextual = jax.nn.sigmoid(reference_logit + modifier)
-    baseline = jnp.where(
-        raw_reference <= 0.0,
-        jnp.asarray(0.0, dtype=dtype),
-        jnp.where(
-            raw_reference >= 1.0,
-            jnp.asarray(1.0, dtype=dtype),
-            contextual,
-        ),
+    covered = challenge_foul_probability(
+        closing_fraction,
+        behind_fraction,
+        lunge_fraction,
+        config=config,
+        rare_case_coverage=True,
     )
-    covered = jnp.clip(
-        baseline
-        * jnp.asarray(config.tackle_foul_rare_case_coverage_multiplier, dtype=dtype),
-        0.0,
-        1.0,
-    )
-    return baseline.astype(jnp.float32), covered.astype(jnp.float32)
+    return baseline, covered
 
 
 def challenge_card_probability(
@@ -618,6 +689,39 @@ def resolve_contest(
             challenge_lunge_fraction[safe_actor],
             config=config,
         )
+        actor_to_carrier = (
+            state.players.position[safe_carrier] - state.players.position[safe_actor]
+        )
+        separation = jnp.linalg.norm(actor_to_carrier)
+        approach_direction = actor_to_carrier / jnp.maximum(
+            separation, jnp.asarray(DIV_EPS, actor_to_carrier.dtype)
+        )
+        relative_velocity = (
+            state.players.velocity[safe_actor] - state.players.velocity[safe_carrier]
+        )
+        closing_fraction = jnp.clip(
+            jnp.maximum(jnp.dot(relative_velocity, approach_direction), 0.0)
+            / jnp.maximum(
+                state.players.max_speed[safe_actor]
+                + state.players.max_speed[safe_carrier],
+                jnp.asarray(DIV_EPS, actor_to_carrier.dtype),
+            ),
+            0.0,
+            1.0,
+        )
+        carrier_body = state.players.body_forward[safe_carrier]
+        carrier_body = carrier_body / jnp.maximum(
+            jnp.linalg.norm(carrier_body), jnp.asarray(DIV_EPS, carrier_body.dtype)
+        )
+        behind_fraction = jnp.clip(jnp.dot(approach_direction, carrier_body), 0.0, 1.0)
+        success_probability = challenge_success_probability(
+            closing_fraction,
+            behind_fraction,
+            challenge_lunge_fraction[safe_actor],
+            state.players.ball_control[safe_actor]
+            - state.players.ball_control[safe_carrier],
+            config=config,
+        )
         (
             challenge_outcome,
             challenge_discipline,
@@ -626,6 +730,7 @@ def resolve_contest(
             outcome_key,
             override.outcome,
             challenge_foul_probability,
+            success_probability,
             card_probability,
             config=config,
         )

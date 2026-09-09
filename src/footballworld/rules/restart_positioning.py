@@ -20,6 +20,7 @@ from footballworld.core.constants import (
     RK_GK_HOLD,
     RK_GOALKICK,
     RK_KICKOFF,
+    RK_NONE,
     RK_OFFSIDE,
     RK_PENALTY,
     RK_THROWIN,
@@ -1304,105 +1305,139 @@ def prepare_restart_positioning(
         ),
         axis=-1,
     )
-    kickoff_position = _kickoff(
-        prepared,
-        prepared_facing,
-        state,
-        actor,
-        restart_team,
-        stadium,
-        body,
-    )
-    side_y = jnp.where(state.ball.position[1] >= 0.0, 1.0, -1.0)
-    throw_point = jnp.asarray(
-        [state.ball.position[0], side_y * stadium.half_width],
-        dtype=position.dtype,
-    )
-    throw_position = _radial(
-        prepared,
-        prepared_facing,
-        opponent,
-        throw_point,
-        jnp.full(count, law.throwin_clearance_m, dtype=position.dtype),
-        fallback,
-        body,
-    )
-    goalkick_position = _outside_penalty_area(
-        prepared,
-        prepared_facing,
-        opponent,
-        -restart_direction,
-        stadium,
-        body,
-    )
-    side_x = jnp.where(state.ball.position[0] >= 0.0, 1.0, -1.0)
-    corner_flag = jnp.asarray(
-        [side_x * stadium.half_length, side_y * stadium.half_width],
-        dtype=position.dtype,
-    )
-    corner_fallback = jnp.broadcast_to(
-        _safe_unit(
-            -corner_flag,
-            jnp.asarray([restart_direction, 0.0], dtype=position.dtype),
-        ),
-        position.shape,
-    )
-    corner_position = _radial(
-        prepared,
-        prepared_facing,
-        opponent,
-        corner_flag,
-        jnp.full(
-            count,
-            law.ordinary_clearance_m + stadium.corner_arc_radius,
-            dtype=position.dtype,
-        ),
-        corner_fallback,
-        body,
-    )
-    free_position = _free_kick(
-        state,
-        prepared,
-        prepared_facing,
-        opponent,
-        restart_direction,
-        stadium,
-        body,
-        law,
-    )
-    penalty_position, penalty_facing, penalty_gk = _penalty(
-        state,
-        prepared,
-        prepared_facing,
-        actor,
-        restart_team,
-        restart_direction,
-        stadium,
-        body,
-        law,
-    )
-    selected = jnp.where(
-        kickoff,
-        kickoff_position,
-        jnp.where(
-            throwin,
-            throw_position,
-            jnp.where(
-                goalkick,
-                goalkick_position,
-                jnp.where(
-                    corner,
-                    corner_position,
-                    jnp.where(
-                        free_kick,
-                        free_position,
-                        jnp.where(penalty, penalty_position, prepared),
-                    ),
-                ),
+    empty_penalty_gk = jnp.zeros(count, dtype=jnp.bool_)
+
+    def unchanged_layout(_):
+        return prepared, prepared_facing, empty_penalty_gk
+
+    def kickoff_layout(_):
+        return (
+            _kickoff(
+                prepared,
+                prepared_facing,
+                state,
+                actor,
+                restart_team,
+                stadium,
+                body,
             ),
-        ),
+            prepared_facing,
+            empty_penalty_gk,
+        )
+
+    def throwin_layout(_):
+        side_y = jnp.where(state.ball.position[1] >= 0.0, 1.0, -1.0)
+        throw_point = jnp.asarray(
+            [state.ball.position[0], side_y * stadium.half_width],
+            dtype=position.dtype,
+        )
+        return (
+            _radial(
+                prepared,
+                prepared_facing,
+                opponent,
+                throw_point,
+                jnp.full(count, law.throwin_clearance_m, dtype=position.dtype),
+                fallback,
+                body,
+            ),
+            prepared_facing,
+            empty_penalty_gk,
+        )
+
+    def goalkick_layout(_):
+        return (
+            _outside_penalty_area(
+                prepared,
+                prepared_facing,
+                opponent,
+                -restart_direction,
+                stadium,
+                body,
+            ),
+            prepared_facing,
+            empty_penalty_gk,
+        )
+
+    def corner_layout(_):
+        side_x = jnp.where(state.ball.position[0] >= 0.0, 1.0, -1.0)
+        side_y = jnp.where(state.ball.position[1] >= 0.0, 1.0, -1.0)
+        corner_flag = jnp.asarray(
+            [side_x * stadium.half_length, side_y * stadium.half_width],
+            dtype=position.dtype,
+        )
+        corner_fallback = jnp.broadcast_to(
+            _safe_unit(
+                -corner_flag,
+                jnp.asarray([restart_direction, 0.0], dtype=position.dtype),
+            ),
+            position.shape,
+        )
+        return (
+            _radial(
+                prepared,
+                prepared_facing,
+                opponent,
+                corner_flag,
+                jnp.full(
+                    count,
+                    law.ordinary_clearance_m + stadium.corner_arc_radius,
+                    dtype=position.dtype,
+                ),
+                corner_fallback,
+                body,
+            ),
+            prepared_facing,
+            empty_penalty_gk,
+        )
+
+    def free_kick_layout(_):
+        return (
+            _free_kick(
+                state,
+                prepared,
+                prepared_facing,
+                opponent,
+                restart_direction,
+                stadium,
+                body,
+                law,
+            ),
+            prepared_facing,
+            empty_penalty_gk,
+        )
+
+    def penalty_layout(_):
+        return _penalty(
+            state,
+            prepared,
+            prepared_facing,
+            actor,
+            restart_team,
+            restart_direction,
+            stadium,
+            body,
+            law,
+        )
+
+    layout_kind = jnp.where(
+        supported & (~hold),
+        jnp.where(kind == RK_OFFSIDE, RK_FREEKICK, kind),
+        RK_NONE,
     )
-    selected_facing = jnp.where(penalty, penalty_facing, prepared_facing)
+    selected, selected_facing, penalty_gk = jax.lax.switch(
+        layout_kind,
+        (
+            unchanged_layout,
+            kickoff_layout,
+            throwin_layout,
+            goalkick_layout,
+            corner_layout,
+            free_kick_layout,
+            penalty_layout,
+        ),
+        operand=None,
+    )
     pin_taker = actor & supported & (~hold)
     structural_pinned = enabled & (pin_taker | (penalty & penalty_gk))
     if _resolve_constraints:

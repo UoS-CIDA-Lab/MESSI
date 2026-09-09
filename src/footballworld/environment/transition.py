@@ -799,14 +799,18 @@ def step_control_frame(
             "intent action categories must have shape "
             f"{expected_intent_shape}, got {action.intent.shape}"
         )
-    # Capture repairs before normalizing the authoritative physics action.
-    # This branch is Python-static and absent from the lean step graph.
+    # Preserve the submitted values for event-only repair telemetry. Physics
+    # owns the single authoritative normalization for every transition.
     submitted_action = action
-    input_action_receipt = (
-        trace_action_receipt(submitted_action) if _collect_events else None
-    )
-    action = IntentAction.from_array(action.intent, continuous)
     physics_action = decode_physics_action(state, action)
+    input_action_receipt = (
+        trace_action_receipt(
+            submitted_action,
+            _effective_intent=physics_action.requested_intent,
+        )
+        if _collect_events
+        else None
+    )
     state = state._replace(
         players=step_gaze(
             state.players,
@@ -1062,23 +1066,34 @@ def step_control_frame(
             & (physics.deliberate_actor == pre.restart.taker)
             & (physics.deliberate_contact.restart_kind != RK_NONE)
         )
-        approach_target, _ = restart_taker_release_pose(
-            holding.state,
-            stadium=stadium,
-            ball=ball_geometry,
-            body=body,
-        )
-        approach_taker = jnp.clip(holding.state.restart.taker, 0, player_count - 1)
-        approach_arrived = (
-            jnp.linalg.norm(
-                holding.state.players.position[approach_taker] - approach_target
-            )
-            <= GEOMETRY_EPS
-        )
         continuous_timer_guard = release_visible & entry_continuous_approach
-        approach_countdown_enabled = (~continuous_timer_guard) | (
-            visible_restart_approach & approach_arrived
+
+        def restart_approach_arrived(arrival_state: State):
+            approach_target, _ = restart_taker_release_pose(
+                arrival_state,
+                stadium=stadium,
+                ball=ball_geometry,
+                body=body,
+            )
+            approach_taker = jnp.clip(
+                arrival_state.restart.taker,
+                0,
+                player_count - 1,
+            )
+            return (
+                jnp.linalg.norm(
+                    arrival_state.players.position[approach_taker] - approach_target
+                )
+                <= GEOMETRY_EPS
+            )
+
+        approach_arrived = jax.lax.cond(
+            visible_restart_approach,
+            restart_approach_arrived,
+            lambda _: jnp.bool_(False),
+            holding.state,
         )
+        approach_countdown_enabled = (~continuous_timer_guard) | approach_arrived
         next_state = advance_restart_release_clock(
             holding.state,
             opened=restart_opened,
@@ -1525,6 +1540,7 @@ def step_control_frame(
             control=initial,
             abandoned=jnp.bool_(False),
         )
+
         if not _collect_events:
 
             def match_substep(carry: _MatchControlCarry, inputs):

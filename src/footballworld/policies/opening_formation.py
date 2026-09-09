@@ -37,7 +37,6 @@ from footballworld.environment.management import (
 from footballworld.environment.normalization import NormalizationContext
 
 OPENING_FORMATION_OBSERVATION_SCHEMA_VERSION = 1
-RULE_OPENING_FORMATION_VERSION = 1
 
 # ASCII "FORM".  The immutable match key is folded in this order:
 # match -> decision stream -> team.  Evaluation order, batching, and rollout
@@ -331,7 +330,6 @@ def make_rule_based_opening_formation_policy() -> RuleBasedOpeningFormationPolic
 
 __all__ = [
     "OPENING_FORMATION_OBSERVATION_SCHEMA_VERSION",
-    "RULE_OPENING_FORMATION_VERSION",
     "NormalizedOpeningFormationObservation",
     "OpeningFormationPolicy",
     "RuleBasedOpeningFormationPolicy",

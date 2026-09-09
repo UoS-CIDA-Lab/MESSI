@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import subprocess
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -25,7 +26,6 @@ import jax
 import numpy as np
 
 from footballworld import (
-    RULE_OPENING_MANAGER_VERSION,
     FootballWorld,
     OpeningManagerDecision,
     OpeningManagerObservation,
@@ -37,8 +37,16 @@ from footballworld import (
     initialize_policy_state,
     make_managed_runner,
 )
+from footballworld.analysis import MatchDataset, write_match_report
+from footballworld.policies import (
+    RulePolicyConfig,
+    TacticalPlan,
+    make_rule_based_policy,
+    policy_config_fingerprint,
+)
 from footballworld.rendering import (
     DEFAULT_RENDER_FPS,
+    RenderStyle,
     ReplayWindow,
     render_managed_event_match,
 )
@@ -47,7 +55,16 @@ from footballworld.rendering.integrity import publication_authority
 DEFAULT_CANDIDATE_COUNT = 20
 MIN_CANDIDATE_COUNT = 18
 MAX_CANDIDATE_COUNT = 23
+RANDOM_TACTICAL_PLAN = "random"
+TACTICAL_PLAN_NAMES = tuple(plan.value for plan in TacticalPlan)
+TACTICAL_PLAN_ARGUMENTS = (*TACTICAL_PLAN_NAMES, RANDOM_TACTICAL_PLAN)
+# ASCII "FWPL". This dedicated fold-in domain keeps demo plan sampling from
+# consuming or perturbing the match/reset random stream.
+_TACTICAL_PLAN_RANDOM_STREAM = 0x4657504C
 ROOT = Path(__file__).resolve().parents[1]
+LOCAL_DFL_POLICY_REFERENCE = (
+    ROOT / "calib/policy/artifacts/dfl-report-guideline-v1.json"
+)
 
 FORMATION_NAMES = ("4-3-3", "4-2-3-1", "3-2-5-possession")
 FORMATION_CATALOG = np.asarray(
@@ -163,6 +180,41 @@ def _window(value: str) -> ReplayWindow:
         return ReplayWindow(name, start, end)
     except (TypeError, ValueError) as error:
         raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def _resolve_team_tactical_plans(
+    requested: Sequence[str],
+    match_key: jax.Array,
+) -> tuple[TacticalPlan, TacticalPlan]:
+    """Resolve two explicit or seed-keyed random demo plans on the host."""
+
+    if isinstance(requested, (str, bytes)) or len(requested) != 2:
+        raise ValueError("requested tactical plans must contain exactly two values")
+    selection_key = jax.random.fold_in(match_key, _TACTICAL_PLAN_RANDOM_STREAM)
+    resolved: list[TacticalPlan] = []
+    for team, value in enumerate(requested):
+        if value == RANDOM_TACTICAL_PLAN:
+            team_key = jax.random.fold_in(selection_key, team)
+            index = int(
+                jax.device_get(
+                    jax.random.randint(
+                        team_key,
+                        shape=(),
+                        minval=0,
+                        maxval=len(TACTICAL_PLAN_NAMES),
+                    )
+                )
+            )
+            resolved.append(tuple(TacticalPlan)[index])
+            continue
+        try:
+            resolved.append(TacticalPlan(value))
+        except (TypeError, ValueError) as error:
+            choices = ", ".join(TACTICAL_PLAN_ARGUMENTS)
+            raise ValueError(
+                f"unknown demo tactical plan {value!r}; choose from {choices}"
+            ) from error
+    return resolved[0], resolved[1]
 
 
 def _team_candidates(team: int, count: int) -> tuple[Player, ...]:
@@ -300,6 +352,24 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=29)
     parser.add_argument(
+        "--team-0-plan",
+        choices=TACTICAL_PLAN_ARGUMENTS,
+        default=TacticalPlan.JUEGO_DE_POSICION.value,
+        help=(
+            "Team 0 rule-policy plan; 'random' makes one seed-keyed choice "
+            "for the whole match"
+        ),
+    )
+    parser.add_argument(
+        "--team-1-plan",
+        choices=TACTICAL_PLAN_ARGUMENTS,
+        default=TacticalPlan.JUEGO_DE_POSICION.value,
+        help=(
+            "Team 1 rule-policy plan; 'random' makes one seed-keyed choice "
+            "for the whole match"
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         required=True,
@@ -340,6 +410,13 @@ def _parser() -> argparse.ArgumentParser:
         help=f"physics-backed video rate (default {DEFAULT_RENDER_FPS:g} fps)",
     )
     parser.add_argument(
+        "--video-height",
+        type=int,
+        choices=(540, 720, 1080),
+        default=1080,
+        help="output height; width follows the 16:9 aspect ratio",
+    )
+    parser.add_argument(
         "--event-chunk",
         type=_positive_integer,
         default=256,
@@ -364,6 +441,39 @@ def _parser() -> argparse.ArgumentParser:
             "enabled automatically for an authoritative full match"
         ),
     )
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help=(
+            "capture exact tracking/events and generate reports without "
+            "rendering or verifying MP4 video"
+        ),
+    )
+    parser.add_argument(
+        "--match-report",
+        action="store_true",
+        help=(
+            "generate report/report.html and report/report.json for each "
+            "verified published output"
+        ),
+    )
+    parser.add_argument(
+        "--allow-diagnostic-report",
+        action="store_true",
+        help=(
+            "allow --match-report for dirty, partial, or windowed diagnostic "
+            "outputs and label them non-authoritative"
+        ),
+    )
+    parser.add_argument(
+        "--policy-reference",
+        type=Path,
+        default=None,
+        help=(
+            "validated aggregate guideline for the report; defaults to the "
+            "private local DFL guideline when available"
+        ),
+    )
     return parser
 
 
@@ -375,8 +485,98 @@ def _video_verification_enabled(
     return requested or publication_mode.get("authoritative") is True
 
 
+def _write_report_status(output: Path, payload: Mapping[str, object]) -> Path:
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / "match-report-status.json"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=output,
+        prefix=".match-report-status-",
+        delete=False,
+    ) as stream:
+        temporary = Path(stream.name)
+        json.dump(payload, stream, ensure_ascii=False, indent=2, allow_nan=False)
+        stream.write("\n")
+    try:
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def _generate_match_reports(
+    output_root: Path,
+    rendered_outputs: Sequence[object],
+    *,
+    allow_diagnostic: bool,
+    policy_reference: Path | None = None,
+) -> list[dict[str, object]]:
+    root = output_root.resolve()
+    records: list[dict[str, object]] = []
+    try:
+        for rendered in rendered_outputs:
+            video = Path(rendered.video).resolve()
+            output_name = video.parent.relative_to(root).as_posix()
+            dataset = MatchDataset.open(
+                root,
+                output_name=output_name,
+                allow_diagnostic=allow_diagnostic,
+            )
+            report_dir = video.parent / "report"
+            html_path, json_path = write_match_report(
+                dataset,
+                report_dir,
+                policy_reference=policy_reference,
+            )
+            records.append(
+                {
+                    "output_name": output_name,
+                    "authoritative": dataset.authoritative,
+                    "html": str(html_path.resolve()),
+                    "json": str(json_path.resolve()),
+                    "warnings": list(dataset.warnings),
+                }
+            )
+    except Exception as error:
+        _write_report_status(
+            root,
+            {
+                "schema": "footballworld.match-report-status/1",
+                "status": "failed",
+                "render_published": True,
+                "allow_diagnostic": allow_diagnostic,
+                "completed_reports": records,
+                "error_type": type(error).__name__,
+                "error": str(error),
+            },
+        )
+        raise RuntimeError(
+            "render publication succeeded, but requested match-report generation "
+            f"failed; inspect {root / 'match-report-status.json'}"
+        ) from error
+    _write_report_status(
+        root,
+        {
+            "schema": "footballworld.match-report-status/1",
+            "status": "complete",
+            "render_published": True,
+            "allow_diagnostic": allow_diagnostic,
+            "reports": records,
+        },
+    )
+    return records
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.report_only and args.verify_video:
+        raise ValueError("--report-only cannot be combined with --verify-video")
+    if args.report_only:
+        args.match_report = True
+        args.allow_diagnostic_report = True
+    if args.allow_diagnostic_report and not args.match_report:
+        raise ValueError("--allow-diagnostic-report requires --match-report")
     git_start = _git_snapshot()
     if git_start["dirty"] and not args.allow_dirty:
         raise RuntimeError(
@@ -389,10 +589,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         dirty=bool(git_start["dirty"]),
         maximum_steps=args.maximum_steps,
     )
+    if args.report_only:
+        publication_mode = {
+            **publication_mode,
+            "status": "diagnostic-report-only",
+            "authoritative": False,
+            "source_authority": "diagnostic-report-only",
+        }
+    if (
+        args.match_report
+        and not args.allow_diagnostic_report
+        and publication_mode.get("authoritative") is not True
+    ):
+        raise RuntimeError("strict --match-report requires an authoritative render")
 
     verify_video = _video_verification_enabled(
         requested=args.verify_video,
         publication_mode=publication_mode,
+    )
+    policy_reference = args.policy_reference
+    if policy_reference is None and LOCAL_DFL_POLICY_REFERENCE.is_file():
+        policy_reference = LOCAL_DFL_POLICY_REFERENCE
+    render_style = RenderStyle(
+        width_px=args.video_height * 16 // 9,
+        height_px=args.video_height,
     )
 
     def publication_guard() -> dict[str, object]:
@@ -423,6 +643,28 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     match_key = jax.random.key(args.seed)
     env = FootballWorld()
+    requested_tactical_plans = (args.team_0_plan, args.team_1_plan)
+    resolved_tactical_plans = _resolve_team_tactical_plans(
+        requested_tactical_plans,
+        match_key,
+    )
+    rule_policy_config = RulePolicyConfig(
+        team_tactical_plans=resolved_tactical_plans,
+    )
+    player_policy = make_rule_based_policy(env, config=rule_policy_config)
+    rule_player_policy_receipt = {
+        "class": f"{type(player_policy).__module__}.{type(player_policy).__qualname__}",
+        "requested_team_tactical_plans": list(requested_tactical_plans),
+        "resolved_team_tactical_plans": [
+            plan.value for plan in resolved_tactical_plans
+        ],
+        "random_selection_basis": (
+            "one host-side choice per random team from --seed using the "
+            "dedicated FWPL JAX fold-in domain; fixed for the whole match"
+        ),
+        "config_sha256": policy_config_fingerprint(rule_policy_config),
+        "config_hash_basis": "SHA-256 of the canonical RulePolicyConfig JSON",
+    }
     team_0 = _team_candidates(0, args.candidate_count)
     team_1 = _team_candidates(1, args.candidate_count)
     equal_prior = np.full(
@@ -446,7 +688,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         match_key,
         policy=opening_policy,
     )
-    runner = make_managed_runner(env, chunk_steps=args.event_chunk)
+    runner = make_managed_runner(
+        env,
+        player_policy=player_policy,
+        chunk_steps=args.event_chunk,
+    )
     match = created.match
     players_per_team = FORMATION_CATALOG.shape[1]
     selected_layout = np.asarray(
@@ -467,7 +713,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "class": (
             f"{type(opening_policy).__module__}.{type(opening_policy).__qualname__}"
         ),
-        "version": RULE_OPENING_MANAGER_VERSION,
         "config": opening_config,
         "config_sha256": _canonical_json_sha256(opening_config),
         "config_hash_basis": "SHA-256 of sorted compact canonical JSON",
@@ -503,6 +748,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         every=1,
         workers=args.workers,
         chunk_frames=args.render_chunk,
+        style=render_style,
         metadata={
             "long_run_fixture": {
                 "seed": args.seed,
@@ -513,6 +759,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "selected_formation": selected_formation,
                 "opening_manager": opening_manager_receipt,
+                "rule_player_policy": rule_player_policy_receipt,
                 "profile_sampling": (
                     "identity-keyed clipped Gaussian once before reset"
                 ),
@@ -525,9 +772,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
         publication_guard=publication_guard,
         verify_video=verify_video,
+        render_video=not args.report_only,
     )
 
     full_duration_complete = bool(result.full_duration_complete)
+    report_records = (
+        _generate_match_reports(
+            args.output,
+            result.outputs,
+            allow_diagnostic=args.allow_diagnostic_report,
+            policy_reference=policy_reference,
+        )
+        if args.match_report
+        else None
+    )
     if full_duration_complete:
         status = "FULL_DURATION_COMPLETE"
     elif result.done:
@@ -548,14 +806,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         "control_fps": float(env.timebase.control_fps),
         "physics_fps": float(env.timebase.physics_fps),
         "video_fps": float(args.video_fps),
+        "video_resolution": {
+            "width_px": render_style.width_px,
+            "height_px": render_style.height_px,
+        },
         "render_chunk_frames": args.render_chunk,
         "capture_and_render_seconds": result.capture_and_render_seconds,
         "selected_formation": selected_formation,
         "opening_manager": opening_manager_receipt,
+        "rule_player_policy": rule_player_policy_receipt,
         "publication_guard": publication_receipt,
         "video_decode_verified_before_publication": verify_video,
+        "output_mode": "report-only" if args.report_only else "video",
         "outputs": [str(output.video) for output in result.outputs],
     }
+    if report_records is not None:
+        summary["match_reports"] = report_records
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if full_duration_complete or args.maximum_steps is not None else 2
 

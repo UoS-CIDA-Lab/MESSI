@@ -76,7 +76,9 @@ def intent_availability_hint(
         & _observer_slot(observation.players.on_pitch, observer)
         & (~_observer_slot(observation.players.sent_off, observer))
     )
-    observable_candidate = observer_active & contact_may_occur & observation.ball.visible
+    observable_candidate = (
+        observer_active & contact_may_occur & observation.ball.visible
+    )
 
     kind = observation.restart.kind
     open_play = kind == RK_NONE

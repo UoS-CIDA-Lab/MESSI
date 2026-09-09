@@ -30,7 +30,6 @@ from footballworld.policies.manager import (
 )
 from footballworld.policies.opening_formation import RuleBasedOpeningFormationPolicy
 
-RULE_OPENING_MANAGER_VERSION = 2
 _OPENING_PLAYER_STREAM = 0x4C494E45  # ASCII "LINE".
 _OPENING_FORMATION_STREAM = 0x464F524D  # ASCII "FORM".
 
@@ -161,7 +160,9 @@ def _choose_formation(
         )(signatures)
         noise = jax.vmap(jax.random.gumbel)(keys)
         positive = (probability > 0.0) & jnp.isfinite(probability)
-        score = jnp.where(positive, jnp.log(jnp.maximum(probability, 1e-12)) + noise, -jnp.inf)
+        score = jnp.where(
+            positive, jnp.log(jnp.maximum(probability, 1e-12)) + noise, -jnp.inf
+        )
         usable = jnp.any(positive)
         selected.append(jnp.argmax(score).astype(jnp.int32))
         usable_rows.append(usable)
@@ -180,9 +181,7 @@ def _rank_mask(
     equal_but_lower_identity = (score[None, :] == score[:, None]) & (
         player_id[None, :] < player_id[:, None]
     )
-    rank = jnp.sum(
-        valid[None, :] & (better | equal_but_lower_identity), axis=1
-    )
+    rank = jnp.sum(valid[None, :] & (better | equal_but_lower_identity), axis=1)
     target = jnp.minimum(count, jnp.sum(valid)).astype(jnp.int32)
     return valid & (rank < target)
 
@@ -200,7 +199,9 @@ class RuleBasedOpeningManagerPolicy:
     ) -> RuleOpeningManagerState:
         validate_opening_policy_shapes(observations)
         if type(parameters) is not NoPolicyParameters:
-            raise TypeError("rule opening-manager parameters must be NoPolicyParameters")
+            raise TypeError(
+                "rule opening-manager parameters must be NoPolicyParameters"
+            )
         return RuleOpeningManagerState(decided=jnp.zeros(2, dtype=jnp.bool_))
 
     def step(
@@ -213,7 +214,9 @@ class RuleBasedOpeningManagerPolicy:
         candidates, _, slots = validate_opening_policy_shapes(observations)
         _validate_state(state)
         if type(parameters) is not NoPolicyParameters:
-            raise TypeError("rule opening-manager parameters must be NoPolicyParameters")
+            raise TypeError(
+                "rule opening-manager parameters must be NoPolicyParameters"
+            )
 
         layout, layout_usable = _choose_formation(observations, match_key)
         eligible = observations.formation.valid & (~state.decided) & layout_usable
@@ -250,7 +253,9 @@ class RuleBasedOpeningManagerPolicy:
                     & (observations.players.is_goalkeeper[team] == slot_is_goalkeeper)
                 )
                 distance = jnp.sum((preferred - chosen_anchor[slot]) ** 2, axis=-1)
-                role_score = jnp.sum(ability[team] * _ROLE_ABILITY_WEIGHT[role], axis=-1)
+                role_score = jnp.sum(
+                    ability[team] * _ROLE_ABILITY_WEIGHT[role], axis=-1
+                )
                 slot_signature = _layout_signature(
                     chosen_anchor[slot : slot + 1], chosen_role[slot : slot + 1]
                 )
@@ -271,7 +276,9 @@ class RuleBasedOpeningManagerPolicy:
                     - self.config.position_fit_weight * distance
                     + self.config.lineup_noise_scale * noise
                 )
-                chosen = jnp.argmax(jnp.where(compatible, score, -jnp.inf)).astype(jnp.int32)
+                chosen = jnp.argmax(jnp.where(compatible, score, -jnp.inf)).astype(
+                    jnp.int32
+                )
                 has_candidate = jnp.any(compatible)
                 applies = eligible[team] & slot_mask[slot] & has_candidate
                 team_starter = team_starter.at[chosen].set(
@@ -355,12 +362,16 @@ class AuthoredOpeningManagerPolicy:
         visible = observations.players.valid & eligible[:, None]
         registered = parameters.registered & visible
         starter = parameters.starter & registered
-        placement_slot = jnp.where(starter, parameters.placement_slot, jnp.int32(NO_PLAYER))
+        placement_slot = jnp.where(
+            starter, parameters.placement_slot, jnp.int32(NO_PLAYER)
+        )
         formation = self.formation_policy(observations.formation, match_key)
         requested = formation.requested & eligible
         formation = formation._replace(
             requested=requested,
-            layout_index=jnp.where(requested, formation.layout_index, jnp.int32(NO_PLAYER)),
+            layout_index=jnp.where(
+                requested, formation.layout_index, jnp.int32(NO_PLAYER)
+            ),
         )
         decision = OpeningManagerDecision(
             registered=registered,
@@ -394,7 +405,6 @@ def make_authored_opening_manager_policy() -> AuthoredOpeningManagerPolicy:
 
 
 __all__ = [
-    "RULE_OPENING_MANAGER_VERSION",
     "AuthoredOpeningManagerPolicy",
     "AuthoredOpeningSelection",
     "RuleBasedOpeningManagerPolicy",

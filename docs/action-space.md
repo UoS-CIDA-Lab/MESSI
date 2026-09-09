@@ -296,7 +296,7 @@ available through `action_trace_spec` and `action_receipt_spec`; corresponding
 The numeric provenance contract is `footballworld.intent-source/2`:
 `NONE=0`, `POLICY=1`, and `ENVIRONMENT_FORCED=2`. Player observations
 carrying `last_contact.intent_source` use SI observation schema version 10.
-Replay events use `footballworld.events/14` and declare the provenance schema
+Replay events use `footballworld.events/15` and declare the provenance schema
 and ordered names in their header. Tracking rows carrying the same last-contact
 field use `footballworld.tracking/8`.
 

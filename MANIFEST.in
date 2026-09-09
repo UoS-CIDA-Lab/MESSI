@@ -6,9 +6,9 @@ include CITATION.cff
 include SECURITY.md
 include CHANGELOG.md
 recursive-include docs *.md *.json *.csv
-include calib/README.md
-include calib/render_full_match.py
+recursive-include examples *.md *.py
 prune .validation_tests
 prune tests
+prune calib
 prune output
 global-exclude __pycache__ *.py[cod]

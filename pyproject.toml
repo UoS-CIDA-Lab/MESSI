@@ -20,7 +20,7 @@ keywords = [
     "jax",
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -31,8 +31,12 @@ classifiers = [
 ]
 dependencies = [
     "jax>=0.4.38",
+    "filelock>=3.13",
     "numpy>=1.26",
 ]
+
+[project.scripts]
+footballworld-report = "footballworld.analysis.cli:main"
 
 [project.optional-dependencies]
 render = [

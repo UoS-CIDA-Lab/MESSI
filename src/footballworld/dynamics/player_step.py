@@ -17,7 +17,11 @@ from footballworld.core.constants import (
 )
 from footballworld.core.state import PlayerState
 from footballworld.dynamics.movement import step_player_motion
-from footballworld.dynamics.separation import PlayerImpactFacts, separate_players
+from footballworld.dynamics.separation import (
+    PlayerImpactFacts,
+    SeparationStep,
+    separate_players,
+)
 from footballworld.dynamics.stamina import effective_speed_limit, step_stamina
 
 
@@ -34,6 +38,13 @@ class PlayerStep(NamedTuple):
     contact_position: jax.Array
     contact_velocity: jax.Array
     impact: PlayerImpactFacts
+
+
+class _CollisionMicrostepPlan(NamedTuple):
+    """Conservative collision schedule and its broadphase gate."""
+
+    count: jax.Array
+    collision_possible: jax.Array
 
 
 def _empty_player_impact(dtype: jnp.dtype) -> PlayerImpactFacts:
@@ -125,43 +136,25 @@ def _limit_self_propelled_target(
     return desired_velocity * scale[:, None]
 
 
-def _collision_microstep_count(
-    players: PlayerState,
-    *,
-    dt: float,
-    body: BodyContact,
-    physics: PlayerPhysics,
-) -> jax.Array:
-    """Bound player translation by realised or reachable locomotion speed.
+def _two_largest_speed_sum(speed_support: jax.Array) -> jax.Array:
+    """Return the sum of the two largest fixed-roster speed supports."""
 
-    Relative translation is bounded by the two largest active per-player
-    supports. ``step_velocity`` is a convex move toward a target capped by the
-    player's maximum speed, so ``max(realised_speed, max_speed)`` is a tighter
-    transition bound than an unconstrained acceleration increment. This is a
-    practical anti-tunnelling guard, not continuous collision detection. Dense
-    Jacobi responses are separately degree-normalized so simultaneous
-    neighbours do not each add a full isolated-pair impulse.
-    """
-
-    dtype = players.position.dtype
-    realised_speed = jnp.sqrt(
-        jnp.sum(players.velocity * players.velocity, axis=-1) + SAFE_NORM_EPS
-    )
-    # step_velocity is a convex move toward a target whose magnitude cannot
-    # exceed max_speed.  Its result therefore cannot exceed the larger of the
-    # realised and target-speed bounds.  Using acceleration * dt here is both
-    # looser than that contract and lets otherwise finite custom acceleration
-    # coefficients manufacture an unbounded dynamic loop count.
-    speed_support = jnp.where(
-        players.active,
-        jnp.maximum(realised_speed, players.max_speed),
-        0.0,
-    )
     first_index = jnp.argmax(speed_support)
     first = speed_support[first_index]
     indices = jnp.arange(speed_support.shape[0], dtype=first_index.dtype)
     second = jnp.max(jnp.where(indices != first_index, speed_support, 0.0))
-    relative_speed_support = first + second
+    return first + second
+
+
+def _bounded_microstep_count(
+    relative_speed_support: jax.Array,
+    *,
+    dt: float,
+    body: BodyContact,
+) -> jax.Array:
+    """Convert a relative speed envelope to a bounded loop count."""
+
+    dtype = relative_speed_support.dtype
     safe_torso_depth = jnp.asarray(
         max(body.torso_depth_m - GEOMETRY_EPS, GEOMETRY_EPS),
         dtype=dtype,
@@ -169,16 +162,170 @@ def _collision_microstep_count(
     raw_count = jnp.ceil(
         relative_speed_support * jnp.asarray(dt, dtype=dtype) / safe_torso_depth
     )
-    # Public configurations are rejected on the host before reaching this
-    # bound. Keep one overflow sentinel here for reconstructed traced states;
-    # step_players then freezes those players instead of silently tunnelling or
-    # executing an effectively unbounded dynamic loop.
     bounded_float = jnp.where(
         jnp.isfinite(raw_count),
         jnp.clip(raw_count, 1.0, MAX_PLAYER_COLLISION_MICROSTEPS + 1.0),
         MAX_PLAYER_COLLISION_MICROSTEPS + 1.0,
     )
     return bounded_float.astype(jnp.int32)
+
+
+def _collision_microstep_plan(
+    players: PlayerState,
+    desired_velocity: jax.Array,
+    movement_enabled: jax.Array,
+    position_update_enabled: jax.Array,
+    *,
+    dt: float,
+    body: BodyContact,
+    physics: PlayerPhysics,
+    locomotion_microstep_count: jax.Array | None = None,
+    realised_speed: jax.Array | None = None,
+) -> _CollisionMicrostepPlan:
+    """Bound player translation by speed reachable during this interval.
+
+    Relative translation is bounded by the two largest active per-player
+    supports. ``step_velocity`` is a convex move toward the requested target,
+    with its vector change inside the configured acceleration ellipse. The
+    largest ellipse axis therefore bounds the speed reachable from the current
+    velocity during this interval. This avoids treating every player's profile
+    maximum as instantaneously reachable while preserving the relative-path
+    anti-tunnelling bound for players that are already moving quickly.
+
+    This is a practical anti-tunnelling guard, not continuous collision
+    detection. Dense Jacobi responses are separately degree-normalized so
+    simultaneous neighbours do not each add a full isolated-pair impulse.
+    """
+
+    if realised_speed is None:
+        realised_speed = jnp.sqrt(
+            jnp.sum(players.velocity * players.velocity, axis=-1) + SAFE_NORM_EPS
+        )
+    target_speed = jnp.minimum(
+        jnp.sqrt(jnp.sum(desired_velocity * desired_velocity, axis=-1) + SAFE_NORM_EPS),
+        players.max_speed,
+    )
+    maximum_acceleration = max(
+        physics.forward_acceleration_mps2,
+        physics.lateral_acceleration_mps2,
+        physics.braking_deceleration_mps2,
+    )
+    reachable_target_speed = jnp.minimum(
+        target_speed,
+        realised_speed
+        + jnp.asarray(maximum_acceleration * dt, dtype=players.position.dtype),
+    )
+    translation_speed = jnp.where(
+        movement_enabled,
+        jnp.maximum(realised_speed, reachable_target_speed),
+        realised_speed,
+    )
+    reachable_speed_support = jnp.where(
+        players.active & position_update_enabled,
+        translation_speed,
+        0.0,
+    )
+
+    reachable_count = _bounded_microstep_count(
+        _two_largest_speed_sum(reachable_speed_support),
+        dt=dt,
+        body=body,
+    )
+    count = players.position.shape[0]
+    pair_enabled = (
+        players.active[:, None]
+        & players.active[None, :]
+        & jnp.triu(jnp.ones((count, count), dtype=jnp.bool_), k=1)
+    )
+    relative_travel = (
+        reachable_speed_support[:, None] + reachable_speed_support[None, :]
+    ) * jnp.asarray(dt, dtype=players.position.dtype)
+    broadphase_diameter = jnp.asarray(
+        max(body.shoulder_width_m, body.torso_depth_m),
+        dtype=players.position.dtype,
+    )
+    broadphase_distance = broadphase_diameter + relative_travel
+    difference = players.position[:, None, :] - players.position[None, :, :]
+    distance_squared = jnp.sum(difference * difference, axis=-1)
+    collision_possible = jnp.any(
+        pair_enabled & (distance_squared <= broadphase_distance * broadphase_distance)
+    )
+    profile_count = (
+        _locomotion_microstep_count(
+            players,
+            dt=dt,
+            body=body,
+            realised_speed=realised_speed,
+        )
+        if locomotion_microstep_count is None
+        else locomotion_microstep_count
+    )
+    return _CollisionMicrostepPlan(
+        count=jnp.where(collision_possible, profile_count, reachable_count),
+        collision_possible=collision_possible,
+    )
+
+
+def _collision_microstep_count(
+    players: PlayerState,
+    desired_velocity: jax.Array,
+    movement_enabled: jax.Array,
+    position_update_enabled: jax.Array,
+    *,
+    dt: float,
+    body: BodyContact,
+    physics: PlayerPhysics,
+    locomotion_microstep_count: jax.Array | None = None,
+) -> jax.Array:
+    """Preserve the scalar private helper contract for focused callers."""
+
+    return _collision_microstep_plan(
+        players,
+        desired_velocity,
+        movement_enabled,
+        position_update_enabled,
+        dt=dt,
+        body=body,
+        physics=physics,
+        locomotion_microstep_count=locomotion_microstep_count,
+    ).count
+
+
+def _locomotion_microstep_count(
+    players: PlayerState,
+    *,
+    dt: float,
+    body: BodyContact,
+    realised_speed: jax.Array | None = None,
+) -> jax.Array:
+    """Preserve the profile-based integration and fail-closed budget."""
+
+    if realised_speed is None:
+        realised_speed = jnp.sqrt(
+            jnp.sum(players.velocity * players.velocity, axis=-1) + SAFE_NORM_EPS
+        )
+    profile_speed_support = jnp.where(
+        players.active,
+        jnp.maximum(realised_speed, players.max_speed),
+        0.0,
+    )
+    return _bounded_microstep_count(
+        _two_largest_speed_sum(profile_speed_support),
+        dt=dt,
+        body=body,
+    )
+
+
+def _collision_microstep_due(
+    microstep_index: jax.Array,
+    microstep_count: jax.Array,
+    collision_microstep_count: jax.Array,
+) -> jax.Array:
+    """Schedule checks without exceeding the requested path interval."""
+
+    stride = jnp.maximum(microstep_count // collision_microstep_count, 1)
+    completed = microstep_index + 1
+    return (completed % stride == 0) | (completed == microstep_count)
 
 
 def step_players(
@@ -224,17 +371,36 @@ def step_players(
     oriented = players._replace(body_forward=body_forward)
 
     dtype = players.position.dtype
-    requested_microstep_count = _collision_microstep_count(
+    realised_speed = jnp.sqrt(
+        jnp.sum(players.velocity * players.velocity, axis=-1) + SAFE_NORM_EPS
+    )
+    requested_microstep_count = _locomotion_microstep_count(
         players,
         dt=dt,
         body=body,
-        physics=physics,
+        realised_speed=realised_speed,
     )
+    collision_plan = _collision_microstep_plan(
+        players,
+        desired_velocity,
+        movement_enabled,
+        position_update_enabled,
+        dt=dt,
+        body=body,
+        physics=physics,
+        locomotion_microstep_count=requested_microstep_count,
+        realised_speed=realised_speed,
+    )
+    requested_collision_microstep_count = collision_plan.count
     microstep_budget_valid = (
         requested_microstep_count <= MAX_PLAYER_COLLISION_MICROSTEPS
     )
     microstep_count = jnp.where(
         microstep_budget_valid, requested_microstep_count, jnp.int32(1)
+    )
+    collision_microstep_count = jnp.minimum(
+        requested_collision_microstep_count,
+        microstep_count,
     )
     microstep_dt = jnp.asarray(dt, dtype=dtype) / microstep_count.astype(dtype)
 
@@ -264,14 +430,33 @@ def step_players(
             position_update_enabled=position_update_enabled,
             config=physics,
         )
-        collision = separate_players(
+        collision_due = collision_plan.collision_possible & (
+            _collision_microstep_due(
+                microstep_index,
+                microstep_count,
+                collision_microstep_count,
+            )
+        )
+
+        def resolve_collision(current_players):
+            return separate_players(
+                current_players,
+                attack_direction,
+                field_half_extent,
+                boundary_margin_m=boundary_margin_m,
+                pinned=pinned,
+                body=body,
+                physics=physics,
+            )
+
+        collision = jax.lax.cond(
+            collision_due,
+            resolve_collision,
+            lambda current_players: SeparationStep(
+                players=current_players,
+                impact=_empty_player_impact(dtype),
+            ),
             moved,
-            attack_direction,
-            field_half_extent,
-            boundary_margin_m=boundary_margin_m,
-            pinned=pinned,
-            body=body,
-            physics=physics,
         )
         impact = collision.impact._replace(
             time_fraction=(

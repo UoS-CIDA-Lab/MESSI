@@ -36,12 +36,14 @@ from footballworld.policies.manager import (
     ManagerPolicy,
     acknowledge_manager_boundary,
     initialize_manager_boundary_state,
+    validate_manager_policy,
 )
 from footballworld.policies.opening_formation import (
     OpeningFormationPolicy,
     RuleBasedOpeningFormationPolicy,
     observe_opening_formations,
 )
+from footballworld.policies.player import PlayerPolicy, validate_player_policy
 from footballworld.policies.rule_based.manager import (
     make_rule_based_manager,
 )
@@ -49,7 +51,6 @@ from footballworld.policies.rule_based.policy import (
     RuleBasedPolicy,
     make_rule_based_policy,
 )
-from footballworld.policies.rule_based.state import RulePolicyState
 from footballworld.rollout import (
     apply_management_tactics,
     make_managed_advance,
@@ -64,8 +65,9 @@ class ManagedMatchState(NamedTuple):
     setup: MatchSetup
     management: ManagerState
     roster: RosterMetadata
-    player_policy_state: RulePolicyState
+    player_policy_state: Any
     manager: ManagedManagerState[Any]
+    opening_formation_checked: bool = False
 
 
 class ManagedRunResult(NamedTuple):
@@ -87,7 +89,7 @@ class _GenericManagerDecisionResult(NamedTuple):
 
 class _RosterRefreshResult(NamedTuple):
     roster: RosterMetadata
-    player_policy_state: RulePolicyState
+    player_policy_state: Any
 
 
 class _OpeningDecisionResult(NamedTuple):
@@ -120,6 +122,22 @@ def _host_int(value: jax.Array) -> int:
     return int(array)
 
 
+def _host_advance_control(advance: Any) -> tuple[int, bool, bool]:
+    """Transfer the three per-chunk host control scalars together."""
+
+    values = jax.device_get(
+        (
+            advance.steps_executed,
+            advance.terminated | advance.truncated,
+            advance.manager_required,
+        )
+    )
+    arrays = tuple(np.asarray(value) for value in values)
+    if any(array.shape != () for array in arrays):
+        raise ValueError("managed advance control values must be scalars")
+    return int(arrays[0]), bool(arrays[1]), bool(arrays[2])
+
+
 @dataclass(frozen=True, slots=True)
 class ManagedRunner:
     """Reusable scalar host runner composed from independent JIT kernels.
@@ -131,7 +149,7 @@ class ManagedRunner:
     """
 
     env: FootballWorld
-    player_policy: RuleBasedPolicy
+    player_policy: PlayerPolicy
     chunk_steps: int
     manager_policy: ManagerPolicy | None
     opening_policy: OpeningFormationPolicy | None
@@ -150,7 +168,7 @@ class ManagedRunner:
         squad: SquadSetup,
         management: ManagerState,
         roster: RosterMetadata,
-        player_policy_state: RulePolicyState,
+        player_policy_state: Any,
         manager_parameters: Any = NO_POLICY_PARAMETERS,
     ) -> ManagedMatchState:
         """Build scheduler and optional manager memory without advancing."""
@@ -172,6 +190,7 @@ class ManagedRunner:
             roster=roster,
             player_policy_state=player_policy_state,
             manager=ManagedManagerState(boundary=boundary, policy=manager_state),
+            opening_formation_checked=False,
         )
 
     def run(
@@ -207,7 +226,12 @@ class ManagedRunner:
 
         current = state
         opening_applied = np.zeros(2, dtype=np.bool_)
-        if apply_opening_formation and self._opening_decide is not None:
+        if (
+            num_steps > 0
+            and apply_opening_formation
+            and self._opening_decide is not None
+            and not getattr(current, "opening_formation_checked", False)
+        ):
             opening = self._opening_decide(
                 current.rollout,
                 current.setup,
@@ -222,6 +246,7 @@ class ManagedRunner:
                 rollout=opening.rollout,
                 setup=opening.setup,
                 management=opening.management,
+                opening_formation_checked=True,
             )
             if bool(np.any(opening_applied)):
                 player_state = self._apply_tactics(
@@ -249,15 +274,24 @@ class ManagedRunner:
                 jnp.int32(budget),
                 match_key,
             )
-            progressed = _host_int(advance.steps_executed)
+            progressed, terminal, manager_required = _host_advance_control(advance)
+            if progressed < 0 or progressed > budget:
+                raise RuntimeError("managed runner returned an invalid step count")
             executed += progressed
             current = current._replace(
                 rollout=advance.final_rollout,
                 player_policy_state=advance.final_policy_state,
             )
 
-            if not _host_bool(advance.manager_required):
+            if terminal:
+                break
+
+            if not manager_required:
                 zero_progress_boundaries = 0
+                if progressed == 0:
+                    raise RuntimeError(
+                        "managed runner made no progress without a boundary"
+                    )
                 continue
 
             goalkeeper_required = bool(
@@ -337,7 +371,7 @@ class ManagedRunner:
 
 def make_managed_runner(
     env: FootballWorld,
-    player_policy: RuleBasedPolicy | None = None,
+    player_policy: PlayerPolicy | None = None,
     chunk_steps: int = 256,
     *,
     manager_policy: ManagerPolicy | None = None,
@@ -363,8 +397,8 @@ def make_managed_runner(
                 "player_policy is required when the built-in player policy is disabled"
             )
         selected_player = make_rule_based_policy(env)
-    if not isinstance(selected_player, RuleBasedPolicy):
-        raise TypeError("player_policy must be RuleBasedPolicy or None")
+    validate_player_policy(selected_player)
+    using_rule_player = isinstance(selected_player, RuleBasedPolicy)
     if not isinstance(chunk_steps, int) or isinstance(chunk_steps, bool):
         raise TypeError("chunk_steps must be an integer")
     if chunk_steps < 1:
@@ -378,12 +412,11 @@ def make_managed_runner(
     )
     if using_reference_manager:
         selected_manager = make_rule_based_manager(env)
+    if selected_manager is not None:
+        validate_manager_policy(selected_manager)
 
     selected_opening = opening_policy
-    if (
-        selected_opening is None
-        and env.policies.rule_based_opening_formation_adapter
-    ):
+    if selected_opening is None and env.policies.rule_based_opening_formation_adapter:
         selected_opening = RuleBasedOpeningFormationPolicy()
 
     advance = jax.jit(make_managed_advance(env, selected_player, chunk_steps))
@@ -444,27 +477,32 @@ def make_managed_runner(
 
     def refresh_roster(rollout, management, previous_roster, policy_state):
         roster = env.roster_metadata_si(rollout, management)
-        return _RosterRefreshResult(
-            roster=roster,
-            player_policy_state=refresh_policy_state(
+        refreshed_state = policy_state
+        if using_rule_player:
+            refreshed_state = refresh_policy_state(
                 env,
                 selected_player,
                 rollout,
                 previous_roster,
                 roster,
                 policy_state,
-            ),
+            )
+        return _RosterRefreshResult(
+            roster=roster,
+            player_policy_state=refreshed_state,
         )
 
     def apply_tactics(rollout, management, roster, policy_state):
-        return apply_management_tactics(
-            env,
-            selected_player,
-            rollout,
-            management,
-            roster,
-            policy_state,
-        )
+        if using_rule_player:
+            return apply_management_tactics(
+                env,
+                selected_player,
+                rollout,
+                management,
+                roster,
+                policy_state,
+            )
+        return policy_state
 
     opening_decide = None
     if selected_opening is not None:

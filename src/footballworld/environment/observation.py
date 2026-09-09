@@ -436,9 +436,7 @@ def observe(
             player_index=jnp.where(observer_valid, safe_observer, NO_PLAYER),
             position=jnp.where(observer_valid, observer_position * direction, 0.0),
             velocity=jnp.where(observer_valid, observer_velocity * direction, 0.0),
-            gaze_yaw=jnp.where(
-                observer_valid, players.gaze_yaw[safe_observer], 0.0
-            ),
+            gaze_yaw=jnp.where(observer_valid, players.gaze_yaw[safe_observer], 0.0),
         ),
         players=PlayerObservations(
             relative_position=_mask_float(local_relative_position, player_visible),

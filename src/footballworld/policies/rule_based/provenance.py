@@ -1,4 +1,4 @@
-"""Stable identity for rule-policy behavior and teacher datasets."""
+"""Configuration identity for rule-policy behavior and teacher datasets."""
 
 from __future__ import annotations
 
@@ -7,13 +7,6 @@ import json
 from dataclasses import asdict
 
 from footballworld.policies.rule_based.config import RulePolicyConfig
-
-RULE_POLICY_VERSION = 36
-"""Behavioral version of the FootballWorld rule policy.
-
-Increment this value whenever identical public inputs can produce a different
-action.  Physics and observation-schema versions are tracked independently.
-"""
 
 
 def policy_config_fingerprint(config: RulePolicyConfig) -> str:
@@ -30,4 +23,4 @@ def policy_config_fingerprint(config: RulePolicyConfig) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-__all__ = ["RULE_POLICY_VERSION", "policy_config_fingerprint"]
+__all__ = ["policy_config_fingerprint"]

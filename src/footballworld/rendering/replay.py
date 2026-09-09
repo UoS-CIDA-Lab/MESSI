@@ -29,7 +29,7 @@ from footballworld.rendering.tracking import (
 )
 from footballworld.rendering.transfer import HostFrame, to_jsonable
 
-METADATA_SCHEMA = "footballworld.replay-metadata/8"
+METADATA_SCHEMA = "footballworld.replay-metadata/9"
 
 
 def _clock(frame: HostFrame, control_fps: float) -> float:
@@ -75,7 +75,13 @@ def _public_clock(
 def _write_json(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as stream:
-        json.dump(record, stream, ensure_ascii=False, separators=(",", ":"))
+        json.dump(
+            record,
+            stream,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
         stream.write("\n")
 
 
@@ -137,6 +143,37 @@ def _transition_identity_arrays(
     if any(value.shape != (player_count,) for value in arrays):
         raise ValueError("transition identity arrays must share one player axis")
     return arrays
+
+
+def _initial_roster_records(frame: HostFrame) -> list[dict[str, Any]]:
+    """Preserve both sides of the first captured management transition.
+
+    The sidecar cannot recover identities last seen before the captured window.
+    It records the first post-management state plus distinct identities that
+    executed the first transition, with transition attributes winning when an
+    identity appears on both sides.
+    """
+
+    transition = _transition_identity_arrays(frame)
+    post_management = (
+        frame.player_id,
+        frame.slot_generation,
+        frame.team_id,
+        frame.is_goalkeeper,
+    )
+    records: dict[tuple[int, int], dict[str, Any]] = {}
+    for arrays in (post_management, transition):
+        player_id, generation, team_id, is_goalkeeper = arrays
+        for slot in range(int(frame.player_id.shape[0])):
+            identity = (int(player_id[slot]), int(generation[slot]))
+            records[identity] = {
+                "slot": slot,
+                "player_id": identity[0],
+                "slot_generation": identity[1],
+                "team": int(team_id[slot]),
+                "goalkeeper": bool(is_goalkeeper[slot]),
+            }
+    return list(records.values())
 
 
 def _pre_management_identity_records(
@@ -339,6 +376,8 @@ def _formation_records(
     requested: Any,
     layout_index: Any,
     applied: Any,
+    tactical_epoch: Any = None,
+    changed_control_tick: Any = None,
 ) -> list[dict[str, Any]] | None:
     """Return one authoritative receipt for each requested team layout."""
 
@@ -353,16 +392,30 @@ def _formation_records(
         raise ValueError("formation receipt fields must have shape [2]")
     if np.any(applied & ~requested):
         raise ValueError("an unrequested formation cannot be recorded as applied")
-    return [
-        {
+    if (tactical_epoch is None) != (changed_control_tick is None):
+        raise ValueError("formation epoch and changed tick must be provided together")
+    if tactical_epoch is not None:
+        tactical_epoch = np.asarray(tactical_epoch)
+        changed_control_tick = np.asarray(changed_control_tick)
+        if tactical_epoch.shape != (2,) or changed_control_tick.shape != (2,):
+            raise ValueError("formation epoch fields must have shape [2]")
+    records = []
+    for team in range(2):
+        if not bool(requested[team]):
+            continue
+        record = {
             "type": "formation",
             "team": team,
             "layout_index": int(layout_index[team]),
             "applied": bool(applied[team]),
         }
-        for team in range(2)
-        if bool(requested[team])
-    ]
+        if bool(applied[team]) and tactical_epoch is not None:
+            record.update(
+                tactical_epoch=int(tactical_epoch[team]),
+                formation_changed_control_tick=int(changed_control_tick[team]),
+            )
+        records.append(record)
+    return records
 
 
 def _validate_acting_goalkeeper_records(
@@ -414,6 +467,7 @@ def write_replay_sidecars(
     halftime_enabled: bool = True,
     metadata: Any = None,
     render_metadata: Any = None,
+    match_manifest: Any = None,
     collect_exact_events: bool = True,
     frame_offset: int = 0,
     include_all_action_controls: bool = False,
@@ -473,6 +527,14 @@ def write_replay_sidecars(
         ),
         "action_categorical_source": "authoritative_action_trace",
         "action_continuous_source": "submitted_policy_action",
+        "intended_receiver_semantics": {
+            "field": "intended_receiver_player_id",
+            "scope": "retained_pass_action_rows_only",
+            "identity": "registered_player_id",
+            "source": "submitted_player_policy_plan",
+            "unknown": None,
+            "completion_claim": False,
+        },
         "complete_action_reconstruction": (
             include_all_action_controls and not missing_action_control_frames
         ),
@@ -483,6 +545,8 @@ def write_replay_sidecars(
             "transition": "pre_management_transition",
             "substitutions": "post_transition_management_transaction",
             "acting_goalkeepers": "post_transition_management_transaction",
+            "formations": "post_transition_management_transaction",
+            "set_piece_taker_changes": "post_transition_management_transaction",
             "tracking": "post_management_state",
         },
         "transition_identity_semantics": {
@@ -535,7 +599,12 @@ def write_replay_sidecars(
     common_rows: list[dict[str, Any]] = []
     with event_path.open("w", encoding="utf-8") as event_stream:
         event_stream.write(
-            json.dumps(event_header, ensure_ascii=False, separators=(",", ":"))[:-1]
+            json.dumps(
+                event_header,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )[:-1]
         )
         event_stream.write(',"frames":[')
         for index, frame in enumerate(frames):
@@ -577,6 +646,7 @@ def write_replay_sidecars(
                     frame.action_trace,
                     frame.submitted_action,
                     frame.frame_events,
+                    frame.intended_receiver_ids,
                     include_move=include_all_action_controls,
                 ),
                 "frame_events": exact_event,
@@ -593,6 +663,7 @@ def write_replay_sidecars(
                 event_stream,
                 ensure_ascii=False,
                 separators=(",", ":"),
+                allow_nan=False,
             )
 
         event_stream.write("]}\n")
@@ -663,16 +734,8 @@ def write_replay_sidecars(
             "untracked_slot_generation": -1,
         },
         "tracking_storage": tracking_storage_receipt(tracking_path, tracking_index),
-        "roster": [
-            {
-                "slot": player,
-                "player_id": int(first.player_id[player]),
-                "slot_generation": int(first.slot_generation[player]),
-                "team": int(first.team_id[player]),
-                "goalkeeper": bool(first.is_goalkeeper[player]),
-            }
-            for player in range(first.player_position.shape[0])
-        ],
+        "match_manifest": to_jsonable(match_manifest),
+        "roster": _initial_roster_records(first),
         "render": to_jsonable(render_metadata),
         "user_metadata": to_jsonable(metadata),
     }

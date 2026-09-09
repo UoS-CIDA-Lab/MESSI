@@ -119,7 +119,7 @@ body deflection. The assignment still fails closed immediately when the
 receiver is invalid, inactive, hidden, no longer a lawful candidate, or the
 ball becomes dead/a restart; no hidden team-shared trajectory state is added.
 
-Reception is also distinct from an automatic relay. A policy-34 60-second
+Reception is also distinct from an automatic relay. A 60-second policy
 diagnostic had 23 of 25 different-teammate receptions pass again within two
 seconds, with 17 delays exactly 0.4 seconds, exposing decision-cadence pinball
 rather than football timing. FootballWorld therefore inherits the SoccerWorld

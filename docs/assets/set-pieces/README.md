@@ -1,8 +1,8 @@
 # Rare set-piece previews
 
-These short clips are synthetic restart diagnostics rendered by the FootballWorld
-v1.0.0 reference policy. They are not source-data clips and are not evidence that a
-specific restart occurred in the calibration data. Only the initial restart
+These short clips are synthetic restart diagnostics rendered by FootballWorld.
+They are not source-data clips and are not evidence that a specific restart
+occurred in the calibration data. Only the initial restart
 boundary is staged; every displayed transition after that boundary is produced
 by the normal rule policy, physics, and laws engine.
 

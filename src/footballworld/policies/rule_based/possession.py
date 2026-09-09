@@ -102,6 +102,25 @@ class PossessionDecision(NamedTuple):
     target: jax.Array
 
 
+class PossessionCandidateTrace(NamedTuple):
+    """Fixed-shape receiver candidates emitted only by diagnostic calls."""
+
+    carrier_slot: jax.Array
+    receiver_slot: jax.Array
+    is_cross: jax.Array
+    eligible: jax.Array
+    selected: jax.Array
+    target_xy: jax.Array
+    completion: jax.Array
+    selection_value: jax.Array
+    macro_value: jax.Array
+    progression_contribution: jax.Array
+    relative_depth_m: jax.Array
+    receiver_forward_velocity_mps: jax.Array
+    source_xy: jax.Array
+    decision_due: jax.Array
+
+
 class ShotPlan(NamedTuple):
     """One fixed-shape, observation-only shot proposal.
 
@@ -368,6 +387,21 @@ def plan_shot(
     )
 
 
+def _progressive_pass_gain(
+    signed_progress: jax.Array,
+    pass_lane: jax.Array,
+    tactical_gain: float | jax.Array,
+    policy_gain: float | jax.Array,
+) -> jax.Array:
+    """Bound an independent reward to positive attack-axis progress only."""
+
+    progress = jnp.maximum(jnp.asarray(signed_progress, jnp.float32), 0.0)
+    completion = jnp.clip(jnp.asarray(pass_lane, jnp.float32), 0.0, 1.0)
+    inherited = jnp.asarray(tactical_gain, jnp.float32) * progress
+    calibrated = jnp.asarray(policy_gain, jnp.float32) * completion * progress
+    return jnp.clip(inherited + calibrated, 0.0, 1.0)
+
+
 def decide_possession(
     context: RulePolicyContext,
     player_offside: jax.Array,
@@ -385,6 +419,8 @@ def decide_possession(
     cross_completion: jax.Array | None = None,
     cross_candidate: jax.Array | None = None,
     possession_seconds: jax.Array = jnp.float32(0.0),
+    possession_episode_seconds: jax.Array | None = None,
+    formation_anchor_y: jax.Array = jnp.float32(0.0),
     previous_actor: jax.Array | None = None,
     decision_key: jax.Array | None = None,
     tactical: TacticalProfile | None = None,
@@ -394,7 +430,8 @@ def decide_possession(
     run_behind_receiver: jax.Array = jnp.int32(NO_PLAYER),
     progressive_carry_commit_s: jax.Array = jnp.float32(0.0),
     shot_launch_radians_per_action_unit: float = 1.0,
-) -> PossessionDecision:
+    with_candidate_trace: bool = False,
+) -> PossessionDecision | tuple[PossessionDecision, PossessionCandidateTrace]:
     """Choose one carrier action from one observer's public information.
 
     A teammate is eligible only when that slot is active, visible, on the same
@@ -409,6 +446,8 @@ def decide_possession(
     Omitting either group retains the lightweight standalone fallback.
     """
 
+    if type(with_candidate_trace) is not bool:
+        raise TypeError("with_candidate_trace must be a static bool")
     offside, goalkeeper = _validate_row(context, player_offside, player_is_goalkeeper)
     hx = jnp.maximum(jnp.asarray(half_length, jnp.float32), _EPS)
     hy = jnp.maximum(jnp.asarray(half_width, jnp.float32), _EPS)
@@ -422,6 +461,13 @@ def decide_possession(
     possession_seconds = jnp.maximum(
         jnp.asarray(possession_seconds, dtype=jnp.float32), 0.0
     )
+    possession_episode_seconds = jnp.maximum(
+        possession_seconds
+        if possession_episode_seconds is None
+        else jnp.asarray(possession_episode_seconds, dtype=jnp.float32),
+        0.0,
+    )
+    formation_anchor_y = jnp.asarray(formation_anchor_y, dtype=jnp.float32)
     attack_pattern = jnp.asarray(attack_pattern, dtype=jnp.int32)
     attack_phase = jnp.asarray(attack_phase, dtype=jnp.int32)
     run_behind_receiver = jnp.asarray(run_behind_receiver, dtype=jnp.int32)
@@ -429,6 +475,8 @@ def decide_possession(
         jnp.asarray(progressive_carry_commit_s, dtype=jnp.float32), 0.0
     )
     for name, value in (
+        ("possession_episode_seconds", possession_episode_seconds),
+        ("formation_anchor_y", formation_anchor_y),
         ("attack_pattern", attack_pattern),
         ("attack_phase", attack_phase),
         ("run_behind_receiver", run_behind_receiver),
@@ -439,9 +487,6 @@ def decide_possession(
     launch_radians_per_unit = jnp.maximum(
         jnp.asarray(shot_launch_radians_per_action_unit, dtype=jnp.float32),
         _EPS,
-    )
-    carry_fraction = jnp.clip(
-        possession_seconds / config.solo_carry_soft_limit_s, 0.0, 1.0
     )
     source = jnp.where(
         context.ball_visible,
@@ -460,6 +505,24 @@ def decide_possession(
     )
     if previous_actor.shape != onside_teammate.shape:
         raise ValueError("previous_actor must have shape (players,)")
+    roster_slot = jnp.arange(player_position.shape[0], dtype=jnp.int32)
+    active_same_team_actor = (
+        jnp.asarray(context.same_team, dtype=jnp.bool_)
+        & jnp.asarray(context.participating, dtype=jnp.bool_)
+        & (roster_slot != jnp.asarray(context.self_index, dtype=jnp.int32))
+    )
+    has_previous_actor = jnp.any(previous_actor & active_same_team_actor)
+    # A loose dribble touch can break the carrier-control counter without
+    # ending the observed team episode. Only an episode with no preceding
+    # teammate is allowed to extend solo tenure, so a normal reception does
+    # not inherit the whole team's build-up age.
+    solo_tenure_seconds = jnp.maximum(
+        possession_seconds,
+        jnp.where(has_previous_actor, 0.0, possession_episode_seconds),
+    )
+    carry_fraction = jnp.clip(
+        solo_tenure_seconds / config.solo_carry_soft_limit_s, 0.0, 1.0
+    )
 
     current_pressure = pressure(
         source,
@@ -600,9 +663,14 @@ def decide_possession(
     # lane-and-arrival score has a different contract. Keep
     # the same safety principle continuously so a zero-completion lane cannot
     # become attractive from tactical preference alone.
+    pass_progression_gain = _progressive_pass_gain(
+        progressive_preference,
+        pass_lane,
+        tactical.progressive_pass_gain,
+        config.progressive_pass_value_gain,
+    )
     tactical_gain = (
-        tactical.progressive_pass_gain * progressive_preference
-        + tactical.wide_pass_gain * target_width * build_up_depth
+        pass_progression_gain + tactical.wide_pass_gain * target_width * build_up_depth
     )
     return_cost = (
         config.immediate_return_penalty
@@ -619,6 +687,7 @@ def decide_possession(
         * jnp.maximum(-signed_progress, 0.0)
         * (1.0 - current_pressure)
     )
+    pass_completion_weight = jnp.square(pass_lane)
     pass_value = jnp.clip(
         pass_lane * (pass_base * distance_retention + tactical_gain)
         - config.pass_lateral_penalty * lateral_fraction
@@ -632,7 +701,6 @@ def decide_possession(
     # gate. THIRD_MAN means an A→B→C preference based on the observed previous
     # actor; it is deliberately not claimed as a guaranteed physical two-hop.
     candidate_index = jnp.arange(player_position.shape[0], dtype=jnp.int32)
-    has_previous_actor = jnp.any(previous_actor & onside_teammate)
     setup_phase = attack_phase == jnp.int32(0)
     execution_phase = attack_phase == jnp.int32(1)
     # A third-player combination needs an actual first leg.  In setup, favour
@@ -706,17 +774,28 @@ def decide_possession(
             ),
         ),
     )
+    # The same episode-stable forward that occupies the movement pocket gets
+    # a bounded completion-conditioned preference. This coordinates space
+    # creation with pass intent without opening a marginal or illegal lane.
+    designated_forward_value = (
+        (attack_phase >= 0).astype(jnp.float32)
+        * (candidate_index == run_behind_receiver).astype(jnp.float32)
+        * (0.55 * progressive_preference + 0.45 * receiver_security)
+    )
     pass_value = jnp.clip(
         pass_value
         # Pattern identity may rank only already credible lanes. Squaring the
         # completion score prevents a long-plan bias from rescuing a marginal
         # pass merely because it fits the intended choreography.
-        + config.attack_pattern_receiver_gain * jnp.square(pass_lane) * pattern_value
+        + config.attack_pattern_receiver_gain * pass_completion_weight * pattern_value
+        + config.forward_pocket_receiver_gain
+        * pass_completion_weight
+        * designated_forward_value
         # Credit the first leg only for a bounded, completion-qualified second
         # ground leg. The caller computes this physical continuation on the
         # sparse carrier row; it remains a tactical score, not a probability.
         + config.continuation_value_gain
-        * jnp.square(pass_lane)
+        * pass_completion_weight
         * jnp.clip(prepared_continuation, 0.0, 1.0),
         0.0,
         1.0,
@@ -887,13 +966,54 @@ def decide_possession(
         0.0,
         1.0,
     )
+    # Keep ordinary carries near the player's formation-side lane. This is a
+    # soft common-currency cost, not a direction ban, and fades under pressure.
+    shape_drift = jnp.clip(
+        jnp.abs(dribble_target[:, 1] - formation_anchor_y) / hy,
+        0.0,
+        1.0,
+    )
+    dribble_value = jnp.clip(
+        dribble_value
+        - config.dribble_shape_drift_penalty
+        * carry_fraction
+        * (1.0 - current_pressure)
+        * shape_drift,
+        0.0,
+        1.0,
+    )
     best_dribble_value = jnp.max(dribble_value)
     safe_release = has_pass & (best_pass_lane >= _SAFE_PASS_COMPLETION)
-    best_dribble_value = best_dribble_value * (
-        1.0
-        - config.solo_carry_value_decay
-        * carry_fraction
-        * safe_release.astype(jnp.float32)
+    progressive_dribble_value = jnp.max(
+        jnp.where(dribble_direction_candidates[:, 0] >= 0.5, dribble_value, -1.0)
+    )
+    high_quality_breakthrough = (
+        progressive_dribble_value >= jnp.float32(_SAFE_PASS_COMPLETION)
+    ) & (progressive_dribble_value > best_pass_value)
+    # Episode age bridges momentary loose touches for the same solo carrier.
+    # A preceding teammate prevents a receiver inheriting the whole build-up.
+    release_urgency = (safe_release & (~high_quality_breakthrough)).astype(
+        jnp.float32
+    ) * jnp.clip(
+        solo_tenure_seconds / config.solo_carry_soft_limit_s - 1.0,
+        0.0,
+        1.0,
+    )
+    best_dribble_value = (
+        best_dribble_value
+        * (
+            1.0
+            - config.solo_carry_value_decay
+            * carry_fraction
+            * safe_release.astype(jnp.float32)
+        )
+        * (1.0 - config.solo_carry_value_decay * release_urgency)
+    )
+    best_pass_value = jnp.clip(
+        best_pass_value
+        + config.solo_carry_value_decay * release_urgency * (1.0 - best_pass_value),
+        0.0,
+        1.0,
     )
     dribble_key = (
         None
@@ -919,6 +1039,25 @@ def decide_possession(
         current_pressure=current_pressure,
         decision_key=decision_key,
         shot_launch_radians_per_action_unit=launch_radians_per_unit,
+    )
+    # A newly won possession has no observed previous teammate. Discount only
+    # low-quality shots during a short settle window; clear chances stay live.
+    settled_fraction = jnp.clip(
+        possession_episode_seconds / config.turnover_shot_settle_s,
+        0.0,
+        1.0,
+    )
+    fresh_unlinked_possession = (
+        (~has_previous_actor)
+        & (possession_episode_seconds < config.turnover_shot_settle_s)
+        & (shot_plan.quality < jnp.float32(_SAFE_PASS_COMPLETION))
+    )
+    transition_shot_scale = (
+        config.turnover_shot_value_scale
+        + (1.0 - config.turnover_shot_value_scale) * settled_fraction
+    )
+    shot_macro_value = shot_plan.value * jnp.where(
+        fresh_unlinked_possession, transition_shot_scale, 1.0
     )
 
     # Evaluate three downfield destinations and open clearance only in the
@@ -1018,7 +1157,7 @@ def decide_possession(
     # Utilities become relative categorical weights. Log-space temperature
     # preserves their ratios, keeping the smooth long-shot tail small.
     values = jnp.stack(
-        (shot_plan.value, best_pass_value, best_dribble_value, clear_value)
+        (shot_macro_value, best_pass_value, best_dribble_value, clear_value)
     )
     macro_available = values >= 0.0
     fallback_kind = jnp.argmax(values).astype(jnp.int32)
@@ -1039,11 +1178,23 @@ def decide_possession(
         progressive_pattern
         & setup_phase
         & (possession_seconds < progressive_carry_commit_s)
+        & (~safe_release)
         & (current_pressure < jnp.float32(_CLEARANCE_PRESSURE))
-        & (shot_plan.value < jnp.float32(_SAFE_PASS_COMPLETION))
+        & (shot_macro_value < jnp.float32(_SAFE_PASS_COMPLETION))
         & (~clear_available)
     )
     kind = jnp.where(progressive_commit, jnp.int32(POSSESSION_DRIBBLE), kind)
+    release_due = (
+        decision_due
+        & safe_release
+        & (possession_seconds >= jnp.float32(config.solo_carry_soft_limit_s))
+    )
+    release_kind = jnp.where(
+        shot_plan.value > best_pass_value,
+        jnp.int32(POSSESSION_SHOT),
+        jnp.int32(POSSESSION_PASS),
+    )
+    kind = jnp.where(release_due, release_kind, kind)
     kind = jnp.where(decision_due, kind, jnp.int32(POSSESSION_DRIBBLE))
     direction = jnp.where(
         kind == POSSESSION_SHOT,
@@ -1089,7 +1240,7 @@ def decide_possession(
 
     target = jnp.where(has_pass, best_pass, jnp.int32(NO_PLAYER)).astype(jnp.int32)
 
-    return PossessionDecision(
+    decision = PossessionDecision(
         direction=direction,
         power=power,
         launch=launch,
@@ -1098,6 +1249,48 @@ def decide_possession(
         spin=spin,
         cross=cross_applied,
     )
+    if not with_candidate_trace:
+        return decision
+
+    receiver_slot = jnp.tile(jnp.arange(player_count, dtype=jnp.int32), 2)
+    is_cross = jnp.concatenate(
+        (
+            jnp.zeros(player_count, dtype=jnp.bool_),
+            jnp.ones(player_count, dtype=jnp.bool_),
+        ),
+        axis=0,
+    )
+    target_xy = jnp.concatenate((receiver_target, prepared_cross_target), axis=0)
+    progression_contribution = jnp.concatenate(
+        (
+            pass_lane * pass_progression_gain,
+            cross_completion
+            * tactical.progressive_pass_gain
+            * cross_progressive_preference,
+        ),
+        axis=0,
+    )
+    receiver_forward_velocity = jnp.concatenate(
+        (player_velocity[:, 0], player_velocity[:, 0]), axis=0
+    )
+    return decision, PossessionCandidateTrace(
+        carrier_slot=jnp.int32(NO_PLAYER),
+        receiver_slot=receiver_slot,
+        is_cross=is_cross,
+        eligible=service_eligible,
+        selected=(
+            has_pass & (jnp.arange(2 * player_count, dtype=jnp.int32) == best_service)
+        ),
+        target_xy=target_xy.astype(jnp.float32),
+        completion=service_completion.astype(jnp.float32),
+        selection_value=service_value.astype(jnp.float32),
+        macro_value=service_base_value.astype(jnp.float32),
+        progression_contribution=progression_contribution.astype(jnp.float32),
+        relative_depth_m=(target_xy[:, 0] - source[0]).astype(jnp.float32),
+        receiver_forward_velocity_mps=receiver_forward_velocity.astype(jnp.float32),
+        source_xy=source.astype(jnp.float32),
+        decision_due=jnp.asarray(decision_due, dtype=jnp.bool_),
+    )
 
 
 __all__ = [
@@ -1105,6 +1298,7 @@ __all__ = [
     "POSSESSION_DRIBBLE",
     "POSSESSION_PASS",
     "POSSESSION_SHOT",
+    "PossessionCandidateTrace",
     "PossessionDecision",
     "ShotPlan",
     "decide_possession",

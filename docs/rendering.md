@@ -5,6 +5,35 @@ rollout remains in JAX; one fixed event chunk is transferred at a time, exact
 sidecars are spooled to disk, and video segments are encoded concurrently.
 Nothing in this pipeline is added to the ordinary training `env.step` graph.
 
+## Demo tactical plans
+
+The root demo exposes side-specific reference-policy selection:
+
+```bash
+python demo_match.py --output output/tactical-demo \
+  --team-0-plan salida_lavolpiana --team-1-plan random --seed 29
+```
+
+`--team-0-plan` and `--team-1-plan` independently accept
+`salida_lavolpiana`, `juego_de_posicion`, `gegenpress`, `catenaccio`,
+`zona_mista`, or `random`; each option defaults to `juego_de_posicion`.
+`random` is resolved once for each requesting team from a dedicated PRNG key
+derived from `--seed`. The two resolved plans are then fixed for the whole
+match. Replay provenance records those resolved plan names and the SHA-256
+fingerprint of the canonical `RulePolicyConfig`, so the effective policy input
+can be audited without treating a requested `random` label as the realized
+configuration.
+
+FootballWorld inherits SoccerWorld's sound side-specific selection and seeded,
+independent random resolution because those properties make comparisons
+reproducible and prevent one side's request from determining the other's.
+FootballWorld rejects SoccerWorld's continuous style-vector mechanism for this
+surface: its rule policy defines five named, mechanism-specific tactical plans,
+so the CLI selects among those explicit plans rather than interpolating an
+unidentified vector whose values would not map to FootballWorld's tactical
+branches. Plan resolution and receipt construction stay host-side and add no
+state, branch, or operation to the JAX transition.
+
 ## Full matches and selected intervals
 
 Use the managed entry point for a final match replay:
@@ -169,6 +198,17 @@ Resolve an action or event slot against this map first and same-tick tracking
 otherwise. This preserves stable actor identity without adding an identity leaf
 to the compiled event transition.
 
+Report-only capture preserves one outer render group per retained control frame,
+but each inner group is intentionally empty because no visual sample is built.
+After a manager transaction, the host control frame is still replaced for
+tracking/event identity; the renderer endpoint is replaced only when the final
+inner group actually contains a video sample. SoccerWorld's sound treatment of
+disabled capture widths and empty resampling outputs as valid empty products is
+inherited. SoccerWorld has no managed streaming report-only path, so
+FootballWorld rejects the video-only assumption that every non-empty outer
+control group contains a renderer sample. This check remains host-only and does
+not alter capture shapes, JAX graphs, or video behavior.
+
 A host-only constant-memory watchdog checks each returned chunk. An active
 restart whose countdown has expired without a legal layout fails immediately.
 A layout-ready restart that does not release is bounded by the configured
@@ -288,9 +328,9 @@ foul banner for player 2007 (display slot 17) on player 1014 (display slot 6).
 Both before and after clips contain 150 frames at 1,920x1,080 and 15 Hz. On the
 same cached host frames, single-process rendering measured 44.088 fps before
 and 42.960 fps after, a 2.56% render-only reduction; simulation and sidecar I/O
-were outside both intervals. The retained clips, timing JSON, and representative
-comparison PNG are in
-[`output/render-redesign-1080p-foul-20260906`](../output/render-redesign-1080p-foul-20260906/).
+were outside both intervals. The generated comparison artifacts are
+intentionally not retained in the repository; only this bounded host-specific
+receipt is preserved.
 
 ## Sidecar schemas and lossless sparse events
 
@@ -353,9 +393,12 @@ a second schema adapter. NPZ stays within the existing NumPy dependency and
 preserves normalized observation leaf dtypes directly. Parquet can remain a
 separate analytical export later.
 
-Metadata `/8` retains the `/7` top-level,
-runtime-authored `render` receipt separate from caller `user_metadata`. It
-records the selected frame rate, requested resolution/codec/pixel format,
+Metadata `/9` retains the earlier top-level contracts and keeps the
+runtime-authored `render` receipt separate from caller `user_metadata`. It also
+records `footballworld.match-manifest/1` once: registered on-field and bench
+identities, realized physical profiles, declared bench role preferences, and
+the formation catalog. It records the selected frame rate, requested
+resolution/codec/pixel format,
 effective host-clamped encoder settings, requested/effective worker counts,
 process start method, chunk and segment counts, fixed camera azimuth,
 elevation, distance and focal length, environment partial-view state, exact
@@ -387,13 +430,13 @@ Managed exact-event capture generates replay provenance rather than accepting
 it as a user claim. It includes the exact PRNG key representation,
 FootballWorld/JAX/JAXlib versions, backend, device kinds, x64 and PRNG settings,
 semantic schema versions, environment and imported-source hashes, and policy
-class/version or configuration hashes when available. User metadata remains
+class and configuration hashes when available. User metadata remains
 separately nested. The direct memory-resident helper still generates its
 render-settings and exact-count receipts, but it cannot infer its caller's
 environment source, policy, or trajectory origin; any such caller metadata is
 kept under `user_metadata` and is not upgraded to runtime provenance.
 
-`footballworld.events/14` uses
+`footballworld.events/15` uses
 `footballworld.occurred-events/2`. It stores only meaningful fixed-tree rows,
 identified by event type, physics substep, optional slot, and every original
 field. Omitted rows are explicitly the canonical empty sentinels. In
@@ -424,12 +467,16 @@ identifier and cannot by itself define goals per shot.
 Action traces use `MOVE` and policy provenance as defaults and store only
 categorical exceptions. `restore_sparse_action_trace` reconstructs the full
 categorical player axis. Exact capture additionally uses
-`footballworld.contact-actions/2`: a row retained for a non-`MOVE` request or
+`footballworld.contact-actions/3`: a row retained for a non-`MOVE` request or
 a realized deliberate contact carries the submitted `move`, `force_to_ball`,
 `launch`, `spin`, and `gaze_center` controls. This is sufficient to audit pass,
 cross, shot, control, clearance, challenge, and contact-time view signatures
-without adding a policy-output leaf or duplicating every player's movement on
-every frame.
+without duplicating every player's movement on every frame. Retained `PASS`
+rows also carry the registered `intended_receiver_player_id` from the rule
+policy's capture-only action receipt, or `null` when the policy exposes no such
+receipt. This is intent, not a pass completion claim. The extra `[T,N]`
+receiver-ID output exists only in managed exact-event capture and never enters
+training rollout results, recurrent policy state, or tracking storage.
 
 This bounded continuous trace is intentionally not a rollout-replay contract.
 Omitted `MOVE` rows often contain non-zero movement controls, so those values
@@ -461,6 +508,15 @@ sparse formation receipt, writes it immediately into the final JSON array, then
 releases it. It never accumulates the full fixed event tree or all event-frame
 mappings in memory.
 
+## Match reports
+
+The host-only analyzer verifies a published replay and derives versioned JSON
+metrics plus a metrics-only HTML report that neither links nor embeds the video.
+Tracking remains the source for
+continuous spatial and workload calculations; discrete facts remain event-owned.
+See [match-report.md](match-report.md) for the command, metric definitions, and
+diagnostic-capture rules.
+
 ## Presentation and capture design
 
 The renderer uses a fixed oblique pinhole projection, stands, 3D goals and
@@ -475,7 +531,50 @@ full-trajectory host materialization, and post-hoc event reconstruction remain
 excluded so every segment is independently renderable from exact causal host
 frames.
 
-The historical v12 audit reports possession and turnovers, challenge
+SoccerWorld's renderer established the sound host-side pattern of persistent
+artists, blitting, and batched collection drawing. FootballWorld retains those
+advantages and keeps all presentation work outside the JAX step. It does not
+inherit SoccerWorld's larger pose/path and historical-effect graph: those
+features would increase per-frame host work and memory without changing the
+authoritative FootballWorld state shown by the current presentation contract.
+
+The fixed-shape hot path additionally reuses camera-space depth, collection
+`Path` objects, unchanged color/visibility state, and the invariant layout of
+each player number or `GK` label. Labels remain the original individual Agg
+text artists and therefore retain the same font hinting and rasterization.
+Intent-ring geometry is skipped when no non-move action is displayed. These are
+render-only changes; they do not change capture, physics, rules, tracking, or
+event facts.
+
+The 2026-09-09 renderer validation used 225 already-decoded tracking frames at
+960 x 540 on an AMD EPYC 7763 host (Python 3.11.13, NumPy 1.26.4, Matplotlib
+3.10.9, FFmpeg 7.0.2, one `veryfast` encoder thread). With environment stepping
+and tracking decoding outside the timed region, warmed Agg-only throughput rose
+from a median 69.360 fps to 94.911 fps (1.37x). The same `render_frames` path
+including H.264 encoding rose from 61.416 fps to 82.878 fps (1.35x). The four
+encoded A/B repetitions all produced the same 621,906-byte MP4 with SHA-256
+`602c71f069719d2089a9aba82deb606e93999c174111368eab162ef58f48c3c9`;
+an uncompressed frame comparison also had zero changed pixels. These are
+host-specific performance receipts, not portable frame-rate guarantees or
+football constants.
+
+The follow-up 2026-09-09 font-path experiment kept SoccerWorld's sound
+host-only persistent-artist design and removed only repeated resolution of an
+unchanged Matplotlib `FontProperties` object. The cache is scoped to one Agg
+renderer and retains font loading, sizing, hinting, and rasterization; missing
+private backend hooks fail closed to Matplotlib's original method. Across 225
+frames from the same tracking artifact, both 960 x 540 and 1920 x 1080 had zero
+different uncompressed RGBA frame hashes. Median Agg-only throughput over 900
+frames rose from 96.887 to 103.124 fps at 540p and from 92.471 to 98.791 fps at
+1080p. A 50--900-frame linear fit estimated about 58 ms baseline and 79 ms
+final-candidate fixed setup per segment; the noisier candidate intercept projects
+to about 40 seconds, or 3.55% of the observed 508-segment full match. Sharing
+figures across independently encoded segments was rejected here because the
+roughly 3.5% projected saving does not yet justify weakening process
+isolation, bounded lifetime, and failure recovery. Generated raw repetitions
+and frame hashes are intentionally excluded from the repository.
+
+The replay audit reports possession and turnovers, challenge
 and foul outcomes, submitted intents against realized contacts, shot/pass
 geometry, stationary-live streaks, restart delays, goalkeeper holds, event
 budget, stamina and speed by half, score, termination, and numerical guards.

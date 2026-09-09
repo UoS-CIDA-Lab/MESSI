@@ -185,11 +185,13 @@ def _management_stoppage_open(
     missing_hold_goalkeeper = (
         (state.restart.kind == RK_GK_HOLD)
         & restart_team_valid
-        & (~jnp.any(
-            players.active
-            & players.is_goalkeeper
-            & (players.team_id == state.restart.team)
-        ))
+        & (
+            ~jnp.any(
+                players.active
+                & players.is_goalkeeper
+                & (players.team_id == state.restart.team)
+            )
+        )
     )
     release = state.restart_release
     causal_stoppage_clean = (

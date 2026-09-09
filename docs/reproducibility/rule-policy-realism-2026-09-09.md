@@ -1,0 +1,251 @@
+# 규칙 정책 현실성 개선 기록 — 2026-09-09
+
+## 결정과 범위
+
+이번 변경은 다음 현상을 대상으로 한다.
+
+- 킥오프 직후 여러 선수가 같은 방향으로 동기화되는 이동
+- 안전한 패스가 있는데도 한 선수가 오래 운반하는 행동
+- 선수의 formation 측면을 과도하게 벗어나는 드리블
+- 탈취 직후 낮은 품질의 슛이 과도하게 선택되는 행동
+- 연결된 패스 수신자를 현재 프레임의 가시성·오프사이드로 다시 판정하던 인과 오류
+
+환경의 접촉, 득점, 오프사이드, 재시작 합법성은 바꾸지 않았다. 새 recurrent
+state, 새 난수 스트림, 동적 반복, 선수 쌍 텐서도 추가하지 않았다.
+`policy_config_fingerprint`는 dataclass 전체를 canonical JSON으로 직렬화하므로
+새 public config 필드도 자동으로 정책 식별자에 포함된다.
+
+## 필수 SoccerWorld 기준 확인
+
+구현 전에 `/data/SoccerWorld`의 다음 실제 자료를 확인했다.
+
+| 확인 자료 | 유지한 장점 | 그대로 이식하지 않은 부분과 이유 |
+|---|---|---|
+| `src/soccerworld/_engine/rule_policy/guide.md` | 슛·패스·드리블·클리어를 하나의 bounded common currency에서 비교하고, 수치 지표와 경기 양상을 함께 평가한다. | 문서의 DFL 집계는 유용한 비교 기준이지만 일부 builder/동일 계약 재현 근거가 완결되지 않았다. 다른 관측·행동 계약의 계수를 측정 상수로 가져오지 않았다. |
+| `src/soccerworld/_engine/rule_policy/policy.py` | 패스는 물리적 lane과 수신 경쟁을 함께 통과해야 하며, formation-relative role과 상황별 release hazard를 사용한다. | SoccerWorld의 carrier cadence를 줄 단위로 복사하지 않았다. FootballWorld에는 이미 public observation에서 유도한 `control_ticks`, `possession_age`, `previous_possessor`가 있어 이 인과 상태를 재사용하는 편이 API·컴파일·현실성에 맞다. |
+| `src/soccerworld/_engine/manager.py` 및 `src/soccerworld/_engine/formation.py` | static callable과 dynamic parameter PyTree를 분리하고, 감독 결정과 formation 의미를 저빈도 경계에 둔다. | bench·formation·host validation을 lean player step 안으로 옮기지 않았다. FootballWorld의 고정형 관리 경계를 유지했다. |
+| `tests/unit/policies/test_rule_policy_tactics.py`, `test_rule_policy_formation_roles.py`, `test_rule_policy_dribble_recontact.py` | 역할이 절대 좌표가 아니라 formation에 상대적이어야 하고, loose touch가 정책 기억을 임의로 지우면 안 된다는 의미 계약을 유지했다. | FootballWorld의 public-observation 행 구조와 다른 fixture 수치를 복사하지 않았다. |
+| `tests/unit/control/test_manager.py`, `tests/contracts/public_api/test_roster_configuration.py`, `experiments/phase_s/tests/test_ability_profiles.py` | 외부 작성 roster/ability는 그대로 보존하고, 무작위 profile은 명시 key와 bounded prior로 재현하며, 관리 policy는 외부 callable로 교체할 수 있어야 한다. | 다른 엔진의 roster 모양이나 비공개 상태를 FootballWorld transition에 추가하지 않았다. |
+| `docs/performance/rule-policy-exact-gate-2026-08-29.md`, `docs/reproducibility/coefficient-provenance.md`, `docs/reproducibility/baseline-20260829.md`, `docs/reproducibility/release-audit-20260829.md` | cold compile, warm runtime, graph 크기, 경기 의미 지표를 구분해 기록한다. | 대응 A/B가 없는 상태에서 산술 감소만으로 성능 향상 또는 StableHLO 퇴행 부재를 주장하지 않는다. |
+
+### 계승한 정책 원리
+
+1. 패스 후보의 합법성과 completion은 전술 선호보다 먼저 보존한다.
+2. SHOT/PASS/DRIBBLE/CLEAR는 같은 bounded utility 공간에서 확률적으로 선택한다.
+3. 역할과 폭·깊이는 formation anchor에 상대적으로 정의한다.
+4. 외부 학습 policy는 callable을 고정하고 parameters/state를 동적 PyTree로
+   전달해 값 변경 때문에 재컴파일하지 않게 한다.
+5. 모든 episode draw는 명시 match key와 public clock/identity에서 유도한다.
+
+### 변경하거나 거부한 기준 동작
+
+- 안전한 패스가 있어도 soft limit 뒤 dribble utility가 일정한 비율로만
+  남던 plateau를 거부했다. 강제 PASS나 숨은 timer 대신 안전한 lane,
+  개인 control age, 관측 기반 team episode age를 결합한 연속 utility를 쓴다.
+- 현재 프레임의 `visible` 또는 prospective offside가 과거 연결 수신의
+  provenance를 지우는 동작을 거부했다. 과거 행위자 identity와 현재 패스
+  합법성은 서로 다른 estimand다.
+- 킥오프에서 모든 선수가 현재 formation target까지 직선으로만 향하는
+  동작을 거부했다. 역할·roster slot 기반의 짧은 2-D waypoint를 사용하되
+  opening window가 끝나면 원래 target으로 정확히 돌아간다.
+- 탈취 직후 낮은 품질 shot이 다른 macro utility를 압도하는 동작을
+  거부했다. 짧은 settle 할인만 적용하고 높은 품질 기회는 그대로 둔다.
+
+## FootballWorld 구현
+
+### Solo possession과 연결 수신
+
+`decide_possession`은 caller가 주는 두 public-causal 입력을 추가로 사용한다.
+
+- `possession_episode_seconds`: observer-local `RulePolicyState.possession_age`
+- `formation_anchor_y`: 현재 carrier의 시작 formation anchor
+
+solo tenure는 개인 `carrier_control_ticks`를 기본으로 한다. `previous_actor`가
+없는 동일 팀 episode에서만 episode age가 순간적인 loose dribble touch를
+이어 준다. 연결된 수신자가 있으면 긴 team build-up age를 새 carrier 개인
+운반 시간으로 상속하지 않는다.
+
+연결 판정은 다음 identity mask만 사용한다.
+
+`previous_actor & context.same_team & context.participating & not_current_self`
+
+현재 visibility와 prospective offside는 이 과거 identity 판정에 들어가지
+않는다. 따라서 보이지 않거나 현재 offside인 이전 동료도 causal pass
+연결은 보존한다. 반대로 상대, 비활성 슬롯, 현재 carrier 자신을 가리키는
+malformed provenance는 fail-closed다.
+
+안전한 pass completion이 있을 때만 solo soft limit 이후 pass utility를
+올리고 dribble utility를 더 낮춘다. 충분히 높은 전진 dribble utility가
+best pass보다 좋은 경우에는 추가 release pressure를 적용하지 않는다.
+formation anchor로부터의 y 이탈 비용도 eligibility ban이 아닌 soft cost이며,
+압박이 커지면 약해져 긴급 탈출을 막지 않는다.
+
+### 탈취 직후 shot
+
+연결된 이전 동료가 없고 episode age가 settle window보다 짧으며 shot
+quality가 기존 safe-completion 경계보다 낮을 때만 shot macro utility를
+연속적으로 할인한다. 슛 방향, 힘, 물리 적용, 득점 판정은 바꾸지 않는다.
+높은 품질 chance와 연결된 수신 뒤의 슛은 이 할인에서 제외된다.
+
+### 킥오프 역할·슬롯 2-D 경로
+
+`_KICKOFF_ROLE_PATH`는 GK/CB/FB/CM/WM/CF/WF별 longitudinal/lateral
+waypoint 크기를 갖는 고정 2-D 표다. longitudinal 부호는 stable roster-slot
+parity로 분산하고, lateral 부호는 공격 시 formation 폭을 유지하며 수비 시
+compact 방향을 강화한다. 이는 역할별 경로를 만들기 위한 choreography
+`DESIGN_PRIOR`이며 tracking-data fit이 아니다.
+
+caller는 첫 live action에서
+`(absolute_tick + 1) / kickoff_path_window_ticks`를 전달한다. active 조건은
+`absolute_tick < kickoff_path_window_ticks`다. quadratic envelope
+`4 * phase * (1 - phase)`는 window 마지막 tick의 phase 1과 window 이후의
+phase 0에서 모두 0이므로 settled formation target은 기존과 같다. 초기
+선수 위치와 환경의 킥오프 합법성은 변경하지 않는다.
+
+## 새 public config의 증거 분류
+
+다음 다섯 값은 모두 `DESIGN_PRIOR`다. 현재 정책/관측/행동 계약에서 선택한
+bounded tuning controls일 뿐, DFL 또는 다른 제공자에서 측정된 보편적 축구
+상수가 아니다.
+
+| 필드 | 개선 후 기본값 | 검증 범위 | 용도와 비측정 지위 |
+|---|---:|---|---|
+| `dribble_shape_drift_penalty` | 0.20 | `[0, 1]` | 오래된 비압박 운반의 formation-y 이탈 soft cost. 측정된 위치 복귀율이 아니다. |
+| `turnover_shot_settle_s` | 0.8 s | `> 0` | 새 possession의 저품질 shot 할인 시간축. 측정된 프로 평균 시간이 아니다. |
+| `turnover_shot_value_scale` | 0.35 | `[0, 1]` | settle 시작점의 shot utility 배율. 슛 성공 확률이 아니다. |
+| `kickoff_path_window_s` | 3.0 s | `> 0` | 역할별 opening waypoint가 사라지는 정책 창. 경기 규칙 시간이 아니다. |
+| `kickoff_path_lateral_shift_m` | 2.4 m | `> 0` | 2-D 역할표의 base displacement scale. tracking 이동량 추정치가 아니다. |
+
+`_KICKOFF_ROLE_PATH`의 역할별 2-D multiplier도 같은 `DESIGN_PRIOR`
+분류다. 다섯 public knob와 별도로 구성된 고정 choreography bundle이며,
+측정 계수로 제시하지 않는다.
+
+## 외부 학습·관리 경계 확인
+
+- `ManagerPolicy`/`FunctionalManagerPolicy`와
+  `OpeningManagerPolicy`/`FunctionalOpeningManagerPolicy`는 외부 학습
+  parameters/state를 dynamic PyTree로 받을 수 있다.
+- `RuleBasedManager`의 교체, formation candidate 선택, restart taker
+  scoring/sampling은 명시 key를 사용하며 custom manager로 교체할 수 있다.
+- opening API는 외부 formation layout과 `[L]` 또는 `[2, L]`
+  `formation_probabilities`를 검증해 받는다.
+- 외부에서 작성한 ability profile은 그대로 보존된다. 무작위 초기화 경로는
+  명시 key와 bounded symmetric compatibility prior를 사용한다. 그 범위를
+  선수 능력의 측정 분포라고 부르지 않는다.
+- manager, taker, opening formation, ability 준비는 저빈도/host 경계에
+  남아 있으며 lean player transition에 bench나 dataset adapter를 넣지 않았다.
+
+## 킥오프 측정
+
+측정 fixture는 seed 19, 11명씩 두 팀, 11 control-step actual rollout이다.
+각 시점의 public encoded movement direction을 decode하고 팀 내 55개 선수
+쌍 cosine의 median과 `cosine > 0.98` 개수를 계산했다.
+
+| 1초 시점 | 이전 y-only waypoint | 개선된 역할·슬롯 2-D waypoint | 변화 |
+|---|---:|---:|---:|
+| Team 0 cosine median | 0.723 | 0.679 | -0.044 |
+| Team 0 `> 0.98` pairs | 7/55 | 6/55 | -1 |
+| Team 1 cosine median | 0.992 | 0.909 | -0.083 |
+| Team 1 `> 0.98` pairs | 39/55 | 11/55 | -28 |
+
+전용 shape 검증은 다음 의미 계약도 확인한다.
+
+- phase 0, phase 1, disabled shift, 범위 밖 clamp가 같은 settled target
+- 첫 command phase `1/30`에서 적어도 네 역할의 nonzero waypoint
+- GK waypoint 0
+- midpoint x 절댓값은 `1.5 * 2.4 m` 이하
+- midpoint y 절댓값은 `2.0 * 2.4 m` 이하
+
+## 검증
+
+- `PYTHONPATH=src pytest -q tests/test_rule_policy_realism_validation.py`
+  — **11 passed**
+- previous teammate invisible/offside adversarial subset와 인접 settle/carry
+  검증 — **4 passed**
+- `tests/test_rule_policy_pass_diagnostics.py` — **1 passed**
+- 변경 Python 파일 `py_compile` — passed
+- Ruff lint — passed
+- `git diff --check` — passed
+
+invisible/offside adversarial case는 두 조건에서 모두 오래된 team episode를
+새 carrier solo tenure로 상속하지 않고, 연결된 수신이 fresh-shot settle
+할인에서 면제됨을 검증한다.
+
+## 성능·컴파일 주장 경계
+
+구조적으로 추가된 hot-path 작업은 carrier row의 scalar utility 산술과
+선수별 고정 길이 waypoint vector 연산이다. 새 state leaf, 새 RNG, 새
+data-dependent branch, 새 선수 쌍 materialization은 없다.
+`kickoff_path_window_ticks`는 policy factory에서 host scalar로 미리 계산한다.
+
+그러나 변경 전후 cold compile, warm runtime, memory, StableHLO op/byte에 대한
+동일 source/backend A/B 영수증은 이 문서에 없다. 따라서 이 변경이 성능을
+개선했다거나 StableHLO/컴파일에 퇴행이 없다고 주장하지 않는다.
+
+## whole-match vmap 옵션 폐기
+
+사용자 지시에 따라 whole-match public batching에서 `vmap`을 선택하는
+옵션·flag·실행 경로는 완전히 폐기했다. public `batch_rollout`은
+`jax.lax.map` 한 경로만 제공한다. 이는 현재 정책의 재현 가능한 실행 경계를
+단일화한다.
+
+이 문장은 엔진 내부의 고정 크기 지역 계산에서 `jax.vmap` 연산 자체를
+금했다는 뜻이 아니다. restart 후보, 관측 행, lookup 작성 같은 내부
+벡터화는 public whole-match backend 선택 옵션과 별개다.
+
+## 전체 90분 정책 진단
+
+seed 29 개선 후 산출물은 57,642 frame을 기록했고
+`full_duration_complete`와 `regulation_complete`를 모두 만족했다. event
+budget exhausted는 0이며, 실행 시작과 종료의 production source hash는
+동일했다. 다만 공유 worktree가 dirty인 상태에서 얻은 결과이므로 이 절의
+수치는 release-authoritative calibration이 아니라 source-stable diagnostic다.
+
+아래는 같은 seed의 구 산출물(report v6/v7)과 새 산출물(report v7/v8)을
+비교한 단일 경기 기술 통계다. 표본 한 경기의 차이를 계수 보정 성공이나
+인과 효과로 해석하지 않는다.
+
+| 진단 | 개선 전 산출물 | 개선 후 산출물 | 기술적 변화 |
+|---|---:|---:|---:|
+| quick-after-regain shots | 18/25 (72.00%) | 16/27 (59.26%) | 비중 -12.74%p |
+| quick-after-regain goals | 3/4 (75.00%) | 2/3 (66.67%) | 비중 -8.33%p |
+| sustained + open-play buildup shots | 1/25 (4.00%) | 3/27 (11.11%) | 비중 +7.11%p |
+| regain 뒤 0.8초 이하 quick shots | 6 | 5 | -1 |
+| regain 뒤 1.5초 이하 quick shots | 8 | 12 | +4 |
+| same-actor contacts skipped | 345 | 230 | -33.3% |
+| same-team pass receipt | 0.8968 | 0.9119 | +0.0151 |
+| continuous control 최댓값 | 3.3 s | 3.0 s | -0.3 s |
+| continuous control 3초 초과 episode | 2 | 0 | -2 |
+| lateral range 10 m 초과 episode | 4 | 1 | -3 |
+| lateral range p95 | 4.95 m | 5.11 m | +0.16 m |
+| lateral range 평균 | 1.395 m | 1.439 m | +0.044 m |
+
+0.8초 이하 quick shot은 하나 줄었지만 1.5초 이하는 8회에서 12회로
+늘었다. 현재 settle prior의 직접 범위가 0.8초뿐이라는 점과 함께 명시적인
+잔여 위험으로 남긴다. same-actor skipped contact의 33.3% 감소도 원인 분리가
+없는 진단 수치일 뿐 성능 또는 현실성 개선률로 주장하지 않는다.
+
+lateral range 10 m 초과 episode는 줄었지만 p95와 평균은 각각 4.95 m에서
+5.11 m, 1.395 m에서 1.439 m로 올랐다. 따라서 lateral movement가 전 구간에서
+일괄 개선됐다고 주장하지 않는다. 최종 score도 3-1에서 0-3으로 달라졌으나
+단일 경기 결과를 정책 변경의 인과 효과로 해석하지 않는다.
+
+실제 manager/report event count는 substitution 10회, formation 변경 2회,
+set-piece taker 변경 54회다. 이 수치는 당시 검증 입력에 한정된 진단값이며,
+삭제된 로컬 output을 현재 배포 증거로 참조하지 않는다.
+
+## 최종 동결 검증·성능·패키징
+
+최종 동결 source에서 CPU public 11v11, seed 29, 32-step fixture를 격리된
+새 cache로 측정했다. compile과 첫 실행을 합친 cold time은 29.2999초였고,
+7회 warm 실행의 median은 0.0507851초, 처리량은 630.106 step/s였다. 이는
+해당 환경의 절대 측정치이며 동일 조건의 변경 전 A/B가 없으므로 성능 개선이나
+무퇴행의 근거로 사용하지 않는다.
+
+현재 source의 CPU test suite는 204.74초에 80 passed였다. whole-tree
+Ruff와 `git diff --check`도 통과했다. GPU 전체 검증은 이 source에서 다시
+측정하지 않았으므로 GPU 무퇴행을 주장하지 않는다.
+
+현재 source에서 sdist와 wheel을 다시 build했고 wheel metadata의 배포
+버전이 `0.1.0`임을 확인했다. wheel에는 `.orig`, test, `calib`, output
+경로가 포함되지 않았다.

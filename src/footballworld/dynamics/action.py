@@ -171,6 +171,7 @@ def trace_action_receipt(
     action: IntentAction,
     *,
     executed: jax.Array = True,
+    _effective_intent: jax.Array | None = None,
 ) -> ActionReceipt:
     """Return input-sanitization and terminal facts for one eventful frame.
 
@@ -178,14 +179,26 @@ def trace_action_receipt(
     parameter use as independent causal sidecar facts rather than collapsing
     them into a flat agency mask. This preserves
     those facts independently.  This function intentionally sees the action
-    before :func:`decode_physics_action` sanitizes it.
+    before :func:`decode_physics_action` sanitizes it. The transition may pass
+    the already-sanitized intent privately so event capture does not repeat
+    the full continuous-control normalization performed by physics.
     """
 
     if not isinstance(action, IntentAction):
         raise TypeError("action must be IntentAction")
     submitted_intent = jnp.asarray(action.intent)
     submitted_continuous = action.as_continuous_array()
-    sanitized = IntentAction.from_array(submitted_intent, submitted_continuous)
+    if _effective_intent is None:
+        effective_intent = IntentAction.from_array(
+            submitted_intent, submitted_continuous
+        ).intent
+    else:
+        effective_intent = jnp.asarray(_effective_intent, dtype=jnp.int32)
+        if effective_intent.shape != submitted_intent.shape:
+            raise ValueError(
+                "_effective_intent must match action.intent shape, got "
+                f"{effective_intent.shape} and {submitted_intent.shape}"
+            )
     invalid_intent = (submitted_intent < 0) | (submitted_intent >= ACTION_INTENT_COUNT)
     nonfinite = ~jnp.all(jnp.isfinite(submitted_continuous), axis=-1)
     clipped = jnp.any(
@@ -216,7 +229,7 @@ def trace_action_receipt(
     zeros_u16 = jnp.zeros(submitted_intent.shape, dtype=jnp.uint16)
     return ActionReceipt(
         requested_intent=submitted_intent.astype(jnp.int32),
-        effective_intent=sanitized.intent,
+        effective_intent=effective_intent,
         flags=flags,
         eligibility_seen=zeros_u16,
         primary_reason=primary_reason,

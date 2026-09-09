@@ -20,9 +20,6 @@ from footballworld.core.constants import (
 from footballworld.policies.rule_based.context import RulePolicyContext
 from footballworld.policies.rule_based.state import ROLE_GOALKEEPER, RulePolicyState
 
-DEADBALL_SHAPE_VERSION = 1
-"""Version of the compact, team-moment transfer prior."""
-
 # [restart kind, side (0 restart team / 1 defending team), pitch third,
 #  (centroid x, positive-ball-side centroid y, x std, y std)].  These are
 # compressed team moments from the SoccerWorld K-League transfer fit, not DFL
@@ -150,12 +147,6 @@ def restart_shape_target(
     # pitch. Reduced teams and custom stadiums retain the ordinary procedural
     # formation rather than extrapolating this absolute-metre prior.
     standard_pitch = jnp.isclose(half_length, 52.5) & jnp.isclose(half_width, 34.0)
-    valid = (
-        valid
-        & context.self_active
-        & (~self_is_gk)
-        & (count == 10)
-        & standard_pitch
-    )
+    valid = valid & context.self_active & (~self_is_gk) & (count == 10) & standard_pitch
     target = jnp.where(valid[:, None], target, context.self_position)
     return target.astype(jnp.float32), valid

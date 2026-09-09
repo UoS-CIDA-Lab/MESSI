@@ -157,6 +157,16 @@ _WIDE_ROLE = (
     True,
 )
 """Roles whose formation anchors must retain explicit lateral width."""
+_KICKOFF_ROLE_PATH = (
+    (0.00, 0.00),  # goalkeeper
+    (0.60, 0.45),  # centre back
+    (0.85, 1.80),  # full back
+    (1.10, 0.95),  # centre midfielder
+    (1.25, 2.00),  # wide midfielder
+    (1.50, 0.85),  # centre forward
+    (1.40, 1.90),  # wide forward
+)
+"""Role-scaled 2-D opening waypoint DESIGN_PRIOR; not a tracking-data fit."""
 
 
 class ShapeMovement(NamedTuple):
@@ -221,8 +231,9 @@ def _observable_offside_line(
         -jnp.inf,
     )
     visible_count = jnp.sum(context.opponent, axis=-1)
-    sorted_x = jnp.sort(opponent_x, axis=-1)
-    second_last = sorted_x[:, -2]
+    # Only the two most advanced opponents are needed. top_k preserves the
+    # same second-last value while avoiding a full roster sort per observer.
+    second_last = jax.lax.top_k(opponent_x, 2)[0][:, 1]
     has_defender_line = visible_count >= 2
 
     ball_x = context.ball_position[:, 0]
@@ -361,6 +372,48 @@ def _goal_side_mark_target(
     return runner_position + direction * jnp.float32(distance_m)
 
 
+def _forward_pocket_delta(attack_pattern, ball_side, shift_m):
+    """Return one stable, pattern-specific pocket displacement."""
+
+    attack_pattern = jnp.asarray(attack_pattern, dtype=jnp.int32)
+    ball_side = jnp.where(
+        jnp.asarray(ball_side, dtype=jnp.float32) >= 0.0,
+        jnp.float32(1.0),
+        jnp.float32(-1.0),
+    )
+    shift_m = jnp.maximum(jnp.asarray(shift_m, dtype=jnp.float32), 0.0)
+    progress = attack_pattern == jnp.int32(AttackPattern.PROGRESSIVE_CARRY)
+    third_man = attack_pattern == jnp.int32(AttackPattern.THIRD_MAN)
+    overload = attack_pattern == jnp.int32(AttackPattern.WIDE_OVERLOAD)
+    switch = attack_pattern == jnp.int32(AttackPattern.SWITCH_PLAY)
+    depth = jnp.where(
+        progress,
+        jnp.float32(0.45),
+        jnp.where(
+            third_man,
+            jnp.float32(0.72),
+            jnp.where(overload, jnp.float32(0.58), jnp.float32(0.35)),
+        ),
+    )
+    lateral = jnp.where(
+        progress,
+        -jnp.float32(0.45) * ball_side,
+        jnp.where(
+            third_man,
+            -jnp.float32(0.50) * ball_side,
+            jnp.where(
+                overload,
+                jnp.float32(0.72) * ball_side,
+                jnp.where(switch, -jnp.float32(0.85) * ball_side, 0.0),
+            ),
+        ),
+    )
+    direct = attack_pattern == jnp.int32(AttackPattern.RUN_BEHIND_DIRECT)
+    depth = jnp.where(direct, jnp.float32(1.0), depth)
+    lateral = jnp.where(direct, jnp.float32(0.0), lateral)
+    return shift_m * jnp.stack((depth, lateral), axis=-1)
+
+
 def shape_movement(
     context: RulePolicyContext,
     policy_state: RulePolicyState,
@@ -385,11 +438,14 @@ def shape_movement(
     attack_pattern: jax.Array,
     attack_phase: jax.Array,
     attack_pattern_shape_shift_m: float,
+    forward_pocket_shift_m: float,
     run_behind_receiver: jax.Array,
     run_behind_release: jax.Array,
     run_behind_timing_error: jax.Array,
     offside_line_error_m: jax.Array,
     forward_run_min_gap_m: float,
+    kickoff_path_phase: jax.Array = jnp.float32(0.0),
+    kickoff_path_lateral_shift_m: float = 0.0,
 ) -> ShapeMovement:
     """Build one formation-respecting movement target per observation row.
 
@@ -417,6 +473,20 @@ def shape_movement(
     if offside_line_error_m.shape != ():
         raise ValueError("offside_line_error_m must be scalar")
     offside_line_error_m = jnp.maximum(offside_line_error_m, 0.0)
+    kickoff_path_phase = jnp.asarray(kickoff_path_phase, dtype=jnp.float32)
+    kickoff_path_lateral_shift_m = jnp.maximum(
+        jnp.asarray(kickoff_path_lateral_shift_m, dtype=jnp.float32),
+        0.0,
+    )
+    expected_phase_shape = context.self_index.shape
+    if kickoff_path_phase.shape not in ((), expected_phase_shape):
+        raise ValueError("kickoff_path_phase must be scalar or per observer")
+    if kickoff_path_lateral_shift_m.shape != ():
+        raise ValueError("kickoff_path_lateral_shift_m must be scalar")
+    kickoff_path_phase = jnp.broadcast_to(
+        jnp.clip(kickoff_path_phase, 0.0, 1.0), expected_phase_shape
+    )
+
     attack_pattern = jnp.asarray(attack_pattern, dtype=jnp.int32)
     if attack_pattern.shape != (context.self_index.shape[0],):
         raise ValueError("attack_pattern must have one code per observer")
@@ -435,6 +505,10 @@ def shape_movement(
             raise ValueError(f"{name} must be scalar")
     pattern_shift_m = jnp.maximum(
         jnp.asarray(attack_pattern_shape_shift_m, dtype=jnp.float32),
+        0.0,
+    )
+    forward_pocket_shift_m = jnp.maximum(
+        jnp.asarray(forward_pocket_shift_m, dtype=jnp.float32),
         0.0,
     )
     forward_run_min_gap_m = jnp.maximum(
@@ -559,6 +633,29 @@ def shape_movement(
     target = base_target + jnp.where(
         context.ball_visible[:, None], ball_shift, jnp.float32(0.0)
     )
+    # The fixed role/roster-slot waypoint has longitudinal and lateral parts.
+    # Its quadratic envelope is exactly zero at the final live-window tick, so
+    # settled formation targets stay unchanged without random or recurrent state.
+    formation_side = jnp.where(
+        jnp.abs(anchor_offset[:, 1]) >= 1.0,
+        jnp.where(anchor_offset[:, 1] >= 0.0, 1.0, -1.0),
+        jnp.where((self_index & 1) == 0, 1.0, -1.0),
+    )
+    slot_side = jnp.where(((self_index + role) & 1) == 0, 1.0, -1.0)
+    lateral_side = jnp.where(own_possession, formation_side, -formation_side)
+    role_path = jnp.asarray(_KICKOFF_ROLE_PATH, dtype=jnp.float32)[role]
+    waypoint = jnp.stack(
+        (role_path[:, 0] * slot_side, role_path[:, 1] * lateral_side),
+        axis=-1,
+    )
+    kickoff_curve = (
+        4.0
+        * kickoff_path_phase
+        * (1.0 - kickoff_path_phase)
+        * kickoff_path_lateral_shift_m
+    )
+    target = target + kickoff_curve[:, None] * waypoint
+
     overlap_side = jnp.where(anchor[:, 1] >= 0.0, 1.0, -1.0)
     overlap_target = jnp.stack(
         (
@@ -729,11 +826,14 @@ def shape_movement(
         & execution_phase
         & weak_side_wide
     )
-    run_pattern_support = (
+    designated_forward_support = (
         eligible_pattern_actor
-        & (attack_pattern == jnp.int32(AttackPattern.RUN_BEHIND_DIRECT))
         & active_pattern_phase
         & (self_index == run_behind_receiver)
+        & (context.self_position[:, 0] >= ball_xy[:, 0] + jnp.float32(1.0))
+    )
+    run_pattern_support = designated_forward_support & (
+        attack_pattern == jnp.int32(AttackPattern.RUN_BEHIND_DIRECT)
     )
     pattern_delta = jnp.zeros_like(target)
     pattern_delta = jnp.where(
@@ -792,6 +892,18 @@ def shape_movement(
     pattern_delta = jnp.where(
         run_pattern_support[:, None],
         pattern_shift_m * jnp.asarray((1.0, 0.0), dtype=jnp.float32),
+        pattern_delta,
+    )
+    # One episode-stable forward is already selected from the possession key.
+    # Give that player a fixed pattern pocket instead of reacting frame by
+    # frame to the nearest marker. Other players retain the team shape, so they
+    # do not drag several defenders into the same receiving lane.
+    forward_pocket_delta = _forward_pocket_delta(
+        attack_pattern, ball_side, forward_pocket_shift_m
+    )
+    pattern_delta = jnp.where(
+        designated_forward_support[:, None],
+        forward_pocket_delta,
         pattern_delta,
     )
     target = target + pattern_delta
@@ -867,8 +979,7 @@ def shape_movement(
     # reuses the existing box lead/goal-side distance rather than importing a
     # dense fitted table or another coefficient.
     predicted_opponent_position = (
-        context.player_position
-        + context.player_velocity * jnp.float32(box_mark_lead_s)
+        context.player_position + context.player_velocity * jnp.float32(box_mark_lead_s)
     )
     own_goal_position = jnp.asarray((-half_length, 0.0), dtype=jnp.float32)
     open_field_threat = -jnp.linalg.norm(
@@ -991,9 +1102,7 @@ def shape_movement(
     )
     target = jnp.where(
         open_field_mark[:, None],
-        target
-        + open_field_mark_gain[:, None]
-        * (open_field_mark_target - target),
+        target + open_field_mark_gain[:, None] * (open_field_mark_target - target),
         target,
     )
     target = jnp.where(box_mark[:, None], box_mark_target, target)
@@ -1154,4 +1263,8 @@ def shape_movement(
     )
 
 
-__all__ = ["ShapeMovement", "shape_movement"]
+__all__ = [
+    "ShapeMovement",
+    "_forward_pocket_delta",
+    "shape_movement",
+]

@@ -15,6 +15,7 @@ import numpy as np
 from footballworld.config.body_contact import BodyContact
 from footballworld.config.geometry import Ball, Stadium
 from footballworld.config.management import ManagementRules
+from footballworld.config.restart_timing import RestartTiming
 from footballworld.config.roster import PlayerProfile, player_profile_values_valid
 from footballworld.config.roster_sampling import RosterSampling
 from footballworld.core.constants import (
@@ -48,6 +49,7 @@ from footballworld.environment.substitution import (
 )
 from footballworld.environment.tactics import (
     ROLE_CENTRE_BACK,
+    ROLE_COUNT,
     ROLE_FULL_BACK,
     ROLE_GOALKEEPER,
     classify_formation_roles,
@@ -58,9 +60,10 @@ from footballworld.rules.restart import (
     select_restart_taker,
 )
 from footballworld.rules.restart_positioning import prepare_restart_positioning
+from footballworld.rules.restart_timing import continuous_restart_approach_enabled
 
-MANAGER_OBSERVATION_SCHEMA_VERSION = 9
-PLAYER_TACTICAL_OBSERVATION_SCHEMA_VERSION = 1
+MANAGER_OBSERVATION_SCHEMA_VERSION = 12
+PLAYER_TACTICAL_OBSERVATION_SCHEMA_VERSION = 2
 
 
 class ManagerCommandReason(IntEnum):
@@ -146,6 +149,7 @@ class SquadSetup(NamedTuple):
     reach_height: jax.Array
     ball_control: jax.Array
     endurance_factor: jax.Array
+    preferred_role_mask: jax.Array
     max_substitutions: jax.Array
     max_windows: jax.Array
     formation_probabilities: jax.Array
@@ -164,6 +168,8 @@ class ManagerState(NamedTuple):
     formation_index: jax.Array
     formation_anchor: jax.Array
     formation_role: jax.Array
+    tactical_epoch: jax.Array
+    formation_changed_control_tick: jax.Array
     opening_formation_committed: jax.Array
 
 
@@ -363,6 +369,8 @@ class ManagerBenchObservation(NamedTuple):
     reach_height: jax.Array
     ball_control: jax.Array
     endurance_factor: jax.Array
+    preferred_role_mask: jax.Array
+    preferred_role_known: jax.Array
 
 
 class ManagerObservation(NamedTuple):
@@ -382,7 +390,13 @@ class ManagerObservation(NamedTuple):
     restart_team: jax.Array
     restart_position: jax.Array
     attack_direction: jax.Array
+    team_shape_valid: jax.Array
+    team_centroid: jax.Array
+    team_spread: jax.Array
     restart_opened_control_tick: jax.Array
+    current_substitution_window_open: jax.Array
+    tactical_epoch: jax.Array
+    formation_changed_control_tick: jax.Array
     formation_index: jax.Array
     formation_anchor: jax.Array
     formation_role: jax.Array
@@ -400,6 +414,8 @@ class PlayerTacticalObservation(NamedTuple):
     valid: jax.Array
     team: jax.Array
     formation_index: jax.Array
+    tactical_epoch: jax.Array
+    formation_changed_control_tick: jax.Array
     formation_anchor: jax.Array
     formation_role: jax.Array
 
@@ -698,6 +714,7 @@ def initialize_management(
     player_id = np.full((2, width), NO_PLAYER, dtype=np.int32)
     is_goalkeeper = np.zeros((2, width), dtype=np.bool_)
     physical = np.zeros((2, width, 5), dtype=np.float32)
+    preferred_role_mask = np.zeros((2, width, ROLE_COUNT), dtype=np.bool_)
     for team, bench in enumerate(benches):
         for index, profile in enumerate(bench):
             valid[team, index] = True
@@ -710,6 +727,7 @@ def initialize_management(
                 profile.ball_control,
                 profile.endurance_factor,
             )
+            preferred_role_mask[team, index, list(profile.preferred_roles)] = True
 
     if sampling_key is not None and roster_sampling.enabled:
         sampled = sample_profile_values(
@@ -768,7 +786,7 @@ def initialize_management(
             )
         if not np.all(np.isfinite(probabilities)) or np.any(probabilities < 0.0):
             raise ValueError("formation_probabilities must be finite and non-negative")
-        total = probabilities.sum(axis=1, keepdims=True)
+        total = probabilities.sum(axis=1, keepdims=True, dtype=np.float64)
         if np.any(total <= 0.0):
             raise ValueError(
                 "formation_probabilities must have positive mass for each team"
@@ -789,6 +807,7 @@ def initialize_management(
         reach_height=jnp.asarray(physical[..., 2]),
         ball_control=jnp.asarray(physical[..., 3]),
         endurance_factor=jnp.asarray(physical[..., 4]),
+        preferred_role_mask=jnp.asarray(preferred_role_mask),
         max_substitutions=jnp.int32(rules.max_substitutions_per_team),
         max_windows=jnp.int32(rules.max_windows_per_team),
         formation_layouts=jnp.asarray(layouts, dtype=jnp.float32),
@@ -806,6 +825,8 @@ def initialize_management(
             formation_index=jnp.zeros(2, dtype=jnp.int32),
             formation_anchor=jnp.asarray(kickoff_anchor, dtype=jnp.float32),
             formation_role=layout_roles[0],
+            tactical_epoch=jnp.zeros(2, dtype=jnp.int32),
+            formation_changed_control_tick=jnp.zeros(2, dtype=jnp.int32),
             opening_formation_committed=jnp.zeros(2, dtype=jnp.bool_),
         ),
     )
@@ -868,6 +889,35 @@ def observe_manager(
         axis=1,
     ).astype(jnp.float32) / layout_count_outfield.astype(jnp.float32)
     candidate_valid = jnp.full((layout_count,), valid_team, dtype=jnp.bool_)
+    team_shape_mask = jnp.stack(
+        [
+            state.players.active & (state.players.team_id == observed_team)
+            for observed_team in (TEAM_0, TEAM_1)
+        ]
+    )
+    team_shape_valid = jnp.any(team_shape_mask, axis=1) & valid_team
+    team_shape_count = jnp.maximum(jnp.sum(team_shape_mask, axis=1), 1)
+    observer_frame_position = state.players.position * state.attack_direction[safe_team]
+    team_centroid = (
+        jnp.sum(
+            jnp.where(
+                team_shape_mask[..., None],
+                observer_frame_position[None, ...],
+                0.0,
+            ),
+            axis=1,
+        )
+        / team_shape_count[:, None]
+    )
+    team_offset = observer_frame_position[None, ...] - team_centroid[:, None, :]
+    team_variance = (
+        jnp.sum(
+            jnp.where(team_shape_mask[..., None], team_offset**2, 0.0),
+            axis=1,
+        )
+        / team_shape_count[:, None]
+    )
+    team_spread = jnp.sqrt(jnp.maximum(team_variance, 0.0))
     return ManagerObservation(
         valid=valid_team,
         team=jnp.where(valid_team, safe_team, NO_TEAM),
@@ -903,6 +953,12 @@ def observe_manager(
             endurance_factor=jnp.where(
                 bench_valid, squad.endurance_factor[safe_team], 0.0
             ),
+            preferred_role_mask=(
+                squad.preferred_role_mask[safe_team] & bench_valid[:, None]
+            ),
+            preferred_role_known=(
+                jnp.any(squad.preferred_role_mask[safe_team], axis=-1) & bench_valid
+            ),
         ),
         substitutions_remaining=jnp.where(
             valid_team,
@@ -932,10 +988,26 @@ def observe_manager(
             state.attack_direction[safe_team],
             jnp.asarray(0.0, dtype=state.attack_direction.dtype),
         ),
+        team_shape_valid=team_shape_valid,
+        team_centroid=jnp.where(valid_team, team_centroid, 0.0),
+        team_spread=jnp.where(valid_team, team_spread, 0.0),
         restart_opened_control_tick=jnp.where(
             valid_team,
             state.restart.opened_control_tick,
             jnp.int32(-1),
+        ),
+        current_substitution_window_open=jnp.where(
+            valid_team,
+            (state.restart.kind != RK_NONE)
+            & (
+                management.last_window_restart_tick[safe_team]
+                == state.restart.opened_control_tick
+            ),
+            jnp.bool_(False),
+        ),
+        tactical_epoch=jnp.where(valid_team, management.tactical_epoch[safe_team], 0),
+        formation_changed_control_tick=jnp.where(
+            valid_team, management.formation_changed_control_tick[safe_team], 0
         ),
         formation_index=jnp.where(valid_team, management.formation_index[safe_team], 0),
         formation_anchor=jnp.where(
@@ -982,6 +1054,10 @@ def observe_player_tactics(
         valid=valid,
         team=jnp.where(valid, team, NO_TEAM),
         formation_index=jnp.where(valid, management.formation_index[safe_team], 0),
+        tactical_epoch=jnp.where(valid, management.tactical_epoch[safe_team], 0),
+        formation_changed_control_tick=jnp.where(
+            valid, management.formation_changed_control_tick[safe_team], 0
+        ),
         formation_anchor=jnp.where(own[:, None], management.formation_anchor, 0.0),
         formation_role=jnp.where(own, management.formation_role, -1),
     )
@@ -1951,6 +2027,7 @@ def apply_manager_command(
     body: BodyContact,
     stadium: Stadium,
     ball: Ball,
+    restart_timing: RestartTiming = RestartTiming(),
 ) -> ManagerCommandResult:
     """Apply one low-frequency manager transaction outside the physics step.
 
@@ -1960,9 +2037,12 @@ def apply_manager_command(
     Formation changes only update policy targets. An emergency goalkeeper is
     the sole exception: that player moves administratively to the registered
     goalkeeper anchor before restart legality is re-projected.
-    Taker requests apply only to a matching, visible non-hold restart. A
-    different taker receives the old taker's legal pose atomically; final restart
-    projection either commits identity and poses together or rolls that axis back.
+    Taker requests apply only to a matching, visible non-hold restart. For a
+    continuous-approach restart, changing the taker preserves the selected
+    player's physical position and never swaps the old and new poses; the new
+    taker walks to the release pose in subsequent physics substeps. Final restart
+    projection either commits the identity and legal non-taker layout together
+    or rolls that axis back.
     """
 
     width = _validate_manager_command(state, squad, command)
@@ -2007,6 +2087,8 @@ def apply_manager_command(
     formation_index = next_management.formation_index
     formation_anchor = next_management.formation_anchor
     formation_role = next_management.formation_role
+    tactical_epoch = next_management.tactical_epoch
+    formation_changed_control_tick = next_management.formation_changed_control_tick
     regulation_tick = regulation_elapsed_ticks(next_state)
     active_count = jnp.stack(
         [
@@ -2041,6 +2123,14 @@ def apply_manager_command(
             squad.formation_roles[safe_layout],
             formation_role,
         )
+        tactical_epoch = tactical_epoch.at[team].set(
+            jnp.where(apply, tactical_epoch[team] + jnp.int32(1), tactical_epoch[team])
+        )
+        formation_changed_control_tick = formation_changed_control_tick.at[team].set(
+            jnp.where(
+                apply, next_state.control_tick, formation_changed_control_tick[team]
+            )
+        )
         formation_applied.append(apply)
         reason = jnp.where(
             ~command.formations.requested[team],
@@ -2064,6 +2154,8 @@ def apply_manager_command(
         formation_index=formation_index,
         formation_anchor=formation_anchor,
         formation_role=formation_role,
+        tactical_epoch=tactical_epoch,
+        formation_changed_control_tick=formation_changed_control_tick,
     )
 
     (
@@ -2143,8 +2235,16 @@ def apply_manager_command(
     )
 
     def project_restart(candidate: State) -> State:
+        preserve_taker = continuous_restart_approach_enabled(
+            candidate.restart.kind,
+            config=restart_timing,
+        )
         positioning = prepare_restart_positioning(
-            candidate, stadium=stadium, ball=ball, body=body
+            candidate,
+            stadium=stadium,
+            ball=ball,
+            body=body,
+            preserve_taker=preserve_taker,
         )
         return candidate._replace(
             players=candidate.players._replace(
@@ -2166,59 +2266,13 @@ def apply_manager_command(
         next_state,
     )
 
-    # A taker identity cannot be committed on its own. The previous taker is
-    # already occupying the physical release pose, so swapping the old and new
-    # actors' poses vacates it before the ordinary restart projector runs. Both
-    # identities are administratively repositioned and therefore start at zero
-    # velocity. If the fully projected layout is still invalid, every leaf is
-    # restored from the legal pre-taker transaction above.
-    player_index = jnp.arange(player_count, dtype=jnp.int32)
-    previous_position = next_state.players.position
-    previous_body_forward = next_state.players.body_forward
-    previous_gaze_yaw = next_state.players.gaze_yaw
-    old_slot = player_index == safe_previous_taker
-    new_slot = player_index == selected
-    swapped_position = jnp.where(
-        old_slot[:, None],
-        previous_position[selected],
-        jnp.where(
-            new_slot[:, None],
-            previous_position[safe_previous_taker],
-            previous_position,
-        ),
-    )
-    swapped_body_forward = jnp.where(
-        old_slot[:, None],
-        previous_body_forward[selected],
-        jnp.where(
-            new_slot[:, None],
-            previous_body_forward[safe_previous_taker],
-            previous_body_forward,
-        ),
-    )
-    swapped_gaze_yaw = jnp.where(
-        old_slot,
-        previous_gaze_yaw[selected],
-        jnp.where(new_slot, previous_gaze_yaw[safe_previous_taker], previous_gaze_yaw),
-    )
-    swapped_slots = taker_change_requested & (old_slot | new_slot)
+    # Changing a continuous-restart taker does not change that selected player's
+    # location. The projector audits and repairs the non-taker layout while
+    # preserving the new actor's causal position. The physics restart-approach
+    # path then moves that actor from this exact position to the release pose at
+    # its effective speed. If the audit fails, every leaf is restored from the
+    # legal pre-taker state.
     taker_candidate = next_state._replace(
-        players=next_state.players._replace(
-            position=jnp.where(
-                taker_change_requested, swapped_position, previous_position
-            ),
-            body_forward=jnp.where(
-                taker_change_requested, swapped_body_forward, previous_body_forward
-            ),
-            gaze_yaw=jnp.where(
-                taker_change_requested, swapped_gaze_yaw, previous_gaze_yaw
-            ),
-            velocity=jnp.where(
-                swapped_slots[:, None],
-                jnp.zeros_like(next_state.players.velocity),
-                next_state.players.velocity,
-            ),
-        ),
         restart=next_state.restart._replace(
             taker=jnp.where(taker_change_requested, selected, previous_taker).astype(
                 jnp.int32

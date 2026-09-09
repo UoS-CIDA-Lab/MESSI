@@ -7,7 +7,6 @@ stochastic across seeds and exactly reproducible when its key and inputs match.
 from footballworld.policies.rule_based.attack_pattern import AttackPattern
 from footballworld.policies.rule_based.config import RulePolicyConfig
 from footballworld.policies.rule_based.manager import (
-    RULE_MANAGER_VERSION,
     ManagerPolicyStep,
     RuleBasedManager,
     RuleManagerConfig,
@@ -16,7 +15,6 @@ from footballworld.policies.rule_based.manager import (
     make_rule_based_manager,
 )
 from footballworld.policies.rule_based.opening_manager import (
-    RULE_OPENING_MANAGER_VERSION,
     AuthoredOpeningManagerPolicy,
     AuthoredOpeningSelection,
     RuleBasedOpeningManagerPolicy,
@@ -30,10 +28,7 @@ from footballworld.policies.rule_based.policy import (
     RuleBasedPolicy,
     make_rule_based_policy,
 )
-from footballworld.policies.rule_based.provenance import (
-    RULE_POLICY_VERSION,
-    policy_config_fingerprint,
-)
+from footballworld.policies.rule_based.provenance import policy_config_fingerprint
 from footballworld.policies.rule_based.state import (
     RulePolicyState,
     apply_tactical_observation,
@@ -43,9 +38,6 @@ from footballworld.policies.rule_based.state import (
 from footballworld.policies.rule_based.tactical_plan import TacticalPlan
 
 __all__ = [
-    "RULE_MANAGER_VERSION",
-    "RULE_OPENING_MANAGER_VERSION",
-    "RULE_POLICY_VERSION",
     "AttackPattern",
     "AuthoredOpeningManagerPolicy",
     "AuthoredOpeningSelection",

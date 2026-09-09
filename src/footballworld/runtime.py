@@ -99,6 +99,13 @@ def enable_compilation_cache(
     )
     jax.config.update("jax_enable_compilation_cache", True)
     jax.config.update("jax_compilation_cache_dir", str(directory))
+
+    # Package imports create constant JAX arrays and may cache a disabled state
+    # before callers configure a directory. Re-evaluate cache enablement on the
+    # next compilation without clearing executable or tracing caches.
+    from jax.experimental.compilation_cache import compilation_cache
+
+    compilation_cache.reset_cache()
     return directory
 
 

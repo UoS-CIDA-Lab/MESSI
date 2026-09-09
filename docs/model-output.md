@@ -38,11 +38,11 @@ revision the versions are:
 | SI player observation | 10 |
 | normalized player observation | 7 |
 | normalized global state | 6 |
-| SI manager observation | 9 |
-| normalized manager observation | 7 |
+| SI manager observation | 12 |
+| normalized manager observation | 10 |
 | SI roster metadata | 2 |
 | normalized roster metadata | 1 |
-| SI / normalized player tactical observation | 1 / 1 |
+| SI / normalized player tactical observation | 2 / 2 |
 
 Consumers should fingerprint the named contract they actually serialize,
 rather than treating the short top-level aliases as SI schemas.
@@ -70,17 +70,28 @@ definition:
 
 The manager view includes the visible restart position, the managed team's
 attack direction, the exact-restorable restart-opening tick, and compact
-manager-only formation-catalog summaries. Candidate attack depth and width use
-fixed pitch denominators and restore to SI units; probability and defender
-fraction are dimensionless, while validity and the identity-like content
-signature keep their exact dtypes. The latter is
-both the stateless random-decision address and the substitution-window identity;
-it is not a future or historical event stream.
+manager-only formation-catalog summaries. It also exposes both teams' current
+active-player centroid and per-axis standard deviation in the observing
+manager's attacking frame. These are public kinematic aggregates, paired with
+`team_shape_valid`; they reveal neither the opponent's bench nor its registered
+formation command. Centroid and spread use the pitch half-extent denominators.
+Candidate attack depth and width use the same fixed pitch denominators and
+restore to SI units; probability and defender fraction are dimensionless, while
+validity and the identity-like content signature keep their exact dtypes. The
+signature addresses stateless formation randomness. `restart_opened_control_tick`
+is the exact substitution-window identity; neither value is a future or
+historical event stream.
 
 Small exact counts and categories—score, cards, team, player, role, restart,
 intent, masks, and booleans—retain their integer or boolean dtype. Turning a
 one-goal count into a near-zero float would be normalization in name only and
 would also discard exact discrete semantics.
+
+The manager's `current_substitution_window_open` is an exact boolean for the
+current restart, while `tactical_epoch` and
+`formation_changed_control_tick` identify the currently applied tactical
+assignment. The epoch increments only when a different registered layout is
+accepted; repeated or rejected commands leave both fields unchanged.
 
 Manager substitution resources follow the same rule. Remaining substitutions,
 remaining windows, and their configured maxima are exact `int32` leaves. The

@@ -69,9 +69,9 @@ from footballworld.rules.restart_timing import forced_release_delay_substeps
 
 MODEL_OBSERVATION_SCHEMA_VERSION = 7
 MODEL_STATE_SCHEMA_VERSION = 6
-MODEL_MANAGER_OBSERVATION_SCHEMA_VERSION = 7
+MODEL_MANAGER_OBSERVATION_SCHEMA_VERSION = 10
 MODEL_ROSTER_SCHEMA_VERSION = 1
-MODEL_TACTICAL_OBSERVATION_SCHEMA_VERSION = 1
+MODEL_TACTICAL_OBSERVATION_SCHEMA_VERSION = 2
 
 
 @jax.tree_util.register_static
@@ -235,6 +235,8 @@ class NormalizedPlayerTacticalObservation(NamedTuple):
     valid: jax.Array
     team: jax.Array
     formation_index: jax.Array
+    tactical_epoch: jax.Array
+    formation_changed_control_tick: jax.Array
     formation_anchor: jax.Array
     formation_role: jax.Array
 
@@ -254,7 +256,13 @@ class NormalizedManagerObservation(NamedTuple):
     restart_team: jax.Array
     restart_position: jax.Array
     attack_direction: jax.Array
+    team_shape_valid: jax.Array
+    team_centroid: jax.Array
+    team_spread: jax.Array
     restart_opened_control_tick: jax.Array
+    current_substitution_window_open: jax.Array
+    tactical_epoch: jax.Array
+    formation_changed_control_tick: jax.Array
     formation_index: jax.Array
     formation_anchor: jax.Array
     formation_role: jax.Array
@@ -1090,8 +1098,16 @@ def normalize_manager_observation(
         restart_team=observation.restart_team,
         restart_position=observation.restart_position / xy,
         attack_direction=observation.attack_direction,
+        team_shape_valid=observation.team_shape_valid,
+        team_centroid=observation.team_centroid / xy,
+        team_spread=observation.team_spread / xy,
         restart_opened_control_tick=_counter(
             observation.restart_opened_control_tick, context.counter_scale_ticks
+        ),
+        current_substitution_window_open=observation.current_substitution_window_open,
+        tactical_epoch=observation.tactical_epoch,
+        formation_changed_control_tick=_counter(
+            observation.formation_changed_control_tick, context.counter_scale_ticks
         ),
         formation_index=observation.formation_index,
         formation_anchor=observation.formation_anchor / xy,
@@ -1126,6 +1142,10 @@ def normalize_player_tactics(
         valid=observation.valid,
         team=observation.team,
         formation_index=observation.formation_index,
+        tactical_epoch=observation.tactical_epoch,
+        formation_changed_control_tick=_counter(
+            observation.formation_changed_control_tick, context.counter_scale_ticks
+        ),
         formation_anchor=observation.formation_anchor / xy,
         formation_role=observation.formation_role,
     )
@@ -1217,8 +1237,16 @@ def denormalize_manager_observation(
         restart_team=observation.restart_team,
         restart_position=observation.restart_position * xy,
         attack_direction=observation.attack_direction,
+        team_shape_valid=observation.team_shape_valid,
+        team_centroid=observation.team_centroid * xy,
+        team_spread=observation.team_spread * xy,
         restart_opened_control_tick=_restore_counter(
             observation.restart_opened_control_tick, context.counter_scale_ticks
+        ),
+        current_substitution_window_open=observation.current_substitution_window_open,
+        tactical_epoch=observation.tactical_epoch,
+        formation_changed_control_tick=_restore_counter(
+            observation.formation_changed_control_tick, context.counter_scale_ticks
         ),
         formation_index=observation.formation_index,
         formation_anchor=observation.formation_anchor * xy,
@@ -1251,6 +1279,10 @@ def denormalize_player_tactics(
         valid=observation.valid,
         team=observation.team,
         formation_index=observation.formation_index,
+        tactical_epoch=observation.tactical_epoch,
+        formation_changed_control_tick=_restore_counter(
+            observation.formation_changed_control_tick, context.counter_scale_ticks
+        ),
         formation_anchor=observation.formation_anchor * xy,
         formation_role=observation.formation_role,
     )

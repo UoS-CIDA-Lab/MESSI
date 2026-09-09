@@ -107,6 +107,8 @@ class MatchConfig:
         IFAB_MIN_TEAM_PLAYERS,
         IFAB_MIN_TEAM_PLAYERS,
     )
+    # Append public configuration fields to preserve positional callers.
+    maximum_added_time_seconds_per_period: float = 10.0 * 60.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.halftime_enabled, bool):
@@ -162,6 +164,16 @@ class MatchConfig:
             raise ValueError(
                 "minimum_team_players must contain two integers from 0 to 11"
             )
+        if (
+            not isinstance(self.maximum_added_time_seconds_per_period, numbers.Real)
+            or isinstance(self.maximum_added_time_seconds_per_period, bool)
+            or not math.isfinite(self.maximum_added_time_seconds_per_period)
+            or self.maximum_added_time_seconds_per_period < 0.0
+        ):
+            raise ValueError(
+                "maximum_added_time_seconds_per_period must be a finite "
+                "non-negative real number"
+            )
 
     def clock_ticks(self, timebase: Timebase) -> tuple[int, int]:
         """Return static full-time and half-time control-tick boundaries."""
@@ -179,6 +191,14 @@ class MatchConfig:
         if self.halftime_enabled and halftime >= fulltime:
             raise ValueError("halftime must precede fulltime after tick conversion")
         return fulltime, halftime
+
+    def maximum_added_time_ticks(self, timebase: Timebase) -> int:
+        """Return the hard per-period wall-clock tail budget."""
+
+        ticks = timebase.control_steps_for(self.maximum_added_time_seconds_per_period)
+        if ticks > MAX_REGULATION_CONTROL_TICKS:
+            raise ValueError("maximum added time exceeds the supported clock horizon")
+        return ticks
 
 
 class MatchSetup(NamedTuple):
@@ -254,6 +274,9 @@ def _status(
     *,
     fulltime_tick: int,
     minimum_team_players: tuple[int, int],
+    halftime_tick: int | None = None,
+    halftime_enabled: bool = True,
+    maximum_added_time_ticks: int | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     active_per_team = _active_per_team(state)
     below_minimum = jnp.any(
@@ -279,10 +302,29 @@ def _status(
     regulation_complete = (live_play_ticks >= jnp.int32(fulltime_tick)) & (
         ~penalty_incomplete
     )
+    added_time_limit_reached = jnp.bool_(False)
+    if maximum_added_time_ticks is not None:
+        if halftime_tick is None:
+            raise ValueError("halftime_tick is required with an added-time limit")
+        second_half = jnp.bool_(halftime_enabled) & (
+            state.first_half_wall_end_tick >= 0
+        )
+        second_half_wall = state.control_tick.astype(jnp.int32) - jnp.maximum(
+            state.first_half_wall_end_tick.astype(jnp.int32), jnp.int32(0)
+        )
+        second_half_limit = jnp.int32(
+            fulltime_tick - halftime_tick + maximum_added_time_ticks
+        )
+        single_period_limit = jnp.int32(fulltime_tick + maximum_added_time_ticks)
+        added_time_limit_reached = jnp.where(
+            jnp.bool_(halftime_enabled),
+            second_half & (second_half_wall >= second_half_limit),
+            state.control_tick.astype(jnp.int32) >= single_period_limit,
+        ) & (~penalty_incomplete)
     wall_clock_exhausted = state.control_tick.astype(jnp.int32) >= jnp.int32(
         MAX_WALL_CONTROL_TICKS
     )
-    truncated = regulation_complete | wall_clock_exhausted
+    truncated = regulation_complete | added_time_limit_reached | wall_clock_exhausted
     return terminated, truncated
 
 
@@ -553,10 +595,12 @@ def step_episode(
     ball_physics: BallPhysics = BallPhysics(),
     _collect_events: bool = False,
     _render_fps: float | None = None,
+    _entry_live: bool = False,
 ) -> EpisodeStep:
     """Advance one policy frame or return an exact absorbing terminal state."""
 
     fulltime_tick, halftime_tick = match.clock_ticks(timebase)
+    maximum_added_ticks = match.maximum_added_time_ticks(timebase)
     expected_positions = (state.players.position.shape[0], 2)
     if setup.second_half_positions.shape != expected_positions:
         raise ValueError(
@@ -564,11 +608,18 @@ def step_episode(
         )
     if setup.second_half_kickoff_team.shape != ():
         raise ValueError("setup second_half_kickoff_team must be scalar")
-    entry_terminated, entry_truncated = _status(
-        state,
-        fulltime_tick=fulltime_tick,
-        minimum_team_players=match.minimum_team_players,
-    )
+    if _entry_live:
+        entry_terminated = jnp.bool_(False)
+        entry_truncated = jnp.bool_(False)
+    else:
+        entry_terminated, entry_truncated = _status(
+            state,
+            fulltime_tick=fulltime_tick,
+            minimum_team_players=match.minimum_team_players,
+            halftime_tick=halftime_tick,
+            halftime_enabled=match.halftime_enabled,
+            maximum_added_time_ticks=maximum_added_ticks,
+        )
     entry_done = entry_terminated | entry_truncated
 
     def advance(_):
@@ -632,11 +683,23 @@ def step_episode(
             frame.state,
             fulltime_tick=fulltime_tick,
             minimum_team_players=match.minimum_team_players,
+            halftime_tick=halftime_tick,
+            halftime_enabled=match.halftime_enabled,
+            maximum_added_time_ticks=maximum_added_ticks,
         )
         halftime = (
             jnp.bool_(match.halftime_enabled)
             & (frame.state.first_half_wall_end_tick < 0)
             & (regulation_elapsed_ticks(frame.state) >= jnp.int32(halftime_tick))
+            & (~terminated)
+            & (~truncated)
+            & (~frame.state.penalty_completion_active)
+            & (frame.state.restart.kind != jnp.int32(RK_PENALTY))
+        )
+        first_half_wall_limit = jnp.int32(halftime_tick + maximum_added_ticks)
+        halftime = halftime | (
+            first_half_open
+            & (frame.state.control_tick >= first_half_wall_limit)
             & (~terminated)
             & (~truncated)
             & (~frame.state.penalty_completion_active)
@@ -668,6 +731,19 @@ def step_episode(
             lambda current: current,
             frame,
         )
+        output_terminated, output_truncated = jax.lax.cond(
+            halftime,
+            lambda current: _status(
+                current.state,
+                fulltime_tick=fulltime_tick,
+                minimum_team_players=match.minimum_team_players,
+                halftime_tick=halftime_tick,
+                halftime_enabled=match.halftime_enabled,
+                maximum_added_time_ticks=maximum_added_ticks,
+            ),
+            lambda _: (terminated, truncated),
+            frame,
+        )
         if _collect_events:
             halftime_moved = halftime & jnp.any(
                 jnp.abs(frame.state.players.position - pre_halftime_position)
@@ -696,7 +772,7 @@ def step_episode(
                     ),
                 )
             )
-        return frame, halftime
+        return frame, halftime, output_terminated, output_truncated
 
     def freeze(_):
         frame = _zero_control_frame(state, offside_state)
@@ -730,19 +806,17 @@ def step_episode(
                         offside_state,
                     ),
                 )
-        return frame, jnp.bool_(False)
+        return frame, jnp.bool_(False), entry_terminated, entry_truncated
 
-    frame, halftime_reset = jax.lax.cond(
-        entry_done,
-        freeze,
-        advance,
-        operand=None,
-    )
-    output_terminated, output_truncated = _status(
-        frame.state,
-        fulltime_tick=fulltime_tick,
-        minimum_team_players=match.minimum_team_players,
-    )
+    if _entry_live:
+        frame, halftime_reset, output_terminated, output_truncated = advance(None)
+    else:
+        frame, halftime_reset, output_terminated, output_truncated = jax.lax.cond(
+            entry_done,
+            freeze,
+            advance,
+            operand=None,
+        )
     prepare_public = (
         (~entry_done)
         & (~output_terminated)

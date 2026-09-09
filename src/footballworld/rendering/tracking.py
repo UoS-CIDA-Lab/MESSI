@@ -5,6 +5,8 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
+import tempfile
 import zipfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -422,15 +424,17 @@ class NpzTrackingReader:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self._archive = np.load(self.path, allow_pickle=False)
-        if _INDEX_KEY not in self._archive.files:
+        try:
+            if _INDEX_KEY not in self._archive.files:
+                raise ValueError("tracking NPZ has no canonical index")
+            raw_index = np.asarray(self._archive[_INDEX_KEY])
+            if raw_index.dtype != np.uint8 or raw_index.ndim != 1:
+                raise TypeError("tracking NPZ index must be one uint8 vector")
+            self.index = json.loads(raw_index.tobytes().decode("utf-8"))
+            self._validate_index()
+        except BaseException:
             self.close()
-            raise ValueError("tracking NPZ has no canonical index")
-        raw_index = np.asarray(self._archive[_INDEX_KEY])
-        if raw_index.dtype != np.uint8 or raw_index.ndim != 1:
-            self.close()
-            raise TypeError("tracking NPZ index must be one uint8 vector")
-        self.index = json.loads(raw_index.tobytes().decode("utf-8"))
-        self._validate_index()
+            raise
         self._cached_chunk = -1
         self._cached_table: np.ndarray | None = None
 
@@ -582,11 +586,36 @@ class JsonlTrackingReader:
         return None
 
     def iter_rows(self, *, verify: bool = False) -> Iterator[dict[str, Any]]:
-        del verify
+        expected_frame: int | None = None
+        previous_tick: int | None = None
         with self._stream() as stream:
             for line in stream:
                 if line.strip():
-                    yield json.loads(line)
+                    row = json.loads(line)
+                    if verify:
+                        if not isinstance(row, dict):
+                            raise TypeError("tracking JSONL rows must be objects")
+                        if row.get("schema") != TRACKING_SCHEMA:
+                            raise ValueError("unsupported semantic tracking schema")
+                        frame = row.get("frame")
+                        tick = row.get("control_tick")
+                        if type(frame) is not int:
+                            raise ValueError("tracking JSONL frame must be an integer")
+                        if expected_frame is None:
+                            expected_frame = frame
+                        if frame != expected_frame:
+                            raise ValueError(
+                                "tracking JSONL frame indices must be contiguous"
+                            )
+                        if type(tick) is not int or (
+                            previous_tick is not None and tick <= previous_tick
+                        ):
+                            raise ValueError(
+                                "tracking JSONL control ticks must be strictly increasing"
+                            )
+                        expected_frame += 1
+                        previous_tick = tick
+                    yield row
 
     def row(self, frame: int) -> dict[str, Any]:
         if not isinstance(frame, int) or isinstance(frame, bool) or frame < 0:
@@ -738,32 +767,52 @@ def export_tracking_jsonl(
     destination = Path(destination)
     if source.resolve() == destination.resolve():
         raise ValueError("tracking export source and destination must differ")
+    if (
+        not isinstance(compression_level, int)
+        or isinstance(compression_level, bool)
+        or not 0 <= compression_level <= 9
+    ):
+        raise ValueError("compression_level must be an integer in [0, 9]")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("wb") as target:
-        if destination.name.endswith(".gz"):
-            writer: Any = gzip.GzipFile(
-                filename="",
-                mode="wb",
-                compresslevel=compression_level,
-                fileobj=target,
-                mtime=0,
-            )
-        else:
-            writer = target
-        try:
-            with open_tracking(source) as reader:
-                for row in reader.iter_rows():
-                    writer.write(
-                        json.dumps(
-                            row,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                        + b"\n"
-                    )
-        finally:
-            if writer is not target:
-                writer.close()
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.tmp-", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    published = False
+    try:
+        with os.fdopen(descriptor, "wb") as target:
+            if destination.name.endswith(".gz"):
+                writer: Any = gzip.GzipFile(
+                    filename="",
+                    mode="wb",
+                    compresslevel=compression_level,
+                    fileobj=target,
+                    mtime=0,
+                )
+            else:
+                writer = target
+            try:
+                with open_tracking(source) as reader:
+                    for row in reader.iter_rows():
+                        writer.write(
+                            json.dumps(
+                                row,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                            + b"\n"
+                        )
+            finally:
+                if writer is not target:
+                    writer.close()
+        os.replace(temporary, destination)
+        published = True
+    finally:
+        if not published:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
     return destination
 
 
@@ -776,7 +825,32 @@ def merge_tracking_archives(
     if not sources:
         raise ValueError("cannot merge an empty tracking archive sequence")
     destination = Path(destination)
+    source_paths = tuple(Path(source) for source in sources)
+    destination_resolved = destination.resolve()
+    if any(source.resolve() == destination_resolved for source in source_paths):
+        raise ValueError("tracking merge sources and destination must differ")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.tmp-", dir=destination.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        index = _merge_tracking_archives(source_paths, temporary)
+        os.replace(temporary, destination)
+        return index
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _merge_tracking_archives(
+    sources: Sequence[Path], destination: Path
+) -> dict[str, Any]:
+    """Write a verified merge to one private destination path."""
+
     static: dict[str, Any] | None = None
     dtype: np.dtype[Any] | None = None
     # Only references to one loaded table are retained.  Tables are written and

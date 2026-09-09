@@ -39,6 +39,7 @@ from footballworld.dynamics.action import PhysicsAction
 from footballworld.dynamics.ball import advance_smooth, apply_ground_impact
 from footballworld.dynamics.contact import (
     DeliberateContactStep,
+    active_contact_possible,
     detect_active_contact,
     resolve_contact_step,
 )
@@ -48,10 +49,12 @@ from footballworld.dynamics.contest import (
     ContestResult,
 )
 from footballworld.dynamics.goal_frame import (
+    GoalFrameEvent,
     apply_goal_frame_contact,
     detect_goal_frame_contact,
 )
 from footballworld.dynamics.passive_contact import (
+    PassiveContactEvent,
     apply_passive_contact,
     detect_passive_contact,
 )
@@ -224,6 +227,96 @@ def _attach_held_ball(state: State, *, body: BodyContact) -> State:
     return state._replace(ball=held_ball)
 
 
+def _passive_contact_broadphase(
+    state: State,
+    ball_path_delta: jax.Array,
+    player_start_position: jax.Array,
+    player_path_delta: jax.Array,
+    *,
+    ball_geometry: Ball,
+    body: BodyContact,
+) -> jax.Array:
+    """Conservatively reject swept paths outside every player body AABB."""
+
+    dtype = state.ball.position.dtype
+    horizontal_margin = jnp.asarray(
+        ball_geometry.radius
+        + body.shoulder_width_m
+        + max(body.head_radius_m, body.leg_radius_m),
+        dtype=dtype,
+    )
+    ball_start = state.ball.position
+    ball_end = ball_start + ball_path_delta
+    ball_min_xy = jnp.minimum(ball_start[:2], ball_end[:2])
+    ball_max_xy = jnp.maximum(ball_start[:2], ball_end[:2])
+    player_end = player_start_position + player_path_delta
+    player_min_xy = jnp.minimum(player_start_position, player_end) - horizontal_margin
+    player_max_xy = jnp.maximum(player_start_position, player_end) + horizontal_margin
+    horizontal_overlap = jnp.all(
+        (ball_max_xy[None, :] >= player_min_xy)
+        & (ball_min_xy[None, :] <= player_max_xy),
+        axis=-1,
+    )
+    active_height = jnp.where(state.players.active, state.players.height, 0.0)
+    vertical_margin = jnp.asarray(
+        ball_geometry.radius + max(body.head_radius_m, body.leg_radius_m),
+        dtype=dtype,
+    )
+    ball_min_z = jnp.minimum(ball_start[2], ball_end[2])
+    ball_max_z = jnp.maximum(ball_start[2], ball_end[2])
+    vertical_overlap = (ball_max_z >= -vertical_margin) & (
+        ball_min_z <= jnp.max(active_height) + vertical_margin
+    )
+    finite = (
+        jnp.all(jnp.isfinite(ball_start))
+        & jnp.all(jnp.isfinite(ball_path_delta))
+        & jnp.all(jnp.isfinite(player_start_position))
+        & jnp.all(jnp.isfinite(player_path_delta))
+        & jnp.all(jnp.isfinite(state.players.height))
+    )
+    candidate = vertical_overlap & jnp.any(state.players.active & horizontal_overlap)
+    return state.ball.live & ((~finite) | candidate)
+
+
+def _goal_frame_broadphase(
+    position: jax.Array,
+    path_delta: jax.Array,
+    ball_live: jax.Array,
+    *,
+    ball: Ball,
+    stadium: Stadium,
+    physics: BallPhysics,
+) -> jax.Array:
+    """Conservatively reject paths outside the union AABB of both frames."""
+
+    dtype = position.dtype
+    end = position + path_delta
+    lower = jnp.minimum(position, end)
+    upper = jnp.maximum(position, end)
+    frame_radius = jnp.asarray(physics.goal_frame_radius, dtype=dtype)
+    collision_radius = jnp.asarray(ball.radius, dtype=dtype) + frame_radius
+    half_length = jnp.asarray(stadium.half_length, dtype=dtype)
+    post_y = jnp.asarray(0.5 * stadium.goal_width, dtype=dtype) + frame_radius
+    bar_z = jnp.asarray(stadium.goal_height, dtype=dtype) + frame_radius
+    negative_goal = (lower[0] <= -half_length + collision_radius) & (
+        upper[0] >= -half_length - collision_radius
+    )
+    positive_goal = (lower[0] <= half_length + collision_radius) & (
+        upper[0] >= half_length - collision_radius
+    )
+    y_overlap = (lower[1] <= post_y + collision_radius) & (
+        upper[1] >= -post_y - collision_radius
+    )
+    z_overlap = (lower[2] <= bar_z + collision_radius) & (upper[2] >= -collision_radius)
+    finite = jnp.all(jnp.isfinite(position)) & jnp.all(jnp.isfinite(path_delta))
+    candidate = (negative_goal | positive_goal) & y_overlap & z_overlap
+    return (
+        jnp.asarray(ball_live, dtype=jnp.bool_)
+        & (frame_radius > 0.0)
+        & ((~finite) | candidate)
+    )
+
+
 def _detect_ground_event(
     ball: BallState,
     path_delta: jax.Array,
@@ -352,6 +445,94 @@ def _step_ball_events_chronological(
         penalty_settling_contact=jnp.bool_(False),
     )
 
+    # The first chronological iteration normally proves that no ball event
+    # exists and consumes the whole remainder. Reuse the exact smooth endpoint,
+    # the existing conservative contact/frame gates, and the authoritative
+    # ground/boundary predicates to prove that outcome before entering the
+    # large bounded event loop. Non-finite geometry remains on the full path
+    # because every broad-phase gate fails open.
+    def advance_initial_carry(
+        initial_carry: _BallEventCarry,
+    ) -> _BallEventCarry:
+        # Preserve the baseline while-loop arithmetic boundary. Moving this
+        # smooth advance into a plain outer expression changes last-bit results
+        # after repeated scans on XLA CPU.
+        def light_pending(light_carry: _BallEventCarry) -> jax.Array:
+            return light_carry.remaining > 0.0
+
+        def light_iteration(light_carry: _BallEventCarry) -> _BallEventCarry:
+            predicted_ball = advance_smooth(
+                light_carry.state.ball,
+                dt=light_carry.remaining,
+                geometry=ball_geometry,
+                physics=ball_physics,
+            )
+            return light_carry._replace(
+                event_index=light_carry.event_index + jnp.int32(1),
+                state=light_carry.state._replace(ball=predicted_ball),
+                remaining=jnp.asarray(0.0, dtype=dtype),
+            )
+
+        return jax.lax.while_loop(
+            light_pending,
+            light_iteration,
+            initial_carry,
+        )
+
+    initial_advanced_carry = advance_initial_carry(carry)
+    initial_predicted_ball = initial_advanced_carry.state.ball
+    initial_ball_path_delta = initial_predicted_ball.position - state.ball.position
+    initial_active_possible = active_contact_possible(
+        state,
+        action,
+        restart_release_allowed,
+        contact_attempted,
+        initial_ball_path_delta,
+        player_start_position,
+        player_path_delta,
+        excluded_actor=jnp.int32(NO_PLAYER),
+        search_enabled=jnp.bool_(True),
+        ball_geometry=ball_geometry,
+        reach=reach,
+    )
+    initial_passive_possible = _passive_contact_broadphase(
+        state,
+        initial_ball_path_delta,
+        player_start_position,
+        player_path_delta,
+        ball_geometry=ball_geometry,
+        body=body,
+    )
+    initial_frame_possible = _goal_frame_broadphase(
+        state.ball.position,
+        initial_ball_path_delta,
+        state.ball.live,
+        ball=ball_geometry,
+        stadium=stadium,
+        physics=ball_physics,
+    )
+    initial_ground = _detect_ground_event(
+        state.ball,
+        initial_ball_path_delta,
+        geometry=ball_geometry,
+    )
+    initial_boundary = detect_boundary_crossing(
+        state.ball.position,
+        initial_predicted_ball.position,
+        state.ball.live,
+        stadium=stadium,
+        ball=ball_geometry,
+    )
+    initial_no_event = (
+        (total_dt > 0.0)
+        & state.ball.live
+        & (~initial_active_possible)
+        & (~initial_passive_possible)
+        & (~initial_frame_possible)
+        & (~initial_ground.occurred)
+        & (~initial_boundary.occurred)
+    )
+
     def event_iteration(current_carry: _BallEventCarry) -> _BallEventCarry:
         current = current_carry.state
         predicted_ball = advance_smooth(
@@ -404,26 +585,67 @@ def _step_ball_events_chronological(
                 on_pitch=query_state.players.on_pitch & (~passive_seen)
             )
         )
-        passive = detect_passive_contact(
+        passive_possible = _passive_contact_broadphase(
             passive_query_state,
             ball_path_delta,
-            # Keep one 1/90 s event integration internally coherent. A causal
-            # reach/separation gate handles the following physics substeps.
-            excluded_actor=current_carry.deliberate_actor,
-            secondary_excluded_actor=current_carry.previous_passive_actor,
-            player_start_position=current_player_start,
-            player_path_delta=current_player_delta,
+            current_player_start,
+            current_player_delta,
             ball_geometry=ball_geometry,
             body=body,
-            reach=reach,
         )
-        frame = detect_goal_frame_contact(
+
+        def detect_passive(_):
+            return detect_passive_contact(
+                passive_query_state,
+                ball_path_delta,
+                # Keep one 1/90 s event integration internally coherent. A causal
+                # reach/separation gate handles the following physics substeps.
+                excluded_actor=current_carry.deliberate_actor,
+                secondary_excluded_actor=current_carry.previous_passive_actor,
+                player_start_position=current_player_start,
+                player_path_delta=current_player_delta,
+                ball_geometry=ball_geometry,
+                body=body,
+                reach=reach,
+            )
+
+        passive = jax.lax.cond(
+            passive_possible,
+            detect_passive,
+            lambda _: PassiveContactEvent(
+                occurred=jnp.bool_(False),
+                actor=jnp.int32(NO_PLAYER),
+                time_fraction=jnp.asarray(0.0, dtype=dtype),
+                normal=jnp.zeros(3, dtype=dtype),
+            ),
+            operand=None,
+        )
+        frame_possible = _goal_frame_broadphase(
             current.ball.position,
             ball_path_delta,
             event_live,
             ball=ball_geometry,
             stadium=stadium,
             physics=ball_physics,
+        )
+        frame = jax.lax.cond(
+            frame_possible,
+            lambda _: detect_goal_frame_contact(
+                current.ball.position,
+                ball_path_delta,
+                event_live,
+                ball=ball_geometry,
+                stadium=stadium,
+                physics=ball_physics,
+            ),
+            lambda _: GoalFrameEvent(
+                occurred=jnp.bool_(False),
+                kind=jnp.int32(WOODWORK_NONE),
+                time_fraction=jnp.asarray(0.0, dtype=dtype),
+                position=jnp.zeros(3, dtype=dtype),
+                normal=jnp.zeros(3, dtype=dtype),
+            ),
+            operand=None,
         )
         ground = _detect_ground_event(
             query_state.ball, ball_path_delta, geometry=ball_geometry
@@ -523,11 +745,19 @@ def _step_ball_events_chronological(
             0.0,
         )
 
-        advanced_ball = advance_smooth(
+        advanced_ball = jax.lax.cond(
+            event_detected,
+            lambda ball: advance_smooth(
+                ball,
+                dt=current_carry.remaining * event_fraction,
+                geometry=ball_geometry,
+                physics=ball_physics,
+            ),
+            # event_fraction is exactly zero on this path, so the former
+            # smooth advance was an expensive identity whose result was later
+            # discarded in favour of ``predicted_ball``.
+            lambda ball: ball,
             current.ball,
-            dt=current_carry.remaining * event_fraction,
-            geometry=ball_geometry,
-            physics=ball_physics,
         )
         impact_position = current.ball.position + event_fraction * ball_path_delta
         impact_position = impact_position.at[2].set(
@@ -590,34 +820,52 @@ def _step_ball_events_chronological(
             ),
             at_impact,
         )
-        passive_state = apply_passive_contact(
-            at_impact,
-            passive,
-            ball_geometry=ball_geometry,
-            body=body,
-        )
-        frame_state = at_impact._replace(
-            ball=apply_goal_frame_contact(
-                at_impact.ball,
-                frame,
-                ball=ball_geometry,
-                physics=ball_physics,
-            )
-        )
-        ground_state = at_impact._replace(
-            ball=apply_ground_impact(
-                at_impact.ball, geometry=ball_geometry, physics=ball_physics
-            )
-        )
-        physical_state = jax.tree_util.tree_map(
-            lambda player_hit, frame_hit, turf_hit: jnp.where(
-                apply_passive,
-                player_hit,
-                jnp.where(apply_frame, frame_hit, turf_hit),
+        physical_response = jnp.where(
+            apply_passive,
+            jnp.int32(0),
+            jnp.where(
+                apply_frame,
+                jnp.int32(1),
+                jnp.where(apply_ground, jnp.int32(2), jnp.int32(3)),
             ),
-            passive_state,
-            frame_state,
-            ground_state,
+        )
+
+        def resolve_passive(impact_state: State) -> State:
+            return apply_passive_contact(
+                impact_state,
+                passive,
+                ball_geometry=ball_geometry,
+                body=body,
+            )
+
+        def resolve_frame(impact_state: State) -> State:
+            return impact_state._replace(
+                ball=apply_goal_frame_contact(
+                    impact_state.ball,
+                    frame,
+                    ball=ball_geometry,
+                    physics=ball_physics,
+                )
+            )
+
+        def resolve_ground(impact_state: State) -> State:
+            return impact_state._replace(
+                ball=apply_ground_impact(
+                    impact_state.ball,
+                    geometry=ball_geometry,
+                    physics=ball_physics,
+                )
+            )
+
+        physical_state = jax.lax.switch(
+            physical_response,
+            (
+                resolve_passive,
+                resolve_frame,
+                resolve_ground,
+                lambda impact_state: impact_state,
+            ),
+            at_impact,
         )
         nonterminal_state = jax.tree_util.tree_map(
             lambda active_value, physical_value: jnp.where(
@@ -871,15 +1119,27 @@ def _step_ball_events_chronological(
             & (active_search | physical_search)
         )
 
-    final = jax.lax.while_loop(pending, event_iteration, carry)
-    safe_remaining = jnp.where(final.event_budget_exhausted, 0.0, final.remaining)
-    final_ball = advance_smooth(
-        final.state.ball,
-        dt=safe_remaining,
-        geometry=ball_geometry,
-        physics=ball_physics,
+    def finish_initial_no_event(
+        _initial_carry: _BallEventCarry,
+    ) -> _BallEventCarry:
+        return initial_advanced_carry
+
+    def run_event_loop(initial_carry: _BallEventCarry) -> _BallEventCarry:
+        return jax.lax.while_loop(pending, event_iteration, initial_carry)
+
+    final = jax.lax.cond(
+        initial_no_event,
+        finish_initial_no_event,
+        run_event_loop,
+        carry,
     )
-    final_state = _attach_held_ball(final.state._replace(ball=final_ball), body=body)
+    # A live ball can leave the loop only after a no-event iteration consumes
+    # the full remainder, a terminal event sets it to zero, or the event budget
+    # fails closed. If no search is pending while time remains, the ball is
+    # necessarily dead and ``advance_smooth`` is an identity. The former final
+    # call therefore evaluated one full ground/air branch with either dt=0 or
+    # live=False on every physics substep without changing any leaf.
+    final_state = _attach_held_ball(final.state, body=body)
     deliberate = DeliberateContactStep(
         state=final_state,
         occurred=final.deliberate_occurred,
@@ -974,51 +1234,77 @@ def step_physics_substep(
     )
     separation_pinned = separation_pinned | (~position_update_enabled)
 
-    restart_actor = restart_actor_mask(state)
-    approach_actor = restart_approach_enabled & restart_actor
-    taker = jnp.clip(state.restart.taker, 0, state.players.position.shape[0] - 1)
-    target, target_facing = restart_taker_release_pose(
-        state,
-        stadium=stadium,
-        ball=ball_geometry,
-        body=body,
-    )
-    displacement = target - state.players.position[taker]
-    distance = jnp.linalg.norm(displacement)
-    direction = displacement / jnp.maximum(distance, DIV_EPS)
-    speed_limit = effective_speed_limit(
-        state.players.max_speed[taker],
-        state.players.stamina_long[taker],
-        state.players.stamina_short[taker],
-        long=long_stamina,
-        short=short_stamina,
-    )
-    travel = jnp.minimum(distance, speed_limit * jnp.asarray(dt, distance.dtype))
-    approached_position = state.players.position[taker] + direction * travel
-    approach_moved = approach_actor & (distance > GEOMETRY_EPS)
-    approach_velocity = (
-        approached_position - state.players.position[taker]
-    ) / jnp.asarray(dt, distance.dtype)
-    approached_players = state.players._replace(
-        position=jnp.where(
-            approach_actor[:, None],
-            state.players.position.at[taker].set(approached_position),
-            state.players.position,
-        ),
-        velocity=jnp.where(
-            approach_actor[:, None],
-            state.players.velocity.at[taker].set(approach_velocity),
-            state.players.velocity,
-        ),
-        body_forward=jnp.where(
-            approach_actor[:, None],
-            state.players.body_forward.at[taker].set(
-                body_forward_from_angle(target_facing)
+    def advance_restart_approach(approach_state: State):
+        """Move only a visible continuous-restart taker toward release pose."""
+
+        approach_actor = restart_actor_mask(approach_state)
+        taker = jnp.clip(
+            approach_state.restart.taker,
+            0,
+            approach_state.players.position.shape[0] - 1,
+        )
+        target, target_facing = restart_taker_release_pose(
+            approach_state,
+            stadium=stadium,
+            ball=ball_geometry,
+            body=body,
+        )
+        displacement = target - approach_state.players.position[taker]
+        distance = jnp.linalg.norm(displacement)
+        direction = displacement / jnp.maximum(distance, DIV_EPS)
+        speed_limit = effective_speed_limit(
+            approach_state.players.max_speed[taker],
+            approach_state.players.stamina_long[taker],
+            approach_state.players.stamina_short[taker],
+            long=long_stamina,
+            short=short_stamina,
+        )
+        travel = jnp.minimum(
+            distance,
+            speed_limit * jnp.asarray(dt, distance.dtype),
+        )
+        approached_position = (
+            approach_state.players.position[taker] + direction * travel
+        )
+        approach_moved = approach_actor & (distance > GEOMETRY_EPS)
+        approach_velocity = (
+            approached_position - approach_state.players.position[taker]
+        ) / jnp.asarray(dt, distance.dtype)
+        approached_players = approach_state.players._replace(
+            position=jnp.where(
+                approach_actor[:, None],
+                approach_state.players.position.at[taker].set(approached_position),
+                approach_state.players.position,
             ),
-            state.players.body_forward,
-        ),
+            velocity=jnp.where(
+                approach_actor[:, None],
+                approach_state.players.velocity.at[taker].set(approach_velocity),
+                approach_state.players.velocity,
+            ),
+            body_forward=jnp.where(
+                approach_actor[:, None],
+                approach_state.players.body_forward.at[taker].set(
+                    body_forward_from_angle(target_facing)
+                ),
+                approach_state.players.body_forward,
+            ),
+        )
+        return (
+            approach_state._replace(players=approached_players),
+            approach_actor,
+            approach_moved,
+        )
+
+    def skip_restart_approach(approach_state: State):
+        inactive = jnp.zeros_like(approach_state.players.active)
+        return approach_state, inactive, inactive
+
+    approached, approach_actor, approach_moved = jax.lax.cond(
+        restart_approach_enabled,
+        advance_restart_approach,
+        skip_restart_approach,
+        state,
     )
-    approached = state._replace(players=approached_players)
     player_position_update_enabled = position_update_enabled & (~approach_actor)
     separation_pinned = separation_pinned | approach_actor
 

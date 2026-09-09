@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 170" width="780" height="170" role="img" aria-label="MESSI — A Multi-agent Match Environment for Soccer Simulation and Intelligence">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 170" width="780" height="170" role="img" aria-label="MESSI — a multi-agent Match Environment for Soccer Simulation and Intelligence">
   <defs>
     <linearGradient id="messi-wordmark" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#16a34a"/>
@@ -13,9 +13,9 @@
       }
     </style>
   </defs>
-  <g font-family="Inter, 'Helvetica Neue', Arial, sans-serif" text-anchor="middle">
-    <text x="390" y="72" font-size="72" font-weight="800" letter-spacing="2" fill="url(#messi-wordmark)">MESSI</text>
-    <text class="messi-subtitle" x="390" y="111" font-size="17" font-weight="600">A Multi-agent Match Environment for Soccer Simulation and Intelligence</text>
-    <text class="messi-meta" x="390" y="141" font-size="14">JAX-native · 11 v 11 · 90-minute regulation · reproducible match analysis</text>
+  <g text-anchor="middle">
+    <text x="390" y="72" font-family="'Segoe Script', 'Brush Script MT', 'Apple Chancery', 'URW Chancery L', cursive" font-size="72" font-style="italic" font-weight="700" letter-spacing="0" fill="url(#messi-wordmark)">MESSI</text>
+    <text class="messi-subtitle" x="390" y="113" font-family="'Segoe Script', 'Brush Script MT', 'Apple Chancery', 'URW Chancery L', cursive" font-size="19" font-style="italic" font-weight="500" letter-spacing="0" textLength="650" lengthAdjust="spacingAndGlyphs">a multi-agent Match Environment for Soccer Simulation and Intelligence</text>
+    <text class="messi-meta" x="390" y="141" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14">JAX-native · 11 v 11 · 90-minute regulation · reproducible match analysis</text>
   </g>
 </svg>

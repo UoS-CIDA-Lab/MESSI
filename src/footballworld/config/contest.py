@@ -32,6 +32,7 @@ class Contest:
     temperature: float = 0.66
 
     tackle_success_probability: float = 0.28
+    tackle_success_context_logit_limit: float = 1.10
     # Reference probability at the midpoint of the bounded kinematic context.
     # It remains a transfer/design prior, not a measured attempt rate.
     tackle_foul_probability: float = 0.04

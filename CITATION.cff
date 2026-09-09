@@ -2,8 +2,7 @@ cff-version: 1.2.0
 message: "If you use MESSI in research, please cite this software."
 type: software
 title: "MESSI: A Multi-agent Match Environment for Soccer Simulation and Intelligence"
-version: 1.0.0
-date-released: 2026-09-06
+version: 0.1.0
 authors:
   - family-names: Park
     given-names: Hyunwoo

@@ -111,8 +111,11 @@ def manager_restart_unseen(
     if type(state) is not ManagerBoundaryState:
         raise TypeError("state must be ManagerBoundaryState")
     for name in state._fields:
-        if getattr(state, name).shape != (2,):
+        value = getattr(state, name)
+        if value.shape != (2,):
             raise ValueError(f"state.{name} must have shape [2]")
+        if not jnp.issubdtype(value.dtype, jnp.integer):
+            raise TypeError(f"state.{name} must have an integer dtype")
     tick = jnp.asarray(opened_control_tick)
     kind = jnp.asarray(restart_kind)
     if tick.shape != () or kind.shape != ():
@@ -203,6 +206,12 @@ class FunctionalManagerPolicy(Generic[ParametersT, StateT]):
         ManagerPolicyStep[StateT],
     ]
 
+    def __post_init__(self) -> None:
+        if not callable(self.initialize_fn):
+            raise TypeError("initialize_fn must be callable")
+        if not callable(self.step_fn):
+            raise TypeError("step_fn must be callable")
+
     def initialize(
         self,
         observations: NormalizedManagerObservation,
@@ -218,6 +227,15 @@ class FunctionalManagerPolicy(Generic[ParametersT, StateT]):
         parameters: ParametersT,
     ) -> ManagerPolicyStep[StateT]:
         return self.step_fn(observations, match_key, state, parameters)
+
+
+def validate_manager_policy(policy: object) -> None:
+    """Validate the host-side structural manager boundary before tracing."""
+
+    if not isinstance(policy, ManagerPolicy):
+        raise TypeError("manager_policy must implement initialize and step")
+    if not callable(policy.initialize) or not callable(policy.step):
+        raise TypeError("manager policy initialize and step must be callable")
 
 
 class OpeningPlayerPool(NamedTuple):
@@ -338,6 +356,12 @@ class FunctionalOpeningManagerPolicy(Generic[OpeningParametersT, OpeningStateT])
         OpeningManagerPolicyStep[OpeningStateT],
     ]
 
+    def __post_init__(self) -> None:
+        if not callable(self.initialize_fn):
+            raise TypeError("initialize_fn must be callable")
+        if not callable(self.step_fn):
+            raise TypeError("step_fn must be callable")
+
     def initialize(
         self,
         observations: OpeningManagerObservation,
@@ -353,6 +377,15 @@ class FunctionalOpeningManagerPolicy(Generic[OpeningParametersT, OpeningStateT])
         parameters: OpeningParametersT,
     ) -> OpeningManagerPolicyStep[OpeningStateT]:
         return self.step_fn(observations, match_key, state, parameters)
+
+
+def validate_opening_manager_policy(policy: object) -> None:
+    """Validate the host-side structural opening boundary before tracing."""
+
+    if not isinstance(policy, OpeningManagerPolicy):
+        raise TypeError("policy must implement the OpeningManagerPolicy contract")
+    if not callable(policy.initialize) or not callable(policy.step):
+        raise TypeError("opening policy initialize and step must be callable")
 
 
 def validate_opening_policy_shapes(
@@ -499,5 +532,7 @@ __all__ = [
     "acknowledge_manager_boundary",
     "initialize_manager_boundary_state",
     "manager_restart_unseen",
+    "validate_manager_policy",
+    "validate_opening_manager_policy",
     "validate_opening_policy_shapes",
 ]

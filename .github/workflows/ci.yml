@@ -62,7 +62,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install build ruff
-          ruff check src calib
+          ruff check src examples
           python -m build
       - name: Inspect metadata and archives
         run: |
@@ -126,8 +126,11 @@ jobs:
                   "SECURITY.md",
                   "CHANGELOG.md",
                   "pyproject.toml",
+                  "examples/README.md",
+                  "examples/render_full_match.py",
               ):
                   assert any(name.endswith("/" + required) for name in names)
+              assert not any("calib" in pathlib.PurePosixPath(name).parts for name in names)
           PY
       - name: Smoke installed wheel
         run: |

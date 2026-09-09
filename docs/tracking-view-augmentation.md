@@ -17,23 +17,23 @@ inference_config = view_inference_config_from_environment(
 )
 
 sequence_start = sequence_start_from_identity(
-    player_identity,                 # integer or fixed-width string [T, N]
-    slot_generation=slot_generation, # optional integer [T, N]
+    player_identity,  # integer or fixed-width string [T, N]
+    slot_generation=slot_generation,  # optional integer [T, N]
     explicit_sequence_start=period_start,  # optional bool [T] or [T, N]
 )
 inferred = infer_body_view_trajectories(
-    player_position,                 # [T, N, 2]
-    player_velocity=player_velocity, # optional [T, N, 2]
-    ball_position=ball_position,     # optional [T, 2] or [T, >=2]
-    player_valid=player_valid,       # optional bool [T, N]
-    ball_valid=ball_valid,           # optional bool [T]
-    timestamps_s=timestamps_s,       # optional [T], reset rules below
-    sequence_start=sequence_start,   # optional bool [T] or [T, N]
+    player_position,  # [T, N, 2]
+    player_velocity=player_velocity,  # optional [T, N, 2]
+    ball_position=ball_position,  # optional [T, 2] or [T, >=2]
+    player_valid=player_valid,  # optional bool [T, N]
+    ball_valid=ball_valid,  # optional bool [T]
+    timestamps_s=timestamps_s,  # optional [T], reset rules below
+    sequence_start=sequence_start,  # optional bool [T] or [T, N]
     # Optional caller diagnostic; no built-in/calibrated threshold.
     maximum_continuity_speed_mps=None,
-    input_causality="causal",        # positions/ball sampled without future rows
-    velocity_causality="causal",     # causal | unknown | noncausal
-    source_provenance={              # copied through, never invented
+    input_causality="causal",  # positions/ball sampled without future rows
+    velocity_causality="causal",  # causal | unknown | noncausal
+    source_provenance={  # copied through, never invented
         "provider": provider_name,
         "source_id": match_id,
         "content_sha256": source_sha256,

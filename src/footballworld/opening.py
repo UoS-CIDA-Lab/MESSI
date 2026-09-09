@@ -51,6 +51,7 @@ from footballworld.policies.manager import (
     OpeningManagerDecision,
     OpeningManagerObservation,
     OpeningPlayerPool,
+    validate_opening_manager_policy,
     validate_opening_policy_shapes,
 )
 from footballworld.policies.opening_formation import (
@@ -380,7 +381,7 @@ def _formation_probabilities(
         raise ValueError("formation_probabilities must have shape [L] or [2, L]")
     if not np.all(np.isfinite(probabilities)) or np.any(probabilities < 0.0):
         raise ValueError("formation_probabilities must be finite and non-negative")
-    total = np.sum(probabilities, axis=1, keepdims=True)
+    total = np.sum(probabilities, axis=1, keepdims=True, dtype=np.float64)
     if np.any(total <= 0.0):
         raise ValueError("each team formation prior must have positive mass")
     return np.asarray(probabilities / total, dtype=np.float32)
@@ -1044,8 +1045,7 @@ def create_opening_match_from_policy(
                 "policy is required when the built-in opening manager is disabled"
             )
         policy = make_rule_based_opening_manager_policy()
-    if not hasattr(policy, "initialize") or not hasattr(policy, "step"):
-        raise TypeError("policy must implement the OpeningManagerPolicy contract")
+    validate_opening_manager_policy(policy)
     try:
         key_data = jax.random.key_data(match_key)
     except (TypeError, ValueError) as error:

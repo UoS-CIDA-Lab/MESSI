@@ -331,6 +331,8 @@ def _normalized_scale(
             "on_field.position",
             "restart_position",
             "formation_anchor",
+            "team_centroid",
+            "team_spread",
         )
     ):
         return _scale(
@@ -486,6 +488,11 @@ def _visibility(contract: str, path: str) -> tuple[str, str]:
             "invalid observer uses zero/sentinel",
         )
     if contract == "manager_observation":
+        if path.startswith("team_"):
+            return (
+                "public active-player aggregate after manager validation",
+                "invalid manager or absent team uses zero/false",
+            )
         if path.startswith("on_field."):
             return (
                 "manager valid and on_field.team_mask",

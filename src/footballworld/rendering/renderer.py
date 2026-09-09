@@ -300,6 +300,23 @@ class _PerspectiveCamera:
         depth = np.clip(self._camera_space(points)[..., 2], 1e-3, None)
         return np.clip(self.reference_depth / depth, 0.62, 1.55)
 
+    def project_with_relative_scale(
+        self, points: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Project points and reuse their camera-space depth for marker scale."""
+
+        camera = self._camera_space(points)
+        depth = np.clip(camera[..., 2], 1e-3, None)
+        projected = np.stack(
+            (
+                self.focal_length * camera[..., 0] / depth,
+                self.focal_length * camera[..., 1] / depth,
+            ),
+            axis=-1,
+        )
+        scale = np.clip(self.reference_depth / depth, 0.62, 1.55)
+        return projected, scale
+
 
 @dataclass(frozen=True, slots=True)
 class RenderResult:
@@ -311,6 +328,7 @@ class RenderResult:
     seconds: float
     throughput_fps: float
     workers: int
+    video_generated: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,12 +775,129 @@ def _flatten_circle_markers(mpl_path: Any, *collections: Any) -> None:
         collection.set_paths([mpl_path(vertices, closed=True)])
 
 
+def _update_line_vertices(collection: Any, vertices: np.ndarray) -> None:
+    """Update fixed-shape LineCollection paths without rebuilding Path objects."""
+
+    values = np.asarray(vertices, dtype=np.float64)
+    shape = values.shape
+    if getattr(collection, "_footballworld_vertex_shape", None) != shape:
+        collection.set_segments(values)
+        collection._footballworld_vertex_shape = shape
+        return
+    paths = collection.get_paths()
+    if len(paths) != values.shape[0] or any(
+        path.vertices.shape != values[index].shape for index, path in enumerate(paths)
+    ):
+        collection.set_segments(values)
+        return
+    for path, row in zip(paths, values, strict=True):
+        path.vertices[...] = row
+    collection.stale = True
+
+
+def _update_polygon_vertices(collection: Any, vertices: np.ndarray) -> None:
+    """Update closed, fixed-shape PolyCollection paths in place."""
+
+    values = np.asarray(vertices, dtype=np.float64)
+    shape = values.shape
+    if getattr(collection, "_footballworld_vertex_shape", None) != shape:
+        collection.set_verts(values)
+        collection._footballworld_vertex_shape = shape
+        return
+    paths = collection.get_paths()
+    expected_points = values.shape[1] + 1
+    if len(paths) != values.shape[0] or any(
+        path.vertices.shape != (expected_points, 2) for path in paths
+    ):
+        collection.set_verts(values)
+        return
+    for path, row in zip(paths, values, strict=True):
+        path.vertices[:-1] = row
+        path.vertices[-1] = row[0]
+    collection.stale = True
+
+
+def _install_renderer_font_path_cache(renderer: Any) -> bool:
+    """Cache stable Agg font-path resolution for one render segment.
+
+    Every text draw asks Matplotlib to resolve an immutable ``FontProperties``
+    object to the same font-file tuple. Keep that tuple on this RendererAgg
+    instance while preserving Agg's normal font loading, clearing, sizing,
+    hinting, and rasterization. The identity cache owns a strong reference to
+    each property, so Python cannot reuse an identity for a different object.
+
+    Matplotlib's backend hooks are private and may change after the supported
+    minimum version. Fail closed to the original implementation when the
+    expected hooks are unavailable.
+    """
+
+    try:
+        from matplotlib.backends import backend_agg
+
+        manager = backend_agg._fontManager
+        find_fonts = manager._find_fonts_by_props
+        get_font = backend_agg.get_font
+        original_prepare = renderer._prepare_font
+    except (AttributeError, ImportError):
+        return False
+
+    resolved: dict[int, tuple[Any, tuple[str, ...]]] = {}
+    shared_paths: dict[tuple[Any, ...], tuple[str, ...]] = {}
+
+    def prepare_font(font_properties: Any) -> Any:
+        identity = id(font_properties)
+        cached = resolved.get(identity)
+        if cached is None or cached[0] is not font_properties:
+            try:
+                property_key = (
+                    font_properties.get_file(),
+                    tuple(font_properties.get_family()),
+                    font_properties.get_style(),
+                    font_properties.get_variant(),
+                    font_properties.get_weight(),
+                    font_properties.get_stretch(),
+                    font_properties.get_size_in_points(),
+                )
+                paths = shared_paths.get(property_key)
+                if paths is None:
+                    paths = tuple(find_fonts(font_properties))
+                    shared_paths[property_key] = paths
+            except (AttributeError, TypeError, ValueError):
+                return original_prepare(font_properties)
+            cached = (font_properties, paths)
+            resolved[identity] = cached
+        font = get_font(cached[1])
+        font.clear()
+        font.set_size(font_properties.get_size_in_points(), renderer.dpi)
+        return font
+
+    renderer._prepare_font = prepare_font
+    return True
+
+
 class _AsyncWriter:
     """Overlap Agg rendering with ffmpeg pipe writes."""
 
-    def __init__(self, path: Path, fps: float, style: RenderStyle):
+    def __init__(
+        self,
+        path: Path,
+        fps: float,
+        style: RenderStyle,
+        *,
+        faststart: bool = True,
+    ):
         imageio, *_ = _dependencies()
         threads = max(1, min(style.encoder_threads, os.cpu_count() or 1))
+        output_params = [
+            "-preset",
+            style.encoder_preset,
+            "-crf",
+            str(style.crf),
+            "-threads",
+            str(threads),
+        ]
+        if faststart:
+            output_params.extend(("-movflags", "+faststart"))
         self._writer = imageio.get_writer(
             path,
             fps=fps,
@@ -770,16 +905,7 @@ class _AsyncWriter:
             quality=None,
             pixelformat="yuv420p",
             macro_block_size=None,
-            output_params=[
-                "-preset",
-                style.encoder_preset,
-                "-crf",
-                str(style.crf),
-                "-threads",
-                str(threads),
-                "-movflags",
-                "+faststart",
-            ],
+            output_params=output_params,
         )
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=_ASYNC_FRAME_BUFFER_COUNT)
         self._free: queue.LifoQueue[np.ndarray] | None = None
@@ -1278,7 +1404,12 @@ class ReplayRenderer:
             spine.set_linewidth(0.8)
 
     def render_frames(
-        self, frames: list[_VisualFrame], path: str | Path, *, fps: float
+        self,
+        frames: list[_VisualFrame],
+        path: str | Path,
+        *,
+        fps: float,
+        faststart: bool = True,
     ) -> Path:
         """Render an independent contiguous frame range to one MP4."""
         if not frames:
@@ -1323,13 +1454,9 @@ class ReplayRenderer:
         count = first.player_position.shape[0]
         team = first.team_id
         gk = first.is_goalkeeper
-        colors = np.asarray(
-            [
-                GK_COLORS[int(team[i])] if gk[i] else TEAM_COLORS[int(team[i])]
-                for i in range(count)
-            ],
-            dtype=object,
-        )
+        colors = np.where(gk, GK_COLOR_ARRAY[team], TEAM_COLOR_ARRAY[team])
+        colors = np.asarray(colors, dtype=object)
+        colors[first.sent_off] = "#7c2834"
 
         # Static broadcast header. A separate single transient adjudication
         # banner may appear beneath it; there is no historical event feed.
@@ -1501,7 +1628,7 @@ class ReplayRenderer:
             zeros[:, 0],
             zeros[:, 1],
             s=style.player_size,
-            c=colors.tolist(),
+            c=colors,
             edgecolors="#101010",
             linewidths=1.0,
             zorder=7,
@@ -1509,7 +1636,7 @@ class ReplayRenderer:
         # Intent rings live in turf coordinates rather than screen-marker
         # coordinates. The fixed camera therefore foreshortens them with the
         # pitch instead of showing front-facing circles around every player.
-        empty_rings = [np.zeros((2, 2))] * count
+        empty_rings = [np.zeros((2, 2)) for _ in range(count)]
         intent_ring_underlay = LineCollection(
             empty_rings,
             colors="#071019",
@@ -1546,11 +1673,12 @@ class ReplayRenderer:
             zorder=5.5,
         )
         ax.add_collection(field_of_view_fan)
+        number_labels = tuple("GK" if gk[i] else str(i + 1) for i in range(count))
         numbers = [
             ax.text(
                 0,
                 0,
-                "GK" if gk[i] else str(i + 1),
+                number_labels[i],
                 color="white",
                 fontsize=8.0,
                 weight="bold",
@@ -1561,7 +1689,7 @@ class ReplayRenderer:
             for i in range(count)
         ]
         stamina_long_rail = LineCollection(
-            [np.zeros((2, 2))] * count,
+            [np.zeros((2, 2)) for _ in range(count)],
             colors=_STAMINA_BAR_RAIL_COLOR,
             linewidths=_STAMINA_BAR_RAIL_WIDTH_PT,
             alpha=0.0,
@@ -1569,7 +1697,7 @@ class ReplayRenderer:
             zorder=9,
         )
         stamina_short_rail = LineCollection(
-            [np.zeros((2, 2))] * count,
+            [np.zeros((2, 2)) for _ in range(count)],
             colors=_STAMINA_BAR_RAIL_COLOR,
             linewidths=_STAMINA_BAR_RAIL_WIDTH_PT,
             alpha=0.0,
@@ -1577,14 +1705,14 @@ class ReplayRenderer:
             zorder=9,
         )
         stamina_long = LineCollection(
-            [np.zeros((2, 2))] * count,
+            [np.zeros((2, 2)) for _ in range(count)],
             colors=_STAMINA_LONG_COLOR,
             linewidths=_STAMINA_BAR_FILL_WIDTH_PT,
             capstyle="round",
             zorder=10,
         )
         stamina_short = LineCollection(
-            [np.zeros((2, 2))] * count,
+            [np.zeros((2, 2)) for _ in range(count)],
             colors=_STAMINA_SHORT_COLOR,
             linewidths=_STAMINA_BAR_FILL_WIDTH_PT,
             capstyle="round",
@@ -1618,7 +1746,7 @@ class ReplayRenderer:
             zeros[:, 0],
             zeros[:, 1],
             s=18,
-            c=colors.tolist(),
+            c=colors,
             edgecolors="#101010",
             linewidths=0.35,
             zorder=4,
@@ -1667,18 +1795,43 @@ class ReplayRenderer:
         dynamic_minimap = [minimap_players, minimap_ball]
         for artist in dynamic_main + dynamic_minimap:
             artist.set_animated(True)
+        _install_renderer_font_path_cache(fig.canvas.get_renderer())
         fig.canvas.draw()
+        text_layout_cache: dict[str, Any] = {}
+
+        def set_number_label(text: Any, label: str) -> None:
+            """Keep Agg's hinted glyph rasterization but cache static layout."""
+
+            text.set_text(label)
+            layout = text_layout_cache.get(label)
+            if layout is None:
+                layout = type(text)._get_layout(text, fig.canvas.get_renderer())
+                text_layout_cache[label] = layout
+            text._get_layout = lambda _renderer, cached=layout: cached
+
+        for text, label in zip(numbers, number_labels, strict=True):
+            set_number_label(text, label)
         background = fig.canvas.copy_from_bbox(fig.bbox)
-        writer = _AsyncWriter(path, fps, style)
+        writer = _AsyncWriter(path, fps, style, faststart=faststart)
         angles = np.linspace(0.0, 2.0 * np.pi, 40)
         ring_unit = np.stack((np.cos(angles), np.sin(angles)), axis=-1)
         half_fov = np.deg2rad(0.5 * self.horizontal_fov_degrees)
         fan_angles = np.linspace(-half_fov, half_fov, _FOV_FAN_SAMPLES)
         fan_cos = np.cos(fan_angles)
         fan_sin = np.sin(fan_angles)
+        cached_team = np.asarray(first.team_id).copy()
+        cached_goalkeeper = np.asarray(first.is_goalkeeper).copy()
+        cached_sent_off = np.asarray(first.sent_off).copy()
+        cached_active: np.ndarray | None = None
+        cached_high_head_contact: np.ndarray | None = None
+        cached_ball_live: bool | None = None
+        intent_visible = False
         try:
             for frame in frames:
                 active = frame.active
+                active_changed = cached_active is None or not np.array_equal(
+                    active, cached_active
+                )
                 pos = frame.player_position
                 aerial = np.where(active, frame.aerial_progress, 0.0)
                 # The post-contact recovery lock is a causal countdown. Map it
@@ -1691,10 +1844,11 @@ class ReplayRenderer:
                 )
                 hud_world = np.column_stack((pos, _PLAYER_HUD_HEIGHT_M + aerial_lift))
                 ground_world = np.column_stack((pos, np.zeros(count, dtype=np.float32)))
-                display_pos = self.camera.project(display_world)
-                hud_pos = self.camera.project(hud_world)
-                ground_pos = self.camera.project(ground_world)
-                depth_scale = self.camera.relative_scale(display_world)
+                projected, projected_scale = self.camera.project_with_relative_scale(
+                    np.concatenate((display_world, hud_world, ground_world), axis=0)
+                )
+                display_pos, hud_pos, ground_pos = np.split(projected, 3)
+                depth_scale = projected_scale[:count]
                 size = np.where(active, style.player_size * np.square(depth_scale), 0.0)
                 player_shadow.set_offsets(ground_pos)
                 # A jump stays anchored to the authoritative ground position.
@@ -1703,13 +1857,27 @@ class ReplayRenderer:
                 player_shadow.set_sizes(size * (0.92 - 0.24 * jump_phase))
                 players.set_offsets(display_pos)
                 players.set_sizes(size)
-                field_colors = TEAM_COLOR_ARRAY[frame.team_id]
-                goalkeeper_colors = GK_COLOR_ARRAY[frame.team_id]
-                player_colors = np.where(
-                    frame.is_goalkeeper, goalkeeper_colors, field_colors
+                goalkeeper_changed = not np.array_equal(
+                    frame.is_goalkeeper, cached_goalkeeper
                 )
-                player_colors[frame.sent_off] = "#7c2834"
-                players.set_facecolors(player_colors.tolist())
+                player_style_changed = not (
+                    np.array_equal(frame.team_id, cached_team)
+                    and not goalkeeper_changed
+                    and np.array_equal(frame.sent_off, cached_sent_off)
+                )
+                if player_style_changed:
+                    cached_team[...] = frame.team_id
+                    cached_goalkeeper[...] = frame.is_goalkeeper
+                    cached_sent_off[...] = frame.sent_off
+                    player_colors = np.where(
+                        frame.is_goalkeeper,
+                        GK_COLOR_ARRAY[frame.team_id],
+                        TEAM_COLOR_ARRAY[frame.team_id],
+                    )
+                    player_colors = np.asarray(player_colors, dtype=object)
+                    player_colors[frame.sent_off] = "#7c2834"
+                    players.set_facecolors(player_colors)
+                    minimap_players.set_facecolors(player_colors)
                 direction = frame.player_body_forward
                 # Contact intent occupies the small turf-space gap between the
                 # player and the FOV fan. Projecting the world-space circle
@@ -1719,34 +1887,41 @@ class ReplayRenderer:
                     & frame.action_executed
                     & (frame.requested_intent != INTENT_MOVE)
                 )
-                ring_radius = _intent_ring_radii(
-                    frame.requested_intent,
-                    frame.is_goalkeeper,
-                    self.overlay,
-                )
-                ring_xy = (
-                    pos[:, None, :] + ring_radius[:, None, None] * ring_unit[None, :, :]
-                )
-                ring_world = np.concatenate(
-                    (
-                        ring_xy,
-                        np.full((count, angles.size, 1), 0.030, dtype=np.float32),
-                    ),
-                    axis=2,
-                )
-                ring_segments = self.camera.project(ring_world.reshape(-1, 3)).reshape(
-                    count, angles.size, 2
-                )
-                intent_ring_underlay.set_segments(ring_segments)
-                intent_rings.set_segments(ring_segments)
-                intent_rings.set_color(
-                    [
-                        INTENT_COLORS.get(int(intent), "#ffffff")
-                        for intent in frame.requested_intent
-                    ]
-                )
-                intent_ring_underlay.set_alpha(np.where(shown_intent, 0.72, 0.0))
-                intent_rings.set_alpha(shown_intent.astype(np.float32))
+                if np.any(shown_intent):
+                    ring_radius = _intent_ring_radii(
+                        frame.requested_intent,
+                        frame.is_goalkeeper,
+                        self.overlay,
+                    )
+                    ring_xy = (
+                        pos[:, None, :]
+                        + ring_radius[:, None, None] * ring_unit[None, :, :]
+                    )
+                    ring_world = np.concatenate(
+                        (
+                            ring_xy,
+                            np.full((count, angles.size, 1), 0.030, dtype=np.float32),
+                        ),
+                        axis=2,
+                    )
+                    ring_segments = self.camera.project(
+                        ring_world.reshape(-1, 3)
+                    ).reshape(count, angles.size, 2)
+                    _update_line_vertices(intent_ring_underlay, ring_segments)
+                    _update_line_vertices(intent_rings, ring_segments)
+                    intent_rings.set_color(
+                        [
+                            INTENT_COLORS.get(int(intent), "#ffffff")
+                            for intent in frame.requested_intent
+                        ]
+                    )
+                    intent_ring_underlay.set_alpha(np.where(shown_intent, 0.72, 0.0))
+                    intent_rings.set_alpha(shown_intent.astype(np.float32))
+                    intent_visible = True
+                elif intent_visible:
+                    intent_ring_underlay.set_alpha(np.zeros(count, dtype=np.float32))
+                    intent_rings.set_alpha(np.zeros(count, dtype=np.float32))
+                    intent_visible = False
                 aerial_effect.set_offsets(ground_pos)
                 aerial_effect.set_sizes(
                     np.where(
@@ -1760,12 +1935,25 @@ class ReplayRenderer:
                         0.0,
                     )
                 )
-                effect_colors = np.tile(np.array([0.663, 0.576, 1.0, 0.68]), (count, 1))
-                effect_colors[frame.high_head_contact] = (1.0, 0.949, 0.478, 0.95)
-                aerial_effect.set_edgecolors(effect_colors)
-                aerial_effect.set_linewidths(
-                    np.where(frame.high_head_contact, 3.0, 2.0)
-                )
+                if cached_high_head_contact is None or not np.array_equal(
+                    frame.high_head_contact, cached_high_head_contact
+                ):
+                    cached_high_head_contact = np.asarray(
+                        frame.high_head_contact
+                    ).copy()
+                    effect_colors = np.tile(
+                        np.array([0.663, 0.576, 1.0, 0.68]), (count, 1)
+                    )
+                    effect_colors[frame.high_head_contact] = (
+                        1.0,
+                        0.949,
+                        0.478,
+                        0.95,
+                    )
+                    aerial_effect.set_edgecolors(effect_colors)
+                    aerial_effect.set_linewidths(
+                        np.where(frame.high_head_contact, 3.0, 2.0)
+                    )
                 gaze_cos = np.cos(frame.player_gaze_yaw)
                 gaze_sin = np.sin(frame.player_gaze_yaw)
                 view_direction = np.column_stack(
@@ -1802,27 +1990,32 @@ class ReplayRenderer:
                     ),
                     axis=2,
                 )
-                field_of_view_fan.set_verts(
+                _update_polygon_vertices(
+                    field_of_view_fan,
                     self.camera.project(fan_world.reshape(-1, 3)).reshape(
                         count, 2 * _FOV_FAN_SAMPLES, 2
-                    )
+                    ),
                 )
-                fan_colors = np.ones((count, 4), dtype=np.float32)
-                fan_colors[:, 3] = np.where(active, _FOV_FAN_ALPHA, 0.0)
-                field_of_view_fan.set_facecolors(fan_colors)
+                if active_changed:
+                    fan_colors = np.ones((count, 4), dtype=np.float32)
+                    fan_colors[:, 3] = np.where(active, _FOV_FAN_ALPHA, 0.0)
+                    field_of_view_fan.set_facecolors(fan_colors)
                 bar_half_width = _STAMINA_BAR_HALF_WIDTH_PX * depth_scale
                 base_y = hud_pos[:, 1] + _STAMINA_BAR_OFFSET_PX * depth_scale
                 left = hud_pos[:, 0] - bar_half_width
                 right = hud_pos[:, 0] + bar_half_width
                 long_y = base_y - _STAMINA_BAR_HALF_GAP_PX * depth_scale
                 short_y = base_y + _STAMINA_BAR_HALF_GAP_PX * depth_scale
-                stamina_long_rail.set_segments(
-                    np.stack((np.c_[left, long_y], np.c_[right, long_y]), axis=1)
+                _update_line_vertices(
+                    stamina_long_rail,
+                    np.stack((np.c_[left, long_y], np.c_[right, long_y]), axis=1),
                 )
-                stamina_short_rail.set_segments(
-                    np.stack((np.c_[left, short_y], np.c_[right, short_y]), axis=1)
+                _update_line_vertices(
+                    stamina_short_rail,
+                    np.stack((np.c_[left, short_y], np.c_[right, short_y]), axis=1),
                 )
-                stamina_long.set_segments(
+                _update_line_vertices(
+                    stamina_long,
                     np.stack(
                         (
                             np.c_[left, long_y],
@@ -1835,9 +2028,10 @@ class ReplayRenderer:
                             ],
                         ),
                         axis=1,
-                    )
+                    ),
                 )
-                stamina_short.set_segments(
+                _update_line_vertices(
+                    stamina_short,
                     np.stack(
                         (
                             np.c_[left, short_y],
@@ -1850,18 +2044,25 @@ class ReplayRenderer:
                             ],
                         ),
                         axis=1,
-                    )
+                    ),
                 )
-                for collection in (stamina_long_rail, stamina_short_rail):
-                    collection.set_alpha(np.where(active, 0.88, 0.0))
-                for collection in (stamina_long, stamina_short):
-                    collection.set_alpha(np.where(active, 1.0, 0.0))
+                if active_changed:
+                    for collection in (stamina_long_rail, stamina_short_rail):
+                        collection.set_alpha(np.where(active, 0.88, 0.0))
+                    for collection in (stamina_long, stamina_short):
+                        collection.set_alpha(np.where(active, 1.0, 0.0))
+                    for index, text in enumerate(numbers):
+                        text.set_visible(bool(active[index]))
+                    cached_active = np.asarray(active).copy()
+                if goalkeeper_changed:
+                    number_labels = tuple(
+                        "GK" if frame.is_goalkeeper[i] else str(i + 1)
+                        for i in range(count)
+                    )
+                    for text, label in zip(numbers, number_labels, strict=True):
+                        set_number_label(text, label)
                 for index, text in enumerate(numbers):
                     text.set_position(display_pos[index])
-                    text.set_text(
-                        "GK" if frame.is_goalkeeper[index] else str(index + 1)
-                    )
-                    text.set_visible(bool(active[index]))
                 cards.set_offsets(
                     hud_pos + np.column_stack((4.5 * depth_scale, 4.5 * depth_scale))
                 )
@@ -1893,20 +2094,24 @@ class ReplayRenderer:
                 ball_height = max(0.0, float(frame.ball_position[2]))
                 ball_ground_world = np.asarray(((ball_xy[0], ball_xy[1], 0.0),))
                 ball_world = np.asarray(((ball_xy[0], ball_xy[1], ball_height),))
-                ball_ground = self.camera.project(ball_ground_world)
-                ball_projected = self.camera.project(ball_world)
-                ball_scale = float(self.camera.relative_scale(ball_world)[0])
+                ball_projection, ball_scales = self.camera.project_with_relative_scale(
+                    np.concatenate((ball_ground_world, ball_world), axis=0)
+                )
+                ball_ground = ball_projection[:1]
+                ball_projected = ball_projection[1:]
+                ball_scale = float(ball_scales[1])
                 ball_shadow.set_offsets(ball_ground)
                 ball.set_offsets(ball_projected)
                 ball.set_sizes([58.0 * ball_scale * ball_scale])
-                ball.set_facecolors(["#fafafa" if frame.ball_live else "#8b949e"])
+                if frame.ball_live != cached_ball_live:
+                    ball.set_facecolors(["#fafafa" if frame.ball_live else "#8b949e"])
+                    cached_ball_live = frame.ball_live
                 ball_drop.set_data(
                     [ball_ground[0, 0], ball_projected[0, 0]],
                     [ball_ground[0, 1], ball_projected[0, 1]],
                 )
                 minimap_players.set_offsets(pos)
                 minimap_players.set_sizes(np.where(active, 18.0, 0.0))
-                minimap_players.set_facecolors(player_colors.tolist())
                 minimap_ball.set_offsets(ball_xy[None])
                 score_text.set_text(f"{frame.score[0]} : {frame.score[1]}")
                 clock_text.set_text(self._clock_label(frame))
@@ -1964,7 +2169,7 @@ def _render_segment(
         halftime_enabled=halftime_enabled,
         horizontal_fov_degrees=horizontal_fov_degrees,
         style=style,
-    ).render_frames(frames, path, fps=fps)
+    ).render_frames(frames, path, fps=fps, faststart=False)
     rendered = Path(path)
     if not rendered.is_file() or rendered.stat().st_size <= 0:
         raise RuntimeError(f"encoder produced no segment: {rendered}")
@@ -2012,8 +2217,8 @@ def _resample_indices(
     if len(frames) == 1:
         return np.zeros(1, dtype=np.int64)
     ticks = np.asarray([frame.control_tick for frame in frames], dtype=np.float64)
-    if np.any(np.diff(ticks) < 0.0):
-        raise ValueError("control_tick must be monotonic for rendering")
+    if np.any(np.diff(ticks) <= 0.0):
+        raise ValueError("control_tick must be strictly increasing for rendering")
     times = (ticks - ticks[0]) / source_fps
     # Every post-control source row represents one complete control cell. Use
     # the covered interval, including the final cell, rather than only the
@@ -2329,7 +2534,13 @@ def render_mp4(
     metadata_record["completion"] = completion
     metadata_record["verified_counts"] = verified_counts
     with meta.open("w", encoding="utf-8") as stream:
-        json.dump(metadata_record, stream, ensure_ascii=False, separators=(",", ":"))
+        json.dump(
+            metadata_record,
+            stream,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
         stream.write("\n")
     artifacts = {
         "video": artifact_receipt(video),

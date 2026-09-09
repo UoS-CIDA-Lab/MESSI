@@ -820,7 +820,7 @@ def infer_body_view_trajectories(
             have_body[expired] = False
             previous_body_confidence[expired] = 0.0
             previous_gaze_yaw[current_valid] = current_gaze[current_valid]
-            have_gaze = current_valid.copy()
+            have_gaze |= current_valid
 
     effective_velocity_causality = (
         velocity_causality if velocity_was_provided else "causal"

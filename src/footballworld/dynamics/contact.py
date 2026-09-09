@@ -134,6 +134,25 @@ def _intersect_intervals(
     return first_valid & second_valid & (entry <= exit), entry, exit
 
 
+def _active_horizontal_interval(
+    state: State,
+    ball_path_delta: jax.Array,
+    player_start_position: jax.Array,
+    player_path_delta: jax.Array,
+    radius: float,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Return the shared horizontal interval for one reach-radius family."""
+
+    relative_origin = state.ball.position[:2] - player_start_position
+    relative_delta = ball_path_delta[:2] - player_path_delta
+    predicate_radius = jnp.sqrt(
+        jnp.maximum(
+            jnp.asarray(radius, dtype=relative_origin.dtype) ** 2 - SAFE_NORM_EPS, 0.0
+        )
+    )
+    return _circle_interval(relative_origin, relative_delta, predicate_radius)
+
+
 def _active_reach_interval(
     state: State,
     ball_path_delta: jax.Array,
@@ -142,18 +161,17 @@ def _active_reach_interval(
     radius: float,
     lower_height: jax.Array,
     upper_height: jax.Array,
+    *,
+    horizontal: tuple[jax.Array, jax.Array, jax.Array] | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    relative_origin = state.ball.position[:2] - player_start_position
-    relative_delta = ball_path_delta[:2] - player_path_delta
-    # ``evaluate_contact_predicates`` uses sqrt(distance_squared +
-    # SAFE_NORM_EPS), so its exact geometric radius is slightly smaller than
-    # the nominal envelope. Reuse that existing numerical term here.
-    predicate_radius = jnp.sqrt(
-        jnp.maximum(
-            jnp.asarray(radius, dtype=relative_origin.dtype) ** 2 - SAFE_NORM_EPS, 0.0
+    if horizontal is None:
+        horizontal = _active_horizontal_interval(
+            state,
+            ball_path_delta,
+            player_start_position,
+            player_path_delta,
+            radius,
         )
-    )
-    horizontal = _circle_interval(relative_origin, relative_delta, predicate_radius)
     player_count = player_start_position.shape[0]
     vertical = _slab_interval(
         jnp.broadcast_to(state.ball.position[2], (player_count, 1)),
@@ -232,6 +250,16 @@ def _detect_active_contact_requested(
     pelvis = players.height * scale.pelvis_height_factor
     torso_top = body.torso_top_height(players.height)
     minus_infinity = jnp.full(player_count, -jnp.inf, dtype=dtype)
+    # Foot, chest, and head partition the same horizontal swept cylinder.
+    # Reuse its quadratic roots; only their vertical slabs differ. SoccerWorld
+    # has no corresponding chronological reach-volume implementation to retain.
+    ordinary_horizontal = _active_horizontal_interval(
+        state,
+        ball_path_delta,
+        player_start_position,
+        player_path_delta,
+        reach.carry_radius_m + ball_geometry.radius,
+    )
     foot = _active_reach_interval(
         state,
         ball_path_delta,
@@ -240,6 +268,7 @@ def _detect_active_contact_requested(
         reach.carry_radius_m + ball_geometry.radius,
         minus_infinity,
         pelvis + ball_geometry.radius,
+        horizontal=ordinary_horizontal,
     )
     chest = _active_reach_interval(
         state,
@@ -249,6 +278,7 @@ def _detect_active_contact_requested(
         reach.carry_radius_m + ball_geometry.radius,
         pelvis + ball_geometry.radius,
         torso_top + ball_geometry.radius,
+        horizontal=ordinary_horizontal,
     )
     head = _active_reach_interval(
         state,
@@ -258,6 +288,7 @@ def _detect_active_contact_requested(
         reach.carry_radius_m + ball_geometry.radius,
         torso_top + ball_geometry.radius,
         players.reach_height + ball_geometry.radius,
+        horizontal=ordinary_horizontal,
     )
 
     def foot_speed_allowed(interval, needed):
@@ -349,6 +380,13 @@ def _detect_active_contact_requested(
     challenge_requested = selected_structural & (safe_intent == INTENT_CHALLENGE)
     challenge_recovery = base_recovery & (players.challenge_recovery_substeps <= 0)
 
+    challenge_horizontal = _active_horizontal_interval(
+        state,
+        ball_path_delta,
+        player_start_position,
+        player_path_delta,
+        reach.challenge_radius_m + ball_geometry.radius,
+    )
     challenge_foot = _active_reach_interval(
         state,
         ball_path_delta,
@@ -357,6 +395,7 @@ def _detect_active_contact_requested(
         reach.challenge_radius_m + ball_geometry.radius,
         minus_infinity,
         pelvis + ball_geometry.radius,
+        horizontal=challenge_horizontal,
     )
     challenge_chest = _active_reach_interval(
         state,
@@ -366,6 +405,7 @@ def _detect_active_contact_requested(
         reach.challenge_radius_m + ball_geometry.radius,
         pelvis + ball_geometry.radius,
         torso_top + ball_geometry.radius,
+        horizontal=challenge_horizontal,
     )
     challenge_head = _active_reach_interval(
         state,
@@ -375,6 +415,7 @@ def _detect_active_contact_requested(
         reach.challenge_radius_m + ball_geometry.radius,
         torso_top + ball_geometry.radius,
         players.reach_height + ball_geometry.radius,
+        horizontal=challenge_horizontal,
     )
 
     def challenge_time(interval, mechanism_recovery):
@@ -519,6 +560,83 @@ def _detect_active_contact_requested(
     )
 
 
+def active_contact_possible(
+    state: State,
+    action: PhysicsAction,
+    restart_release_allowed: jax.Array,
+    contact_attempted: jax.Array,
+    ball_path_delta: jax.Array,
+    player_start_position: jax.Array,
+    player_path_delta: jax.Array,
+    *,
+    excluded_actor: jax.Array,
+    search_enabled: jax.Array,
+    ball_geometry: Ball,
+    reach: Reach,
+) -> jax.Array:
+    """Conservatively reject requested reaches outside every swept AABB."""
+
+    players = state.players
+    dtype = state.ball.position.dtype
+    player_count = players.position.shape[0]
+    player_index = jnp.arange(player_count, dtype=jnp.int32)
+    active_row = (
+        players.active
+        & (~jnp.asarray(contact_attempted, dtype=jnp.bool_))
+        & (player_index != jnp.asarray(excluded_actor, dtype=jnp.int32))
+    )
+    explicit_request = active_row & (action.requested_intent != INTENT_MOVE)
+    requested = jnp.asarray(search_enabled, dtype=jnp.bool_) & jnp.any(explicit_request)
+
+    # A goalkeeper hold releases at time zero and therefore must not depend on
+    # reconstructed spatial coherence. The exact detector remains authoritative
+    # for designated actor, recovery, intent, and restart legality.
+    release_allowed = jnp.broadcast_to(
+        jnp.asarray(restart_release_allowed, dtype=jnp.bool_),
+        (player_count,),
+    )
+    goalkeeper_hold_release = (state.restart.kind == RK_GK_HOLD) & jnp.any(
+        explicit_request & release_allowed
+    )
+
+    maximum_radius = jnp.asarray(
+        max(
+            reach.carry_radius_m,
+            reach.challenge_radius_m,
+            reach.goalkeeper_radius_m,
+        )
+        + ball_geometry.radius,
+        dtype=dtype,
+    )
+    ball_start = state.ball.position
+    ball_end = ball_start + ball_path_delta
+    ball_min_xy = jnp.minimum(ball_start[:2], ball_end[:2])
+    ball_max_xy = jnp.maximum(ball_start[:2], ball_end[:2])
+    player_end = player_start_position + player_path_delta
+    player_min_xy = jnp.minimum(player_start_position, player_end) - maximum_radius
+    player_max_xy = jnp.maximum(player_start_position, player_end) + maximum_radius
+    horizontal_overlap = jnp.all(
+        (ball_max_xy[None, :] >= player_min_xy)
+        & (ball_min_xy[None, :] <= player_max_xy),
+        axis=-1,
+    )
+    # Foot envelopes deliberately extend below the pitch, so only the upper
+    # reach plane can safely reject a path vertically.
+    ball_min_z = jnp.minimum(ball_start[2], ball_end[2])
+    vertical_overlap = ball_min_z <= players.reach_height + ball_geometry.radius
+    finite = (
+        jnp.all(jnp.isfinite(ball_start))
+        & jnp.all(jnp.isfinite(ball_path_delta))
+        & jnp.all(jnp.isfinite(player_start_position))
+        & jnp.all(jnp.isfinite(player_path_delta))
+        & jnp.all(jnp.isfinite(players.reach_height))
+    )
+    spatial_candidate = jnp.any(
+        explicit_request & horizontal_overlap & vertical_overlap
+    )
+    return requested & (goalkeeper_hold_release | (~finite) | spatial_candidate)
+
+
 def detect_active_contact(
     state: State,
     action: PhysicsAction,
@@ -538,18 +656,21 @@ def detect_active_contact(
     body: BodyContact = BodyContact(),
     ball_physics: BallPhysics = BallPhysics(),
 ) -> ActiveContactEvent:
-    """Skip the swept detector when no deliberate claim can be requested."""
+    """Skip the exact swept detector when no requested reach can intersect."""
 
-    players = state.players
-    player_count = players.position.shape[0]
-    player_index = jnp.arange(player_count, dtype=jnp.int32)
-    active_row = (
-        players.active
-        & (~jnp.asarray(contact_attempted, dtype=jnp.bool_))
-        & (player_index != jnp.asarray(excluded_actor, dtype=jnp.int32))
+    requested = active_contact_possible(
+        state,
+        action,
+        restart_release_allowed,
+        contact_attempted,
+        ball_path_delta,
+        player_start_position,
+        player_path_delta,
+        excluded_actor=excluded_actor,
+        search_enabled=search_enabled,
+        ball_geometry=ball_geometry,
+        reach=reach,
     )
-    explicit_request = active_row & (action.requested_intent != INTENT_MOVE)
-    requested = jnp.asarray(search_enabled, dtype=jnp.bool_) & jnp.any(explicit_request)
 
     return jax.lax.cond(
         requested,
@@ -1211,8 +1332,10 @@ def resolve_contact_step(
         & jnp.any(predicates.designated_restart)
     )
     keeps_control = (
-        predicates.verified_controlled_carrier != NO_PLAYER
-    ) | gk_hold_control | fresh_trap_control_grace(state)
+        (predicates.verified_controlled_carrier != NO_PLAYER)
+        | gk_hold_control
+        | fresh_trap_control_grace(state)
+    )
     possession = state.possession._replace(
         team=jnp.where(
             gains_control,

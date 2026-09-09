@@ -49,10 +49,10 @@ Its top-level leaves are:
 | `restart_release` | executed-restart provenance and whether its actor remains resolvable |
 | `match` | attack direction, kickoff team, exact score, control tick, handling restrictions, and causal match clock |
 
-The player view never contains bench identities or substitution resources.
-Those are private manager information and are exposed only through manager
-observations. `env.global_state_view` is a separate centralized view and is not
-filtered through one player's visibility.
+The player view never contains bench identities, registered bench role
+preferences, or substitution resources. Those are private manager information
+and are exposed only through manager observations. `env.global_state_view` is a
+separate centralized view and is not filtered through one player's visibility.
 
 ## Coordinate frame
 
@@ -107,6 +107,23 @@ range-check and cast wider host integers before entering `jax.jit`, or use
 `observe_all`, because JAX may canonicalize integer widths before the
 environment receives the value.
 
+## Tactical side input
+
+`env.observe_player_tactics` is a separate, low-frequency own-team side input.
+It exposes the current `formation_index`, slot-wise `formation_anchor` and
+`formation_role`, plus `tactical_epoch` and
+`formation_changed_control_tick`. Opponent assignments are masked to zero /
+`-1`, and no bench field enters this tree. Player policies can therefore reset
+or gate role-conditioned memory exactly when a new formation is accepted without
+adding manager data to every physics transition.
+
+`formation_role` is the slot's current tactical assignment. It is distinct from
+a bench profile's manager-only `preferred_roles`, which is registered roster
+metadata and may be unknown. Substitution preserves the on-pitch slot assignment;
+the built-in manager first prefers a substitute whose declared compatibility
+contains that role and falls back to the existing ability-profile ranking when
+no compatible declaration is available.
+
 ## Schema boundary
 
 The SI player observation and normalized player observation are independently
@@ -136,13 +153,22 @@ Those properties support reproducible JAX compilation and prevent a model-view
 choice from changing match physics.
 
 FootballWorld rejects SoccerWorld's authoritative dense float vector and its
-inclusion of bench attributes in every player observation. The replacement is
-a structured fixed-shape PyTree, explicit typed flattening, and a separate
-manager-only bench view. This change prevents categorical and mask dtype loss,
-keeps private substitution information outside player policies, and makes
-partial-observation unknown values distinct from real zeros. Optional angular
-visibility and its `visible`/`known` contract are therefore explicit rather
-than inferred from one flat token layout.
+inclusion of bench attributes in every player observation. It also does not copy
+SoccerWorld's `role_pos` cumulative mean into authoritative physics state: that
+value mixes a tactical-epoch activity summary with an assignment and needs an
+extra sample count to remain Markov. The replacement separates current tactical
+assignment (`formation_anchor`, `formation_role`, epoch and change tick),
+manager-only registered compatibility (`preferred_roles`), and public manager
+shape summaries (`team_centroid`, `team_spread`).
+
+The structured fixed-shape PyTree, explicit typed flattening, and separate
+manager-only bench view prevent categorical and mask dtype loss, keep private
+substitution information outside player policies, and make unknown values
+distinct from real zeros. Optional angular visibility and its `visible`/`known`
+contract are explicit rather than inferred from one flat token layout. A richer
+per-player deployment history, if needed by a learned policy, belongs in that
+policy's recurrent state keyed by `player_id`, `slot_generation`, and
+`tactical_epoch`, not in the environment's physics carry.
 
 ## Related contracts
 

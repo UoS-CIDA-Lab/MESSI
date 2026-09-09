@@ -302,6 +302,199 @@ class OpeningFormationStepResult(NamedTuple):
     applied: jax.Array
 
 
+def _manager_action_scalar(
+    name: str,
+    value: Any,
+    *,
+    boolean: bool = False,
+) -> jax.Array:
+    """Validate a scalar manager selector without materializing tracers."""
+
+    traced = any(
+        isinstance(leaf, jax.core.Tracer) for leaf in jax.tree_util.tree_leaves(value)
+    )
+    source = jnp.asarray(value) if traced else np.asarray(value)
+    if source.shape != ():
+        raise ValueError(f"action.{name} must be a scalar")
+    if boolean:
+        if not np.issubdtype(source.dtype, np.bool_):
+            raise TypeError(f"action.{name} must use a boolean dtype")
+        return jnp.asarray(source, dtype=jnp.bool_)
+    if not np.issubdtype(source.dtype, np.integer) or np.issubdtype(
+        source.dtype, np.bool_
+    ):
+        raise TypeError(f"action.{name} must use a non-boolean integer dtype")
+    if not traced:
+        integer = int(source)
+        if not np.iinfo(np.int32).min <= integer <= np.iinfo(np.int32).max:
+            integer = -1
+        return jnp.int32(integer)
+    int32_info = np.iinfo(np.int32)
+    source_info = np.iinfo(source.dtype)
+    if source_info.min >= int32_info.min and source_info.max <= int32_info.max:
+        return source.astype(jnp.int32)
+    if source_info.min >= 0:
+        representable = source <= int32_info.max
+    else:
+        representable = (source >= int32_info.min) & (source <= int32_info.max)
+    return jnp.where(representable, source, -1).astype(jnp.int32)
+
+
+def _host_array(name: str, value: Any, shape: tuple[int, ...]) -> np.ndarray:
+    """Materialize one host-only restore field and enforce its static shape."""
+
+    array = np.asarray(jax.device_get(value))
+    if array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
+    return array
+
+
+def _validate_normalized_clock_host(
+    clock: NormalizedMatchClock, *, allow_invalid_sentinel: bool = False
+) -> None:
+    """Reject malformed model clocks before integer restoration."""
+
+    if type(clock) is not NormalizedMatchClock:
+        raise TypeError("clock must be exactly NormalizedMatchClock")
+    period = _host_array("clock.period", clock.period, ())
+    valid_periods = (0, 1, 2) if allow_invalid_sentinel else (1, 2)
+    if not np.issubdtype(period.dtype, np.integer) or int(period) not in valid_periods:
+        expected = "0, 1, or 2" if allow_invalid_sentinel else "1 or 2"
+        raise ValueError(f"clock.period must be integer {expected}")
+    active = _host_array("clock.added_time_active", clock.added_time_active, ())
+    if not np.issubdtype(active.dtype, np.bool_):
+        raise TypeError("clock.added_time_active must have boolean dtype")
+    float_fields = (
+        "period_regulation_progress",
+        "match_regulation_progress",
+        "dead_ball_accrued_fraction",
+        "added_time_elapsed_fraction",
+        "added_time_remaining_fraction",
+        "period_dead_ball_counter",
+        "added_time_elapsed_counter",
+        "added_time_remaining_counter",
+    )
+    values = {}
+    for name in float_fields:
+        value = _host_array(f"clock.{name}", getattr(clock, name), ())
+        if not np.issubdtype(value.dtype, np.floating) or not np.isfinite(value):
+            raise ValueError(f"clock.{name} must be a finite floating scalar")
+        values[name] = float(value)
+    for name in ("period_regulation_progress", "match_regulation_progress"):
+        if not 0.0 <= values[name] <= 1.0:
+            raise ValueError(f"clock.{name} must lie in [0, 1]")
+    for name in float_fields[2:]:
+        if values[name] < 0.0:
+            raise ValueError(f"clock.{name} must be non-negative")
+
+
+def _validate_normalized_global_view_host(
+    view: NormalizedGlobalRollout,
+    context: NormalizationContext,
+) -> State:
+    """Validate one external normalized checkpoint before it becomes authoritative."""
+
+    if type(view.state) is not NormalizedGlobalState:
+        raise TypeError("view.state must be exactly NormalizedGlobalState")
+    _validate_normalized_clock_host(view.state.clock)
+    raw_position = np.asarray(jax.device_get(view.state.players.position))
+    if (
+        raw_position.ndim != 2
+        or raw_position.shape[1] != 2
+        or raw_position.shape[0] < 1
+    ):
+        raise ValueError("players.position must have shape [N, 2] with N positive")
+    player_count = raw_position.shape[0]
+    for name in ("velocity", "body_forward"):
+        _host_array(
+            f"players.{name}", getattr(view.state.players, name), (player_count, 2)
+        )
+    for name in view.state.players._fields:
+        if name not in ("position", "velocity", "body_forward"):
+            _host_array(
+                f"players.{name}", getattr(view.state.players, name), (player_count,)
+            )
+    for name in ("position", "velocity", "spin"):
+        _host_array(f"ball.{name}", getattr(view.state.ball, name), (3,))
+    _host_array("ball.live", view.state.ball.live, ())
+    _host_array("attack_direction", view.state.attack_direction, (2,))
+    _host_array("score", view.state.score, (2,))
+    for name in (
+        "control_tick",
+        "kickoff_team",
+        "gk_backpass_team",
+        "dead_ball_control_ticks",
+        "first_half_wall_end_tick",
+        "first_half_wall_end_known",
+        "first_half_live_extension_ticks",
+        "penalty_completion_active",
+        "penalty_completion_team",
+        "restart_layout_ready",
+    ):
+        _host_array(name, getattr(view.state, name), ())
+    _host_array("offside.flagged", view.offside.flagged, (player_count,))
+    _host_array("offside.direct_exempt_team", view.offside.direct_exempt_team, ())
+
+    for index, leaf in enumerate(jax.tree_util.tree_leaves(view)):
+        array = np.asarray(jax.device_get(leaf))
+        if np.issubdtype(array.dtype, np.floating):
+            if not np.all(np.isfinite(array)):
+                raise ValueError(f"normalized global leaf {index} must be finite")
+            if np.any(np.abs(array) > 1.00001):
+                raise ValueError(f"normalized global leaf {index} lies outside [-1, 1]")
+
+    restored = denormalize_global_state(view.state, context)
+    team_id = np.asarray(jax.device_get(restored.players.team_id))
+    if np.any((team_id != TEAM_0) & (team_id != TEAM_1)):
+        raise ValueError("players.team_id must contain only team 0 or 1")
+    attack = np.asarray(jax.device_get(restored.attack_direction))
+    if not np.array_equal(np.sort(attack), np.asarray([-1.0, 1.0], dtype=attack.dtype)):
+        raise ValueError("attack_direction must contain opposite unit directions")
+    if int(np.asarray(jax.device_get(restored.kickoff_team))) not in (TEAM_0, TEAM_1):
+        raise ValueError("kickoff_team must identify team 0 or 1")
+    score = np.asarray(jax.device_get(restored.score))
+    if not np.issubdtype(score.dtype, np.integer) or np.any(score < 0):
+        raise ValueError("score must contain non-negative integers")
+
+    def integer_scalar(name: str, value: Any, lower: int, upper: int) -> None:
+        array = np.asarray(jax.device_get(value))
+        if (
+            not np.issubdtype(array.dtype, np.integer)
+            or not lower <= int(array) <= upper
+        ):
+            raise ValueError(f"{name} must lie in [{lower}, {upper}]")
+
+    integer_scalar("possession.team", restored.possession.team, -1, 1)
+    integer_scalar("possession.previous_team", restored.possession.previous_team, -1, 1)
+    integer_scalar(
+        "possession.player", restored.possession.player, -1, player_count - 1
+    )
+    integer_scalar("restart.kind", restored.restart.kind, RK_NONE, RESTART_COUNT - 1)
+    integer_scalar("restart.team", restored.restart.team, -1, 1)
+    integer_scalar("restart.taker", restored.restart.taker, -1, player_count - 1)
+    integer_scalar("offside.direct_exempt_team", view.offside.direct_exempt_team, -1, 1)
+    for name, value in (
+        ("players.on_pitch", restored.players.on_pitch),
+        ("players.sent_off", restored.players.sent_off),
+        ("players.is_goalkeeper", restored.players.is_goalkeeper),
+        ("offside.flagged", view.offside.flagged),
+    ):
+        if not np.issubdtype(np.asarray(jax.device_get(value)).dtype, np.bool_):
+            raise TypeError(f"{name} must have boolean dtype")
+
+    canonical_clock = normalize_global_state(restored, context).clock
+    for name in view.state.clock._fields:
+        supplied = np.asarray(jax.device_get(getattr(view.state.clock, name)))
+        canonical = np.asarray(jax.device_get(getattr(canonical_clock, name)))
+        if np.issubdtype(supplied.dtype, np.floating):
+            matches = np.allclose(supplied, canonical, rtol=0.0, atol=1.0e-6)
+        else:
+            matches = np.array_equal(supplied, canonical)
+        if not matches:
+            raise ValueError(f"global clock field {name} is inconsistent with state")
+    return restored
+
+
 @jax.tree_util.register_static
 @dataclass(frozen=True, slots=True)
 class FootballWorld:
@@ -358,6 +551,7 @@ class FootballWorld:
         # Derive the match-clock bounds at construction so an unsupported
         # duration fails on the host, not on the first traced episode step.
         self.match.clock_ticks(self.timebase)
+        self.match.maximum_added_time_ticks(self.timebase)
         if not self.perception.limit_by_view_angle:
             # Only FOV width is inactive in full-view mode. Gaze still drives
             # body-relative pose and rendering, so preserve its two settings.
@@ -478,6 +672,8 @@ class FootballWorld:
         setup: MatchSetup,
         action: IntentAction,
         key: jax.Array,
+        *,
+        _entry_live: bool = False,
     ) -> StepResult:
         """Advance one fixed-duration control frame without materializing views."""
 
@@ -506,6 +702,7 @@ class FootballWorld:
             long_stamina=self.long_stamina,
             short_stamina=self.short_stamina,
             ball_physics=self.ball_physics,
+            _entry_live=_entry_live,
         )
         frame = episode.frame
         return StepResult(
@@ -603,6 +800,7 @@ class FootballWorld:
         key: jax.Array,
         *,
         _render_fps: float | None = None,
+        _entry_live: bool = False,
     ) -> StepWithEventsResult | _StepWithEventsAndRenderSamplesResult:
         """Implement one eventful transition for direct or mapped use."""
 
@@ -633,6 +831,7 @@ class FootballWorld:
             ball_physics=self.ball_physics,
             _collect_events=True,
             _render_fps=_render_fps,
+            _entry_live=_entry_live,
         )
         frame = episode.frame
         fields = {
@@ -798,9 +997,47 @@ class FootballWorld:
     ) -> MatchClockTicks:
         """Recover exact SI tick facts from any normalized model clock."""
 
-        if not isinstance(clock, NormalizedMatchClock):
-            raise TypeError("clock must be NormalizedMatchClock")
-        return denormalize_match_clock(clock, self.normalization_context(), valid=valid)
+        valid_array = _host_array("valid", valid, ())
+        if not np.issubdtype(valid_array.dtype, np.bool_):
+            raise TypeError("valid must have boolean dtype")
+        _validate_normalized_clock_host(
+            clock, allow_invalid_sentinel=not bool(valid_array)
+        )
+        restored = denormalize_match_clock(
+            clock, self.normalization_context(), valid=valid
+        )
+        values = {
+            name: int(np.asarray(jax.device_get(getattr(restored, name))))
+            for name in (
+                "period_duration_ticks",
+                "period_regulation_elapsed_ticks",
+                "match_regulation_elapsed_ticks",
+                "period_dead_ball_ticks",
+                "added_time_elapsed_ticks",
+                "added_time_remaining_ticks",
+            )
+        }
+        if bool(valid_array):
+            if not (
+                0
+                <= values["period_regulation_elapsed_ticks"]
+                <= values["period_duration_ticks"]
+            ):
+                raise ValueError("period regulation ticks exceed the period duration")
+            fulltime_tick, halftime_tick = self.match.clock_ticks(self.timebase)
+            if not 0 <= values["match_regulation_elapsed_ticks"] <= fulltime_tick:
+                raise ValueError("match regulation ticks exceed full time")
+            expected_match = values["period_regulation_elapsed_ticks"]
+            if int(np.asarray(jax.device_get(restored.period))) == 2:
+                expected_match += halftime_tick
+            if values["match_regulation_elapsed_ticks"] != expected_match:
+                raise ValueError("period and match regulation clocks are inconsistent")
+            if values["added_time_remaining_ticks"] != max(
+                values["period_dead_ball_ticks"] - values["added_time_elapsed_ticks"],
+                0,
+            ):
+                raise ValueError("added-time counters are inconsistent")
+        return restored
 
     def observe_all_si(self, rollout: Rollout) -> SIObservation:
         """Return all raw SI views for the observation-only rule policy."""
@@ -840,12 +1077,12 @@ class FootballWorld:
     def restore_global_state_view(self, view: NormalizedGlobalRollout) -> Rollout:
         """Reconstruct one SI rollout from a normalized global-state view."""
 
-        if not isinstance(view, NormalizedGlobalRollout):
-            raise TypeError("view must be NormalizedGlobalRollout")
-        return Rollout(
-            state=denormalize_global_state(view.state, self.normalization_context()),
-            offside=view.offside,
+        if type(view) is not NormalizedGlobalRollout:
+            raise TypeError("view must be exactly NormalizedGlobalRollout")
+        restored = _validate_normalized_global_view_host(
+            view, self.normalization_context()
         )
+        return Rollout(state=restored, offside=view.offside)
 
     def substitute(
         self,
@@ -1026,18 +1263,25 @@ class FootballWorld:
     ) -> ManagerStepResult:
         """Apply a registered-bench action under authoritative match limits."""
 
+        if not isinstance(action, ManagerAction):
+            raise TypeError("action must be ManagerAction")
         fulltime_tick, _ = self.match.clock_ticks(self.timebase)
-        team = jnp.asarray(action.team, dtype=jnp.int32)
+        team = _manager_action_scalar("team", action.team)
+        enabled = _manager_action_scalar("enabled", action.enabled, boolean=True)
+        outgoing_index = _manager_action_scalar("outgoing_index", action.outgoing_index)
+        incoming_bench_index = _manager_action_scalar(
+            "incoming_bench_index", action.incoming_bench_index
+        )
         valid_team = (team == 0) | (team == 1)
         safe_team = jnp.clip(team, 0, 1)
         substitutions = ManagerSubstitutionCommand.empty(1)
-        requested = jnp.asarray(action.enabled, dtype=jnp.bool_) & valid_team
+        requested = enabled & valid_team
         substitutions = substitutions._replace(
             requested=substitutions.requested.at[safe_team, 0].set(requested),
             outgoing_index=substitutions.outgoing_index.at[safe_team, 0].set(
                 jnp.where(
                     requested,
-                    jnp.asarray(action.outgoing_index, dtype=jnp.int32),
+                    outgoing_index,
                     -1,
                 )
             ),
@@ -1045,7 +1289,7 @@ class FootballWorld:
                 substitutions.incoming_bench_index.at[safe_team, 0].set(
                     jnp.where(
                         requested,
-                        jnp.asarray(action.incoming_bench_index, dtype=jnp.int32),
+                        incoming_bench_index,
                         -1,
                     )
                 )
@@ -1063,6 +1307,7 @@ class FootballWorld:
             body=self.body,
             stadium=self.stadium,
             ball=self.ball,
+            restart_timing=self.restart_timing,
         )
         return ManagerStepResult(
             rollout=Rollout(result.state, result.offside),
@@ -1176,6 +1421,7 @@ class FootballWorld:
             body=self.body,
             stadium=self.stadium,
             ball=self.ball,
+            restart_timing=self.restart_timing,
         )
         return ManagerCommandStepResult(
             rollout=Rollout(result.state, result.offside),

@@ -379,9 +379,7 @@ def evaluate_contact_predicates(
     horizontal_reach_effort = jnp.where(
         is_goalkeeper_hand, goalkeeper_horizontal_effort, 0.0
     )
-    vertical_reach_effort = jnp.where(
-        athletic_mechanism, active_vertical_effort, 0.0
-    )
+    vertical_reach_effort = jnp.where(athletic_mechanism, active_vertical_effort, 0.0)
     athletic_reach_effort = jnp.where(
         is_goalkeeper_hand,
         jnp.maximum(horizontal_reach_effort, vertical_reach_effort),

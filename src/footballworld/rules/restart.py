@@ -31,7 +31,6 @@ from footballworld.core.constants import (
 from footballworld.core.randomness import RandomEvent, event_random_key
 from footballworld.core.state import State
 
-TAKER_RULES_VERSION = 2
 RESTART_TAKER_RANDOM_STREAM = int(RandomEvent.RESTART_TAKER)
 RESTART_TAKER_TEMPERATURE = 12.0
 
@@ -43,19 +42,21 @@ ROLE_WIDE_MID = 4
 ROLE_CENTRE_FORWARD = 5
 ROLE_WIDE_FORWARD = 6
 
-# Role-frequency table retained as an external compatibility
-# prior. No public extraction receipt identifies this runtime
-# mapping, so every row remains an unverified ranking prior. Rows are throw-in,
-# corner, defensive / middle / attacking free kick, penalty, goal kick, and
-# kickoff; the kickoff row is explicitly authored rather than provider-derived.
+# Role-frequency rows for throw-ins, corners, goal kicks are
+# calibrated from seven DFL matches in calib/policy/artifacts/
+# dfl-policy-reference-v1.json. Pooled provider-role counts receive one
+# symmetric pseudo-count per role before normalization. Free-kick depth rows
+# and penalties remain compatibility priors because the retained aggregate
+# does not identify depth-conditioned free kicks and contains no penalties.
+# The 32 observed kickoffs are too sparse to replace the tested opening prior.
 _TAKER_PROPENSITY = (
-    (0.000, 0.078, 0.765, 0.022, 0.058, 0.018, 0.059),
-    (0.000, 0.016, 0.111, 0.266, 0.339, 0.065, 0.202),
+    (0.003, 0.041, 0.839, 0.062, 0.041, 0.003, 0.010),
+    (0.018, 0.071, 0.107, 0.589, 0.161, 0.036, 0.018),
     (0.771, 0.157, 0.040, 0.025, 0.004, 0.002, 0.001),
     (0.099, 0.268, 0.200, 0.278, 0.077, 0.018, 0.060),
     (0.000, 0.014, 0.185, 0.230, 0.269, 0.128, 0.174),
     (0.000, 0.000, 0.023, 0.076, 0.229, 0.505, 0.167),
-    (0.881, 0.118, 0.001, 0.000, 0.000, 0.000, 0.000),
+    (0.889, 0.063, 0.016, 0.008, 0.008, 0.008, 0.008),
     (0.000, 0.010, 0.040, 0.160, 0.130, 0.500, 0.160),
 )
 _TAKER_AFFINITY = jnp.asarray(
@@ -168,11 +169,14 @@ def sample_restart_taker(
     event_key: jax.Array,
     *,
     temperature: float = RESTART_TAKER_TEMPERATURE,
+    preference_key: jax.Array | None = None,
+    persistence: jax.Array | float = 0.0,
 ) -> jax.Array:
-    """Sample a legal taker with identity-stable Gumbel-max noise.
+    """Sample a legal taker with event and match preference Gumbel noise.
 
     Each candidate's draw follows ``player_id`` rather than its array slot, so
     slot reuse and harmless roster permutations do not change the decision.
+    ``persistence`` blends repeatable match-kind preference with event variation.
     Temperature zero deliberately recovers the deterministic fallback.
     """
 
@@ -184,9 +188,18 @@ def sample_restart_taker(
     else:
         identity = jnp.where(player_id >= 0, player_id, 0).astype(jnp.uint32)
         keys = jax.vmap(lambda value: jax.random.fold_in(event_key, value))(identity)
-        noise = jax.vmap(lambda key: jax.random.gumbel(key, dtype=ranking.score.dtype))(
-            keys
-        )
+        event_noise = jax.vmap(
+            lambda key: jax.random.gumbel(key, dtype=ranking.score.dtype)
+        )(keys)
+        preference_key = event_key if preference_key is None else preference_key
+        preference_keys = jax.vmap(
+            lambda value: jax.random.fold_in(preference_key, value)
+        )(identity)
+        preference_noise = jax.vmap(
+            lambda key: jax.random.gumbel(key, dtype=ranking.score.dtype)
+        )(preference_keys)
+        weight = jnp.clip(jnp.asarray(persistence, dtype=ranking.score.dtype), 0.0, 1.0)
+        noise = (1.0 - weight) * event_noise + weight * preference_noise
         utility = ranking.score / jnp.asarray(temperature, ranking.score.dtype) + noise
         winner = jnp.argmax(jnp.where(ranking.usable, utility, low))
     winner = winner.astype(jnp.int32)

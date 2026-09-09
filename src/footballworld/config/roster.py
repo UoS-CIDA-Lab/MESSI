@@ -1,6 +1,7 @@
 """Immutable roster inputs used to construct an environment state."""
 
 from dataclasses import dataclass
+from numbers import Integral
 
 Position2D = tuple[float, float]
 _INT32_MAX = 2_147_483_647
@@ -47,7 +48,7 @@ def player_profile_values_valid(
 
 @dataclass(frozen=True, slots=True)
 class PlayerProfile:
-    """Identity and first-order physical abilities for one player."""
+    """Identity, authored abilities, and optional registered roles."""
 
     player_id: int
     max_speed_mps: float = 7.96
@@ -58,6 +59,22 @@ class PlayerProfile:
     ball_control: float = 0.5
     endurance_factor: float = 1.0
     is_goalkeeper: bool = False
+    # Declared manager-only compatibility with the stable formation-role
+    # taxonomy (GK/CB/FB/CM/WM/CF/WF). Empty means unknown.
+    preferred_roles: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.preferred_roles) is not tuple:
+            raise TypeError("preferred_roles must be a tuple of role codes")
+        if any(
+            not isinstance(role, Integral) or isinstance(role, bool)
+            for role in self.preferred_roles
+        ):
+            raise TypeError("preferred_roles must contain non-boolean integers")
+        if any(role < 0 or role >= 7 for role in self.preferred_roles):
+            raise ValueError("preferred_roles must use role codes in [0, 7)")
+        if len(set(self.preferred_roles)) != len(self.preferred_roles):
+            raise ValueError("preferred_roles must not contain duplicates")
 
 
 @dataclass(frozen=True, slots=True)

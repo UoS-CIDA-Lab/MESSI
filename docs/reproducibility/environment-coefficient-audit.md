@@ -1,11 +1,11 @@
-# Historical FootballWorld environment coefficient review
+# FootballWorld environment coefficient review
 
 Date: 2026-09-03
 
 ## Verdict and evidence policy
 
 Scope: the public runtime defaults and hidden numerical constants reviewed for
-this release candidate. The rows form a reviewed evidence ledger, not an
+this development snapshot. The rows form a reviewed evidence ledger, not an
 exhaustive coverage certificate. Newly surfaced fields remain `DEFER` until
 they receive an estimand- and equation-matched review.
 

@@ -22,6 +22,7 @@ import jax.numpy as jnp
 
 from footballworld.core.action import IntentAction
 from footballworld.core.constants import (
+    NO_TEAM,
     RESTART_COUNT,
     RK_GK_HOLD,
     RK_NONE,
@@ -29,6 +30,7 @@ from footballworld.core.constants import (
     TEAM_1,
 )
 from footballworld.core.randomness import frame_random_key
+from footballworld.dynamics.action import trace_action, trace_action_receipt
 from footballworld.environment.api import (
     FootballWorld,
     ManagerCommandStepResult,
@@ -38,7 +40,12 @@ from footballworld.environment.api import (
     StepResult,
     StepWithEventsResult,
 )
-from footballworld.environment.episode import MatchSetup
+from footballworld.environment.episode import (
+    MatchSetup,
+    RuleOutcome,
+    _empty_frame_events,
+    _status,
+)
 from footballworld.environment.observation import RosterMetadata
 from footballworld.environment.substitution import _management_stoppage_open
 from footballworld.policies.manager import ManagerBoundaryState
@@ -85,6 +92,8 @@ class ManagedAdvanceResult(NamedTuple):
     goalkeeper_team_mask: jax.Array
     manager_team_mask: jax.Array
     budget_exhausted: jax.Array
+    terminated: jax.Array
+    truncated: jax.Array
 
 
 class ManagementDecisionResult(NamedTuple):
@@ -141,7 +150,14 @@ RolloutKernel = Callable[
     RolloutResult[PlayerPolicyStateT],
 ]
 EventRolloutKernel = Callable[
-    [Rollout, MatchSetup, RosterMetadata, PlayerPolicyStateT, jax.Array],
+    [
+        Rollout,
+        MatchSetup,
+        RosterMetadata,
+        PlayerPolicyStateT,
+        jax.Array,
+        jax.Array | None,
+    ],
     EventRolloutResult[PlayerPolicyStateT],
 ]
 
@@ -198,6 +214,22 @@ def _validate_scalar_inputs(
         raise TypeError("key must be one JAX PRNG key") from exc
     if key_data.shape != (2,):
         raise ValueError("key must be one unbatched JAX PRNG key")
+
+
+def _runtime_step_budget(step_budget: jax.Array, num_steps: int) -> jax.Array:
+    """Validate a scalar budget and fail closed for invalid traced values."""
+
+    budget = jnp.asarray(step_budget)
+    if budget.shape != ():
+        raise ValueError("step_budget must be scalar")
+    if not jnp.issubdtype(budget.dtype, jnp.integer):
+        raise TypeError("step_budget must have an integer dtype")
+    if not isinstance(budget, jax.core.Tracer):
+        budget_value = int(budget)
+        if not 0 <= budget_value <= num_steps:
+            raise ValueError(f"step_budget must lie in [0, {num_steps}]")
+    valid = (budget >= 0) & (budget <= num_steps)
+    return jnp.where(valid, budget, jnp.int32(0)).astype(jnp.int32)
 
 
 def initialize_policy_state(
@@ -330,6 +362,31 @@ def refresh_policy_state(
             fresh.loose_chaser,
             policy_state.loose_chaser,
         ),
+        planned_receiver=jnp.where(
+            relational_identity_changed,
+            fresh.planned_receiver,
+            policy_state.planned_receiver,
+        ),
+        planned_receiver_id=jnp.where(
+            relational_identity_changed,
+            fresh.planned_receiver_id,
+            policy_state.planned_receiver_id,
+        ),
+        planned_arrival=jnp.where(
+            relational_identity_changed,
+            fresh.planned_arrival,
+            policy_state.planned_arrival,
+        ),
+        planned_eta_ticks=jnp.where(
+            relational_identity_changed,
+            fresh.planned_eta_ticks,
+            policy_state.planned_eta_ticks,
+        ),
+        service_opportunity=jnp.where(
+            relational_identity_changed,
+            fresh.service_opportunity,
+            policy_state.service_opportunity,
+        ),
         secure_control_age=jnp.where(
             relational_identity_changed,
             fresh.secure_control_age,
@@ -394,11 +451,72 @@ def _transition_key(match_key: jax.Array, rollout: Rollout) -> jax.Array:
     return frame_random_key(match_key, rollout.state.control_tick)
 
 
+def _terminal_status(
+    env: FootballWorld, rollout: Rollout
+) -> tuple[jax.Array, jax.Array]:
+    """Return the authoritative entry-state terminal flags."""
+
+    fulltime_tick, halftime_tick = env.match.clock_ticks(env.timebase)
+    return _status(
+        rollout.state,
+        fulltime_tick=fulltime_tick,
+        minimum_team_players=env.match.minimum_team_players,
+        halftime_tick=halftime_tick,
+        halftime_enabled=env.match.halftime_enabled,
+        maximum_added_time_ticks=env.match.maximum_added_time_ticks(env.timebase),
+    )
+
+
+def _zero_step_output(
+    step_shape: StepResult | StepWithEventsResult,
+    rollout: Rollout,
+    terminated: jax.Array,
+    truncated: jax.Array,
+    action: IntentAction,
+    decimation: int,
+):
+    """Build a canonical non-executed scan row without running physics."""
+
+    step = jax.tree.map(
+        lambda leaf: jnp.zeros(leaf.shape, leaf.dtype),
+        step_shape,
+    )
+    done = terminated | truncated
+    updates = {
+        "rollout": rollout,
+        "outcome": RuleOutcome(
+            score_delta=jnp.zeros_like(rollout.state.score),
+            restart_opened=jnp.bool_(False),
+            restart_kind=jnp.int32(RK_NONE),
+            restart_team=jnp.int32(NO_TEAM),
+        ),
+        "contest_override_valid": jnp.bool_(True),
+        "terminated": terminated,
+        "truncated": truncated,
+        "done": done,
+        "terminal_frozen": jnp.bool_(True),
+    }
+    if hasattr(step, "events"):
+        updates.update(
+            action_trace=trace_action(action, executed=jnp.bool_(False)),
+            action_receipt=trace_action_receipt(action, executed=jnp.bool_(False)),
+            events=_empty_frame_events(decimation, rollout.state.ball.position.dtype),
+        )
+    if hasattr(step, "render_samples"):
+        sample_count = step.render_samples.state.control_tick.shape[0]
+        updates["render_samples"] = jax.tree.map(
+            lambda value: jnp.broadcast_to(value, (sample_count,) + value.shape),
+            rollout,
+        )
+    return step._replace(**updates)
+
+
 def _manager_requirement(
     rollout: Rollout,
     *,
     fulltime_tick: int,
     minimum_team_players: tuple[int, int],
+    stoppage_open: jax.Array | None = None,
 ) -> jax.Array:
     """Return teams missing a goalkeeper at an authoritative manager boundary."""
 
@@ -413,12 +531,13 @@ def _manager_requirement(
             for team in (TEAM_0, TEAM_1)
         ]
     )
-    stoppage_open = _management_stoppage_open(
-        rollout.state,
-        rollout.offside,
-        fulltime_tick=fulltime_tick,
-        minimum_team_players=minimum_team_players,
-    )
+    if stoppage_open is None:
+        stoppage_open = _management_stoppage_open(
+            rollout.state,
+            rollout.offside,
+            fulltime_tick=fulltime_tick,
+            minimum_team_players=minimum_team_players,
+        )
     return (stoppage_open & (~has_goalkeeper)).astype(jnp.bool_)
 
 
@@ -459,6 +578,7 @@ def _management_boundary(
         rollout,
         fulltime_tick=fulltime_tick,
         minimum_team_players=minimum_team_players,
+        stoppage_open=stoppage_open,
     )
     team_mask = goalkeeper_team_mask | jnp.full((2,), restart_required, dtype=jnp.bool_)
     return _ManagementBoundary(
@@ -467,6 +587,24 @@ def _management_boundary(
         goalkeeper_team_mask=goalkeeper_team_mask,
         team_mask=team_mask,
     )
+
+
+_ORIGINAL_FOOTBALLWORLD_STEP = FootballWorld.step
+
+
+def _step_assuming_live(
+    env: FootballWorld,
+    rollout: Rollout,
+    setup: MatchSetup,
+    action: IntentAction,
+    key: jax.Array,
+) -> StepResult:
+    """Skip redundant entry status only for the unmodified environment step."""
+
+    step = env.step
+    if getattr(step, "__func__", None) is _ORIGINAL_FOOTBALLWORLD_STEP:
+        return step(rollout, setup, action, key, _entry_live=True)
+    return step(rollout, setup, action, key)
 
 
 def make_advance(
@@ -501,22 +639,31 @@ def make_advance(
             match_key,
         )
 
-        def scan_step(carry, _):
-            current_rollout, policy_state = carry
-            observations = env.observe_all_si(current_rollout)
-            policy_step = policy.step(observations, roster, policy_state, match_key)
-            validate_player_policy_step(policy_step, policy_state)
-            step = env.step(
-                current_rollout,
-                setup,
-                policy_step.action,
-                _transition_key(match_key, current_rollout),
-            )
-            return (step.rollout, policy_step.state), None
+        initial_terminated, initial_truncated = _terminal_status(env, initial_rollout)
+        initial_done = initial_terminated | initial_truncated
 
-        (final_rollout, final_policy_state), _ = jax.lax.scan(
+        def scan_step(carry, _):
+            current_rollout, policy_state, done = carry
+
+            def advance(_):
+                observations = env.observe_all_si(current_rollout)
+                policy_step = policy.step(observations, roster, policy_state, match_key)
+                validate_player_policy_step(policy_step, policy_state)
+                step = _step_assuming_live(
+                    env,
+                    current_rollout,
+                    setup,
+                    policy_step.action,
+                    _transition_key(match_key, current_rollout),
+                )
+                return step.rollout, policy_step.state, step.done
+
+            next_carry = jax.lax.cond(done, lambda _: carry, advance, None)
+            return next_carry, None
+
+        (final_rollout, final_policy_state, _), _ = jax.lax.scan(
             scan_step,
-            (initial_rollout, initial_policy_state),
+            (initial_rollout, initial_policy_state, initial_done),
             xs=None,
             length=num_steps,
         )
@@ -575,6 +722,8 @@ def make_interruptible_advance(
             fulltime_tick=fulltime_tick,
             minimum_team_players=minimum_team_players,
         )
+        initial_terminated, initial_truncated = _terminal_status(env, initial_rollout)
+        initial_done = initial_terminated | initial_truncated
 
         def scan_step(carry, _):
             (
@@ -582,6 +731,7 @@ def make_interruptible_advance(
                 policy_state,
                 steps_executed,
                 manager_team_mask,
+                done,
             ) = carry
 
             def pause(_):
@@ -591,7 +741,8 @@ def make_interruptible_advance(
                 observations = env.observe_all_si(current_rollout)
                 policy_step = policy.step(observations, roster, policy_state, match_key)
                 validate_player_policy_step(policy_step, policy_state)
-                step = env.step(
+                step = _step_assuming_live(
+                    env,
                     current_rollout,
                     setup,
                     policy_step.action,
@@ -607,10 +758,11 @@ def make_interruptible_advance(
                     policy_step.state,
                     steps_executed + jnp.int32(1),
                     next_manager_team_mask,
+                    step.done,
                 )
 
             next_carry = jax.lax.cond(
-                jnp.any(manager_team_mask),
+                jnp.any(manager_team_mask) | done,
                 pause,
                 advance,
                 operand=None,
@@ -623,6 +775,7 @@ def make_interruptible_advance(
                 final_policy_state,
                 steps_executed,
                 manager_team_mask,
+                _,
             ),
             _,
         ) = jax.lax.scan(
@@ -632,6 +785,7 @@ def make_interruptible_advance(
                 initial_policy_state,
                 jnp.int32(0),
                 initial_manager_team_mask,
+                initial_done,
             ),
             xs=None,
             length=num_steps,
@@ -694,68 +848,69 @@ def make_managed_advance(
         for field in manager_state._fields:
             if getattr(manager_state, field).shape != (2,):
                 raise ValueError(f"manager_state.{field} must have shape [2]")
-        step_budget_array = jnp.asarray(step_budget)
-        if step_budget_array.shape != ():
-            raise ValueError("step_budget must be scalar")
-        if not jnp.issubdtype(step_budget_array.dtype, jnp.integer):
-            raise TypeError("step_budget must have an integer dtype")
-        if not isinstance(step_budget_array, jax.core.Tracer):
-            budget_value = int(step_budget_array)
-            if not 0 <= budget_value <= num_steps:
-                raise ValueError(f"step_budget must lie in [0, {num_steps}]")
-        safe_budget = jnp.clip(step_budget_array, 0, num_steps).astype(jnp.int32)
+        safe_budget = _runtime_step_budget(step_budget, num_steps)
         initial_boundary = _management_boundary(
             initial_rollout,
             manager_state,
             fulltime_tick=fulltime_tick,
             minimum_team_players=minimum_team_players,
         )
+        initial_terminated, initial_truncated = _terminal_status(env, initial_rollout)
 
-        def scan_step(carry, _):
-            current_rollout, policy_state, steps_executed, boundary = carry
+        def continue_running(carry):
+            _, _, steps_executed, boundary, terminated, truncated = carry
+            return (
+                (~boundary.required)
+                & (steps_executed < safe_budget)
+                & (~terminated)
+                & (~truncated)
+            )
 
-            def pause(_):
-                return carry
-
-            def advance(_):
-                observations = env.observe_all_si(current_rollout)
-                policy_step = policy.step(observations, roster, policy_state, match_key)
-                validate_player_policy_step(policy_step, policy_state)
-                step = env.step(
-                    current_rollout,
-                    setup,
-                    policy_step.action,
-                    _transition_key(match_key, current_rollout),
-                )
-                next_boundary = _management_boundary(
-                    step.rollout,
-                    manager_state,
-                    fulltime_tick=fulltime_tick,
-                    minimum_team_players=minimum_team_players,
-                )
-                return (
-                    step.rollout,
-                    policy_step.state,
-                    steps_executed + jnp.int32(1),
-                    next_boundary,
-                )
-
-            should_pause = boundary.required | (steps_executed >= safe_budget)
-            return jax.lax.cond(should_pause, pause, advance, operand=None), None
+        def advance(carry):
+            current_rollout, policy_state, steps_executed, _, _, _ = carry
+            observations = env.observe_all_si(current_rollout)
+            policy_step = policy.step(observations, roster, policy_state, match_key)
+            validate_player_policy_step(policy_step, policy_state)
+            step = _step_assuming_live(
+                env,
+                current_rollout,
+                setup,
+                policy_step.action,
+                _transition_key(match_key, current_rollout),
+            )
+            next_boundary = _management_boundary(
+                step.rollout,
+                manager_state,
+                fulltime_tick=fulltime_tick,
+                minimum_team_players=minimum_team_players,
+            )
+            return (
+                step.rollout,
+                policy_step.state,
+                steps_executed + jnp.int32(1),
+                next_boundary,
+                step.terminated,
+                step.truncated,
+            )
 
         (
-            (final_rollout, final_policy_state, steps_executed, boundary),
-            _,
-        ) = jax.lax.scan(
-            scan_step,
+            final_rollout,
+            final_policy_state,
+            steps_executed,
+            boundary,
+            terminated,
+            truncated,
+        ) = jax.lax.while_loop(
+            continue_running,
+            advance,
             (
                 initial_rollout,
                 initial_policy_state,
                 jnp.int32(0),
                 initial_boundary,
+                initial_terminated,
+                initial_truncated,
             ),
-            xs=None,
-            length=num_steps,
         )
         return ManagedAdvanceResult(
             final_rollout=final_rollout,
@@ -766,6 +921,8 @@ def make_managed_advance(
             goalkeeper_team_mask=boundary.goalkeeper_team_mask,
             manager_team_mask=boundary.team_mask,
             budget_exhausted=steps_executed >= safe_budget,
+            terminated=terminated,
+            truncated=truncated,
         )
 
     managed_advance_kernel.num_steps = num_steps  # type: ignore[attr-defined]
@@ -887,28 +1044,77 @@ def make_rollout(
             match_key,
         )
 
+        initial_terminated, initial_truncated = _terminal_status(env, initial_rollout)
+
         def scan_step(carry, _):
-            current_rollout, policy_state = carry
-            observations = env.observe_all_si(current_rollout)
-            policy_step = policy.step(observations, roster, policy_state, match_key)
-            validate_player_policy_step(policy_step, policy_state)
-            step = env.step(
+            current_rollout, policy_state, terminated, truncated = carry
+            neutral = IntentAction.neutral(
+                current_rollout.state.players.player_id.shape[0]
+            )
+            step_shape = jax.eval_shape(
+                lambda value, match_setup, key: _step_assuming_live(
+                    env, value, match_setup, neutral, key
+                ),
                 current_rollout,
                 setup,
-                policy_step.action,
                 _transition_key(match_key, current_rollout),
             )
-            return (
-                step.rollout,
-                policy_step.state,
-            ), (
-                policy_step.action,
-                step,
-            )
 
-        (final_rollout, final_policy_state), (actions, steps) = jax.lax.scan(
+            def pause(_):
+                step = _zero_step_output(
+                    step_shape,
+                    current_rollout,
+                    terminated,
+                    truncated,
+                    neutral,
+                    env.timebase.decimation,
+                )
+                return (
+                    current_rollout,
+                    policy_state,
+                    terminated,
+                    truncated,
+                ), (neutral, step)
+
+            def advance(_):
+                observations = env.observe_all_si(current_rollout)
+                policy_step = policy.step(observations, roster, policy_state, match_key)
+                validate_player_policy_step(policy_step, policy_state)
+                step = _step_assuming_live(
+                    env,
+                    current_rollout,
+                    setup,
+                    policy_step.action,
+                    _transition_key(match_key, current_rollout),
+                )
+                return (
+                    step.rollout,
+                    policy_step.state,
+                    step.terminated,
+                    step.truncated,
+                ), (
+                    policy_step.action,
+                    step,
+                )
+
+            return jax.lax.cond(terminated | truncated, pause, advance, None)
+
+        (
+            (
+                final_rollout,
+                final_policy_state,
+                _,
+                _,
+            ),
+            (actions, steps),
+        ) = jax.lax.scan(
             scan_step,
-            (initial_rollout, initial_policy_state),
+            (
+                initial_rollout,
+                initial_policy_state,
+                initial_terminated,
+                initial_truncated,
+            ),
             xs=None,
             length=num_steps,
         )
@@ -949,6 +1155,7 @@ def make_event_rollout(
         roster: RosterMetadata,
         initial_policy_state: PlayerPolicyStateT,
         match_key: jax.Array,
+        step_budget: jax.Array | None = None,
     ) -> EventRolloutResult:
         _validate_scalar_inputs(
             initial_rollout,
@@ -957,30 +1164,87 @@ def make_event_rollout(
             initial_policy_state,
             match_key,
         )
+        if step_budget is None:
+            safe_budget = jnp.int32(num_steps)
+        else:
+            safe_budget = _runtime_step_budget(step_budget, num_steps)
+
+        initial_terminated, initial_truncated = _terminal_status(env, initial_rollout)
 
         def scan_step(carry, _):
-            current_rollout, policy_state = carry
-            observations = env.observe_all_si(current_rollout)
-            policy_step = policy.step(observations, roster, policy_state, match_key)
-            validate_player_policy_step(policy_step, policy_state)
-            step = env._step_with_events_single(
+            current_rollout, policy_state, executed, terminated, truncated = carry
+            neutral = IntentAction.neutral(
+                current_rollout.state.players.player_id.shape[0]
+            )
+            step_shape = jax.eval_shape(
+                lambda value, match_setup, key: env._step_with_events_single(
+                    value,
+                    match_setup,
+                    neutral,
+                    key,
+                    _render_fps=render_fps,
+                    _entry_live=True,
+                ),
                 current_rollout,
                 setup,
-                policy_step.action,
                 _transition_key(match_key, current_rollout),
-                _render_fps=render_fps,
-            )
-            return (
-                step.rollout,
-                policy_step.state,
-            ), (
-                policy_step.action,
-                step,
             )
 
-        (final_rollout, final_policy_state), (actions, steps) = jax.lax.scan(
+            def pause(_):
+                step = _zero_step_output(
+                    step_shape,
+                    current_rollout,
+                    terminated,
+                    truncated,
+                    neutral,
+                    env.timebase.decimation,
+                )
+                return (
+                    current_rollout,
+                    policy_state,
+                    executed,
+                    terminated,
+                    truncated,
+                ), (neutral, step)
+
+            def advance(_):
+                observations = env.observe_all_si(current_rollout)
+                policy_step = policy.step(observations, roster, policy_state, match_key)
+                validate_player_policy_step(policy_step, policy_state)
+                step = env._step_with_events_single(
+                    current_rollout,
+                    setup,
+                    policy_step.action,
+                    _transition_key(match_key, current_rollout),
+                    _render_fps=render_fps,
+                    _entry_live=True,
+                )
+                return (
+                    step.rollout,
+                    policy_step.state,
+                    executed + jnp.int32(1),
+                    step.terminated,
+                    step.truncated,
+                ), (
+                    policy_step.action,
+                    step,
+                )
+
+            should_pause = (executed >= safe_budget) | terminated | truncated
+            return jax.lax.cond(should_pause, pause, advance, None)
+
+        (
+            (final_rollout, final_policy_state, _, _, _),
+            (actions, steps),
+        ) = jax.lax.scan(
             scan_step,
-            (initial_rollout, initial_policy_state),
+            (
+                initial_rollout,
+                initial_policy_state,
+                jnp.int32(0),
+                initial_terminated,
+                initial_truncated,
+            ),
             xs=None,
             length=num_steps,
         )

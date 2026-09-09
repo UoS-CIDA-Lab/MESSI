@@ -92,6 +92,7 @@ class ReplaySidecarSpool:
         fulltime_seconds: float,
         halftime_enabled: bool,
         metadata: Any,
+        match_manifest: Any = None,
         include_all_action_controls: bool = False,
     ) -> None:
         self.spool_dir = Path(spool_dir)
@@ -103,6 +104,7 @@ class ReplaySidecarSpool:
         self.fulltime_seconds = float(fulltime_seconds)
         self.halftime_enabled = bool(halftime_enabled)
         self.metadata = metadata
+        self.match_manifest = match_manifest
         if type(include_all_action_controls) is not bool:
             raise TypeError("include_all_action_controls must be bool")
         self.include_all_action_controls = include_all_action_controls
@@ -110,7 +112,7 @@ class ReplaySidecarSpool:
         self._chunks: list[tuple[Path, int]] = []
         self._frame_count = 0
         self._pre_frame_management: list[dict[str, Any]] = []
-        self._frame_formations: dict[int, list[dict[str, Any]]] = {}
+        self._frame_management: dict[int, dict[str, Any]] = {}
 
     @property
     def frame_count(self) -> int:
@@ -139,6 +141,7 @@ class ReplaySidecarSpool:
             fulltime_seconds=self.fulltime_seconds,
             halftime_enabled=self.halftime_enabled,
             metadata=self.metadata,
+            match_manifest=self.match_manifest,
             collect_exact_events=False,
             frame_offset=self._frame_count,
             include_all_action_controls=self.include_all_action_controls,
@@ -155,6 +158,9 @@ class ReplaySidecarSpool:
         formation_requested: Any = None,
         formation_layout_index: Any = None,
         formations_applied: Any = None,
+        tactical_epoch: Any = None,
+        formation_changed_control_tick: Any = None,
+        set_piece_taker_event: Any = None,
     ) -> None:
         """Retain an exact command transaction before the first physics row."""
 
@@ -164,8 +170,15 @@ class ReplaySidecarSpool:
             formation_requested,
             formation_layout_index,
             formations_applied,
+            tactical_epoch,
+            formation_changed_control_tick,
         )
-        if not substitutions and not acting_goalkeepers and not formations:
+        if (
+            not substitutions
+            and not acting_goalkeepers
+            and not formations
+            and set_piece_taker_event is None
+        ):
             return
         self._pre_frame_management.append(
             {
@@ -173,6 +186,9 @@ class ReplaySidecarSpool:
                 "substitutions": substitutions,
                 "acting_goalkeepers": acting_goalkeepers,
                 "formations": formations,
+                "set_piece_taker_changes": (
+                    [] if set_piece_taker_event is None else [set_piece_taker_event]
+                ),
             }
         )
 
@@ -183,16 +199,30 @@ class ReplaySidecarSpool:
         requested: Any,
         layout_index: Any,
         applied: Any,
+        tactical_epoch: Any = None,
+        formation_changed_control_tick: Any = None,
+        set_piece_taker_event: Any = None,
     ) -> None:
-        """Attach a sparse formation receipt to one manager-boundary frame."""
+        """Attach sparse management facts to one manager-boundary frame."""
 
-        formations = _formation_records(requested, layout_index, applied)
-        if not formations:
+        formations = _formation_records(
+            requested,
+            layout_index,
+            applied,
+            tactical_epoch,
+            formation_changed_control_tick,
+        )
+        if not formations and set_piece_taker_event is None:
             return
         tick = int(control_tick)
-        if tick in self._frame_formations:
-            raise ValueError("multiple formation decisions share one replay frame")
-        self._frame_formations[tick] = formations
+        if tick in self._frame_management:
+            raise ValueError("multiple management decisions share one replay frame")
+        payload: dict[str, Any] = {}
+        if formations:
+            payload["formations"] = formations
+        if set_piece_taker_event is not None:
+            payload["set_piece_taker_changes"] = [set_piece_taker_event]
+        self._frame_management[tick] = payload
 
     def finalize(
         self,
@@ -203,12 +233,21 @@ class ReplaySidecarSpool:
         video_fps: float,
         sample_every: int,
         render_metadata: Any,
+        video_verification: str,
         completion: dict[str, Any] | None = None,
     ) -> tuple[Path, Path, Path]:
         """Merge chunk sidecars while preserving absolute control clocks."""
 
         if not self._chunks:
             raise ValueError("cannot finalize an empty replay")
+        allowed_video_verification = {
+            "not_requested",
+            "successful_encoder_close_and_segment_count",
+        }
+        if type(video_verification) is not str:
+            raise TypeError("video_verification must be a string")
+        if video_verification not in allowed_video_verification:
+            raise ValueError("video_verification is not a supported receipt method")
         event_path = self.video_path.parent / "event.json"
         tracking_path = self.video_path.parent / TRACKING_FILENAME
         metadata_path = self.video_path.parent / "metadata.json"
@@ -344,6 +383,7 @@ class ReplaySidecarSpool:
                         "stadium",
                         "render",
                         "user_metadata",
+                        "match_manifest",
                     )
                 }
                 if current_metadata_contract["schema"] != METADATA_SCHEMA:
@@ -381,10 +421,15 @@ class ReplaySidecarSpool:
             self._frame_count
         )
         header["pre_frame_management"] = self._pre_frame_management
-        remaining_formations = dict(self._frame_formations)
+        remaining_management = dict(self._frame_management)
         with event_path.open("w", encoding="utf-8") as event_out:
             event_out.write(
-                json.dumps(header, ensure_ascii=False, separators=(",", ":"))[:-1]
+                json.dumps(
+                    header,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )[:-1]
             )
             event_out.write(',"frames":[')
             first = True
@@ -403,11 +448,11 @@ class ReplaySidecarSpool:
                         raise ValueError(
                             "event chunk frame indices changed during merge"
                         )
-                    formations = remaining_formations.pop(
+                    management = remaining_management.pop(
                         int(row["control_tick"]), None
                     )
-                    if formations is not None:
-                        row["formations"] = formations
+                    if management is not None:
+                        row.update(management)
                     if not first:
                         event_out.write(",")
                     json.dump(
@@ -415,6 +460,7 @@ class ReplaySidecarSpool:
                         event_out,
                         ensure_ascii=False,
                         separators=(",", ":"),
+                        allow_nan=False,
                     )
                     first = False
                 offset += count
@@ -424,8 +470,8 @@ class ReplaySidecarSpool:
                 chunk.rmdir()
             event_out.write("]}\n")
 
-        if remaining_formations:
-            raise ValueError("formation receipt has no matching replay frame")
+        if remaining_management:
+            raise ValueError("management receipt has no matching replay frame")
 
         assert first_metadata is not None
         if offset != self._frame_count:
@@ -478,13 +524,14 @@ class ReplaySidecarSpool:
             "tracking": self._frame_count,
             "event": self._frame_count,
             "video": int(video_frame_count),
-            "video_verification": "successful_encoder_close_and_segment_count",
+            "video_verification": video_verification,
         }
         with metadata_path.open("w", encoding="utf-8") as stream:
             json.dump(
                 first_metadata,
                 stream,
                 ensure_ascii=False,
+                allow_nan=False,
                 separators=(",", ":"),
             )
             stream.write("\n")

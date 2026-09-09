@@ -5,13 +5,86 @@ from __future__ import annotations
 import codecs
 import hashlib
 import json
-import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-EVENTS_SCHEMA = "footballworld.events/14"
-_FRAMES_MARKER = re.compile(r'"frames"\s*:\s*\[')
+EVENTS_SCHEMA = "footballworld.events/15"
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _root_frames_marker(value: str) -> tuple[int, int] | None:
+    """Locate a root ``frames`` array without matching nested object keys."""
+
+    depth = 0
+    index = 0
+    length = len(value)
+    while index < length:
+        token = value[index]
+        if token in " \t\r\n":
+            index += 1
+            continue
+        if token == '"':
+            start = index
+            index += 1
+            escaped = False
+            while index < length:
+                current = value[index]
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    break
+                index += 1
+            if index >= length:
+                return None
+            end = index + 1
+            previous = start - 1
+            while previous >= 0 and value[previous] in " \t\r\n":
+                previous -= 1
+            is_root_key = depth == 1 and (previous < 0 or value[previous] in "{,")
+            if is_root_key:
+                try:
+                    key = json.loads(value[start:end])
+                except json.JSONDecodeError:
+                    key = None
+                cursor = end
+                while cursor < length and value[cursor] in " \t\r\n":
+                    cursor += 1
+                if key == "frames":
+                    if cursor >= length:
+                        return None
+                    if value[cursor] != ":":
+                        index = end
+                        continue
+                    cursor += 1
+                    while cursor < length and value[cursor] in " \t\r\n":
+                        cursor += 1
+                    if cursor >= length:
+                        return None
+                    if value[cursor] == "[":
+                        return start, cursor + 1
+            index = end
+            continue
+        if token in "{[":
+            depth += 1
+        elif token in "}]":
+            depth -= 1
+        index += 1
+    return None
 
 
 class EventStream:
@@ -34,7 +107,10 @@ class EventStream:
         self.path = Path(path)
         self._stream = self.path.open("rb")
         self._decoder = codecs.getincrementaldecoder("utf-8")()
-        self._json_decoder = json.JSONDecoder()
+        self._json_decoder = json.JSONDecoder(
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_nonfinite_constant,
+        )
         self._digest = hashlib.sha256()
         self._buffer = ""
         self._index = 0
@@ -81,17 +157,22 @@ class EventStream:
 
     def _read_prefix(self) -> dict[str, Any]:
         while True:
-            match = _FRAMES_MARKER.search(self._buffer)
-            if match is not None:
-                prefix = self._buffer[: match.start()]
+            marker = _root_frames_marker(self._buffer)
+            if marker is not None:
+                start, end = marker
+                prefix = self._buffer[:start]
                 try:
-                    header = json.loads(prefix + '"frames":null}')
+                    header = json.loads(
+                        prefix + '"frames":null}',
+                        object_pairs_hook=_reject_duplicate_keys,
+                        parse_constant=_reject_nonfinite_constant,
+                    )
                 except json.JSONDecodeError as error:
                     self.close()
                     raise ValueError(
                         f"malformed event metadata in {self.path}"
                     ) from error
-                self._buffer = self._buffer[match.end() :]
+                self._buffer = self._buffer[end:]
                 self._index = 0
                 if not isinstance(header, dict):
                     self.close()

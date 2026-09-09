@@ -282,9 +282,7 @@ def _exact_render_grid(
             "whose samples divide the physics decimation exactly"
         )
     stride = timebase.decimation // samples_per_control
-    indices = tuple(
-        index * stride - 1 for index in range(1, samples_per_control + 1)
-    )
+    indices = tuple(index * stride - 1 for index in range(1, samples_per_control + 1))
     return render_fps, samples_per_control, indices
 
 

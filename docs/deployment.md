@@ -90,6 +90,7 @@ A reproducible run records:
 
 - MESSI version and source revision;
 - schema versions and layout fingerprints;
+- the exact rule-policy configuration SHA-256;
 - JAX, jaxlib, NumPy, Python, and backend versions;
 - immutable environment configuration;
 - roster and formation inputs;
@@ -97,7 +98,8 @@ A reproducible run records:
 - rollout profile, chunk length, and batch strategy.
 
 Use `footballworld.runtime.environment_fingerprint()` and the public
-`schema_versions()` mapping when creating experiment metadata.
+`schema_versions()` mapping when creating experiment metadata. For the shipped
+rule policy, record `footballworld.policies.policy_config_fingerprint(config)`.
 
 ## Observation and action contracts
 
@@ -136,7 +138,7 @@ artifacts as release evidence.
 
 ## Release gate
 
-A release candidate is accepted only after the frozen source passes:
+A formal release is accepted only after the frozen source passes:
 
 1. formatting, static lint, byte compilation, wheel and sdist builds;
 2. isolated wheel installation and public import/reset/step smoke checks;

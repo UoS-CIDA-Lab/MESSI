@@ -11,6 +11,10 @@ from typing import Any
 
 from footballworld.rendering.integrity import RENDER_COMPLETION_SCHEMA
 from footballworld.rendering.replay import METADATA_SCHEMA
+from footballworld.rendering.tracking import (
+    open_tracking,
+    tracking_storage_receipt,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +26,7 @@ class PublishedReplay:
     event: Path
     tracking: Path
     metadata: Path
+    metadata_record: dict[str, Any]
     completion: dict[str, Any]
     output: dict[str, Any]
 
@@ -36,6 +41,19 @@ def _artifact_receipt(path: Path) -> dict[str, Any]:
     return {"bytes": size, "sha256": digest.hexdigest()}
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key in published replay: {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_constant(value: str) -> Any:
+    raise ValueError(f"non-finite JSON constant in published replay: {value}")
+
+
 def _resolve_child(root: Path, value: Any) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError("published replay child path must be a non-empty string")
@@ -48,6 +66,93 @@ def _resolve_child(root: Path, value: Any) -> Path:
     if not resolved.is_file():
         raise FileNotFoundError(f"published replay child is missing: {resolved}")
     return resolved
+
+
+def authoritative_completion_error(
+    completion: dict[str, Any],
+    output: dict[str, Any],
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> str | None:
+    """Return why a completion is non-authoritative, or ``None`` when valid."""
+
+    if metadata is not None:
+        manifest_payload = {
+            name: value
+            for name, value in completion.items()
+            if name not in {"schema", "outputs"}
+        }
+        if metadata.get("completion") != manifest_payload:
+            return "published replay metadata and manifest completion disagree"
+    guard = completion.get("publication_guard")
+    if not isinstance(guard, dict):
+        return "published replay has no publication guard"
+    required = {
+        "done": True,
+        "complete": True,
+        "full_duration_complete": True,
+        "terminal_basis": "regulation_complete",
+        "maximum_steps": None,
+        "event_budget_exhausted_count": 0,
+    }
+    if any(completion.get(name) != value for name, value in required.items()):
+        return "published replay is not a complete regulation match"
+    if (
+        guard.get("authoritative") is not True
+        or guard.get("status") != "valid"
+        or guard.get("source_authority") not in {"clean", "frozen"}
+        or guard.get("stable_during_capture") is not True
+    ):
+        return "published replay source authority is not valid"
+    decode = output.get("video_decode_verification")
+    if not isinstance(decode, dict) or decode.get("enabled") is not True:
+        return "published replay lacks pre-publication full decode"
+    checks = decode.get("checks")
+    required_decode_checks = {
+        "frame_count",
+        "fps",
+        "width_px",
+        "height_px",
+        "codec",
+        "pixel_format",
+        "duration_s",
+    }
+    if (
+        not isinstance(checks, dict)
+        or not required_decode_checks.issubset(checks)
+        or not all(value is True for value in checks.values())
+    ):
+        return "published replay video decode checks did not all pass"
+    return None
+
+
+def _expected_video_sample_count(
+    metadata: dict[str, Any],
+    *,
+    source_frames: int,
+    control_fps: float,
+    sample_fps: float,
+) -> int:
+    """Rebuild the renderer's causal-hold sample count from its time span."""
+
+    time_axis = metadata.get("time_axis")
+    tracking_span_s = (
+        time_axis.get("tracking_span_s") if isinstance(time_axis, dict) else None
+    )
+    if tracking_span_s is None:
+        if source_frames == 1:
+            return 1
+        legacy_covered_samples = source_frames * sample_fps / control_fps
+        return max(1, math.floor(legacy_covered_samples + 0.5))
+    if (
+        isinstance(tracking_span_s, bool)
+        or not isinstance(tracking_span_s, (int, float))
+        or not math.isfinite(tracking_span_s)
+        or tracking_span_s < 0.0
+    ):
+        raise ValueError("published replay has invalid tracking span")
+    covered_seconds = tracking_span_s + 1.0 / control_fps
+    return max(1, math.floor(covered_seconds * sample_fps + 0.5))
 
 
 def open_published_replay(
@@ -69,7 +174,11 @@ def open_published_replay(
     source = Path(path)
     manifest_path = source / "completion.json" if source.is_dir() else source
     with manifest_path.open(encoding="utf-8") as stream:
-        completion = json.load(stream)
+        completion = json.load(
+            stream,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_nonfinite_constant,
+        )
     if not isinstance(completion, dict):
         raise TypeError("completion manifest root must be an object")
     if completion.get("schema") != RENDER_COMPLETION_SCHEMA:
@@ -109,14 +218,41 @@ def open_published_replay(
         raise ValueError("published source sidecar frame counts disagree")
     artifacts = output.get("artifacts")
     with paths["metadata"].open(encoding="utf-8") as stream:
-        metadata = json.load(stream)
+        metadata = json.load(
+            stream,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_nonfinite_constant,
+        )
     if not isinstance(metadata, dict):
         raise TypeError("published replay metadata root must be an object")
     if metadata.get("schema") not in {
         "footballworld.replay-metadata/7",
+        "footballworld.replay-metadata/8",
         METADATA_SCHEMA,
     }:
         raise ValueError("published replay metadata schema is unsupported")
+    observed_tracking: dict[str, Any] | None = None
+    if metadata.get("schema") == METADATA_SCHEMA:
+        declared_tracking = metadata.get("tracking_storage")
+        if not isinstance(declared_tracking, dict):
+            raise TypeError("published replay metadata has no tracking receipt")
+        if output.get("tracking_storage") != declared_tracking:
+            raise ValueError(
+                "published replay manifest and metadata tracking receipts disagree"
+            )
+        with open_tracking(paths["tracking"]) as tracking_reader:
+            tracking_index = getattr(tracking_reader, "index", None)
+            if not isinstance(tracking_index, dict):
+                raise TypeError(
+                    "current published replay tracking must use canonical NPZ"
+                )
+            observed_tracking = tracking_storage_receipt(
+                paths["tracking"], tracking_index
+            )
+        if observed_tracking != declared_tracking:
+            raise ValueError(
+                "published replay tracking archive disagrees with its receipt"
+            )
     source_frames = output["source_frame_count"]
     for name, expected in (
         ("source_frame_count", source_frames),
@@ -139,7 +275,12 @@ def open_published_replay(
     sample_every = metadata.get("sample_every")
     if type(sample_every) is not int or sample_every < 1:
         raise ValueError("published replay metadata has invalid sample_every")
-    expected_samples = round(source_frames * sample_fps / control_fps)
+    expected_samples = _expected_video_sample_count(
+        metadata,
+        source_frames=source_frames,
+        control_fps=control_fps,
+        sample_fps=sample_fps,
+    )
     expected_video = (expected_samples + sample_every - 1) // sample_every
     if metadata.get("video_sample_frame_count") != expected_samples:
         raise ValueError("published video sample count disagrees with source duration")
@@ -178,48 +319,35 @@ def open_published_replay(
             declared = artifacts.get(kind)
             if not isinstance(declared, dict):
                 raise TypeError(f"published replay lacks {kind} receipt")
-            if _artifact_receipt(child) != declared:
+            if kind == "tracking" and observed_tracking is not None:
+                observed_artifact = {
+                    "bytes": observed_tracking["compressed_bytes"],
+                    "sha256": observed_tracking["archive_sha256"],
+                }
+            else:
+                observed_artifact = _artifact_receipt(child)
+            if observed_artifact != declared:
                 raise ValueError(f"published replay {kind} hash or size changed")
     if require_authoritative:
-        guard = completion.get("publication_guard")
-        if not isinstance(guard, dict):
-            raise ValueError("published replay has no publication guard")
-        required = {
-            "done": True,
-            "complete": True,
-            "full_duration_complete": True,
-            "terminal_basis": "regulation_complete",
-            "maximum_steps": None,
-            "event_budget_exhausted_count": 0,
-        }
-        if any(completion.get(name) != value for name, value in required.items()):
-            raise ValueError("published replay is not a complete regulation match")
-        if (
-            guard.get("authoritative") is not True
-            or guard.get("status") != "valid"
-            or guard.get("source_authority") not in {"clean", "frozen"}
-            or guard.get("stable_during_capture") is not True
-        ):
-            raise ValueError("published replay source authority is not valid")
-        decode = output.get("video_decode_verification")
-        if not isinstance(decode, dict) or decode.get("enabled") is not True:
-            raise ValueError("published replay lacks pre-publication full decode")
-        checks = decode.get("checks")
-        if (
-            not isinstance(checks, dict)
-            or not checks
-            or not all(value is True for value in checks.values())
-        ):
-            raise ValueError("published replay video decode checks did not all pass")
+        authority_error = authoritative_completion_error(
+            completion, output, metadata=metadata
+        )
+        if authority_error is not None:
+            raise ValueError(authority_error)
     return PublishedReplay(
         root=root,
         video=paths["video"],
         event=paths["event"],
         tracking=paths["tracking"],
         metadata=paths["metadata"],
+        metadata_record=metadata,
         completion=completion,
         output=output,
     )
 
 
-__all__ = ["PublishedReplay", "open_published_replay"]
+__all__ = [
+    "PublishedReplay",
+    "authoritative_completion_error",
+    "open_published_replay",
+]

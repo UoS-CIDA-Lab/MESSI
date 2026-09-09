@@ -60,6 +60,7 @@ class HostFrame:
     offside_flagged: np.ndarray
     submitted_action: Any
     action_trace: Any
+    intended_receiver_ids: np.ndarray | None
     frame_events: Any
     substitution_events: Any
     acting_goalkeeper_events: Any
@@ -403,6 +404,7 @@ def _payload(
     substitution_events: Any,
     acting_goalkeeper_events: Any,
     submitted_actions: Any,
+    intended_receiver_ids: Any,
 ) -> dict[str, Any]:
     if events is None:
         events = getattr(stacked, "frame_events", getattr(stacked, "events", None))
@@ -415,6 +417,11 @@ def _payload(
     s = state.possession
     r = state.restart
     count, players = p.position.shape[:2]
+    if intended_receiver_ids is not None:
+        if intended_receiver_ids.shape != p.player_id.shape:
+            raise ValueError("intended_receiver_ids must have shape [T, N]")
+        if intended_receiver_ids.dtype != jnp.int32:
+            raise TypeError("intended_receiver_ids must have int32 dtype")
     if slot_generations is None:
         slot_generations = np.full(p.player_id.shape, -1, dtype=np.int32)
     else:
@@ -465,6 +472,7 @@ def _payload(
         else np.zeros((count, players), bool),
         "submitted_action": submitted_actions,
         "action_trace": action_trace,
+        "intended_receiver_ids": intended_receiver_ids,
         "frame_events": events,
         "substitution_events": substitution_events,
         "acting_goalkeeper_events": acting_goalkeeper_events,
@@ -490,6 +498,7 @@ def prepare_host_frames(
     substitution_events: Any = None,
     acting_goalkeeper_events: Any = None,
     submitted_actions: Any = None,
+    intended_receiver_ids: Any = None,
     match_index: int = 0,
 ) -> list[HostFrame]:
     """Select one match once, device_get once, then split on the host."""
@@ -504,6 +513,7 @@ def prepare_host_frames(
             substitution_events,
             acting_goalkeeper_events,
             submitted_actions,
+            intended_receiver_ids,
         )
     )
     if any(isinstance(leaf, jax.core.Tracer) for leaf in leaves):
@@ -519,6 +529,7 @@ def prepare_host_frames(
         acting_goalkeeper_events, count
     )
     submitted_actions = _submitted_action_sidecar(submitted_actions, count)
+    intended_receiver_ids = _slot_generation_sidecar(intended_receiver_ids, count)
     state = _state_of(stacked)
     batch_size = int(state.players.position.shape[1]) if batched else 1
     _validate_substitution_event_axes(
@@ -540,6 +551,7 @@ def prepare_host_frames(
     substitution_events = _select(substitution_events, match_index, batched)
     acting_goalkeeper_events = _select(acting_goalkeeper_events, match_index, batched)
     submitted_actions = _select(submitted_actions, match_index, batched)
+    intended_receiver_ids = _select(intended_receiver_ids, match_index, batched)
     host = jax.device_get(
         _payload(
             selected,
@@ -549,6 +561,7 @@ def prepare_host_frames(
             substitution_events,
             acting_goalkeeper_events,
             submitted_actions,
+            intended_receiver_ids,
         )
     )
     result = []
@@ -602,6 +615,11 @@ def prepare_host_frames(
                 offside_flagged=np.asarray(x["offside_flagged"], bool),
                 submitted_action=x["submitted_action"],
                 action_trace=x["action_trace"],
+                intended_receiver_ids=(
+                    None
+                    if x["intended_receiver_ids"] is None
+                    else np.asarray(x["intended_receiver_ids"], np.int32)
+                ),
                 frame_events=x["frame_events"],
                 substitution_events=x["substitution_events"],
                 acting_goalkeeper_events=x["acting_goalkeeper_events"],

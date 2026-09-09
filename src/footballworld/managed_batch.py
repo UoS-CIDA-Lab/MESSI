@@ -33,18 +33,19 @@ from footballworld.policies.manager import (
     ManagerPolicy,
     acknowledge_manager_boundary,
     initialize_manager_boundary_state,
+    validate_manager_policy,
 )
 from footballworld.policies.opening_formation import (
     OpeningFormationPolicy,
     RuleBasedOpeningFormationPolicy,
     observe_opening_formations,
 )
+from footballworld.policies.player import PlayerPolicy, validate_player_policy
 from footballworld.policies.rule_based.manager import make_rule_based_manager
 from footballworld.policies.rule_based.policy import (
     RuleBasedPolicy,
     make_rule_based_policy,
 )
-from footballworld.policies.rule_based.state import RulePolicyState
 from footballworld.rollout import (
     apply_management_tactics,
     make_managed_advance,
@@ -59,8 +60,9 @@ class ManagedBatchState(NamedTuple):
     setup: MatchSetup
     management: ManagerState
     roster: RosterMetadata
-    player_policy_state: RulePolicyState
+    player_policy_state: Any
     manager: ManagedManagerState[Any]
+    opening_formation_checked: np.ndarray | None = None
 
 
 class ManagedBatchRunResult(NamedTuple):
@@ -82,7 +84,7 @@ class _ManagerDecisionResult(NamedTuple):
 
 class _RosterRefreshResult(NamedTuple):
     roster: RosterMetadata
-    player_policy_state: RulePolicyState
+    player_policy_state: Any
 
 
 class _OpeningDecisionResult(NamedTuple):
@@ -159,7 +161,7 @@ class ManagedBatchRunner:
     """Reusable scheduler for a fixed-shape batch of managed matches."""
 
     env: FootballWorld
-    player_policy: RuleBasedPolicy
+    player_policy: PlayerPolicy
     chunk_steps: int
     manager_policy: ManagerPolicy | None
     opening_policy: OpeningFormationPolicy | None
@@ -179,7 +181,7 @@ class ManagedBatchRunner:
         squad: SquadSetup,
         management: ManagerState,
         roster: RosterMetadata,
-        player_policy_state: RulePolicyState,
+        player_policy_state: Any,
         manager_parameters: Any = NO_POLICY_PARAMETERS,
     ) -> ManagedBatchState:
         """Initialize scheduler and manager memory without advancing."""
@@ -211,6 +213,7 @@ class ManagedBatchRunner:
             roster=roster,
             player_policy_state=player_policy_state,
             manager=ManagedManagerState(boundary, policy_state),
+            opening_formation_checked=np.zeros(batch_size, dtype=np.bool_),
         )
 
     def run(
@@ -236,7 +239,7 @@ class ManagedBatchRunner:
             ("management", state.management),
             ("roster", state.roster),
             ("player_policy_state", state.player_policy_state),
-            ("manager.boundary", state.manager.boundary),
+            ("manager.boundary", getattr(state.manager, "boundary", state.manager)),
         ):
             _validate_batch_tree(name, value, batch_size)
         if self.manager_policy is not None:
@@ -245,14 +248,32 @@ class ManagedBatchRunner:
 
         remaining = _horizons(num_steps, batch_size)
         current = state
+        checked_value = getattr(current, "opening_formation_checked", None)
+        if checked_value is None:
+            opening_checked = np.zeros(batch_size, dtype=np.bool_)
+        else:
+            opening_checked = np.asarray(checked_value)
+            if opening_checked.shape != (batch_size,) or not np.issubdtype(
+                opening_checked.dtype, np.bool_
+            ):
+                raise ValueError(
+                    "opening_formation_checked must be a batch-size boolean array"
+                )
+            opening_checked = opening_checked.copy()
         opening_applied = np.zeros((batch_size, 2), dtype=np.bool_)
-        if apply_opening_formation and self._opening_decide is not None:
+        opening_rows_to_check = (remaining > 0) & (~opening_checked)
+        if (
+            apply_opening_formation
+            and self._opening_decide is not None
+            and np.any(opening_rows_to_check)
+        ):
             opening = self._opening_decide(
                 current.rollout,
                 current.setup,
                 squad,
                 current.management,
                 match_keys,
+                jnp.asarray(opening_rows_to_check),
             )
             opening_applied = np.asarray(
                 jax.device_get(opening.applied), dtype=np.bool_
@@ -262,6 +283,8 @@ class ManagedBatchRunner:
                 setup=opening.setup,
                 management=opening.management,
             )
+            opening_checked |= opening_rows_to_check
+            current = current._replace(opening_formation_checked=opening_checked)
             opening_rows = np.any(opening_applied, axis=1)
             if np.any(opening_rows):
                 current = current._replace(
@@ -289,9 +312,18 @@ class ManagedBatchRunner:
                 jnp.asarray(budget),
                 match_keys,
             )
-            progressed = np.asarray(
-                jax.device_get(advance.steps_executed), dtype=np.int64
+            (
+                progressed_value,
+                terminal_value,
+                manager_required_value,
+            ) = jax.device_get(
+                (
+                    advance.steps_executed,
+                    advance.terminated | advance.truncated,
+                    advance.manager_required,
+                )
             )
+            progressed = np.asarray(progressed_value, dtype=np.int64)
             if np.any(progressed < 0) or np.any(progressed > budget):
                 raise RuntimeError("managed batch returned an invalid step count")
             executed += progressed
@@ -301,11 +333,20 @@ class ManagedBatchRunner:
                 player_policy_state=advance.final_policy_state,
             )
 
-            manager_rows = (
-                np.asarray(jax.device_get(advance.manager_required), dtype=np.bool_)
-                & was_active
+            terminal_rows = was_active & np.asarray(
+                terminal_value,
+                dtype=np.bool_,
             )
-            unexpected = was_active & (progressed == 0) & (~manager_rows)
+            remaining[terminal_rows] = 0
+
+            manager_rows = (
+                np.asarray(manager_required_value, dtype=np.bool_)
+                & was_active
+                & (~terminal_rows)
+            )
+            unexpected = (
+                was_active & (~terminal_rows) & (progressed == 0) & (~manager_rows)
+            )
             if np.any(unexpected):
                 raise RuntimeError(
                     "managed batch made no progress without a boundary: "
@@ -404,7 +445,7 @@ class ManagedBatchRunner:
 
 def make_managed_batch_runner(
     env: FootballWorld,
-    player_policy: RuleBasedPolicy | None = None,
+    player_policy: PlayerPolicy | None = None,
     chunk_steps: int = 256,
     *,
     manager_policy: ManagerPolicy | None = None,
@@ -421,8 +462,8 @@ def make_managed_batch_runner(
                 "player_policy is required when the built-in player policy is disabled"
             )
         selected_player = make_rule_based_policy(env)
-    if not isinstance(selected_player, RuleBasedPolicy):
-        raise TypeError("player_policy must be RuleBasedPolicy or None")
+    validate_player_policy(selected_player)
+    using_rule_player = isinstance(selected_player, RuleBasedPolicy)
     if not isinstance(chunk_steps, int) or isinstance(chunk_steps, bool):
         raise TypeError("chunk_steps must be an integer")
     if chunk_steps < 1:
@@ -436,6 +477,8 @@ def make_managed_batch_runner(
     )
     if using_reference_manager:
         selected_manager = make_rule_based_manager(env)
+    if selected_manager is not None:
+        validate_manager_policy(selected_manager)
     selected_opening = opening_policy
     if selected_opening is None and env.policies.rule_based_opening_formation_adapter:
         selected_opening = RuleBasedOpeningFormationPolicy()
@@ -534,16 +577,19 @@ def make_managed_batch_runner(
     def refresh_one(rollout, management, old_roster, policy_state, active):
         def refresh(_):
             roster = env.roster_metadata_si(rollout, management)
-            return _RosterRefreshResult(
-                roster,
-                refresh_policy_state(
+            refreshed_state = policy_state
+            if using_rule_player:
+                refreshed_state = refresh_policy_state(
                     env,
                     selected_player,
                     rollout,
                     old_roster,
                     roster,
                     policy_state,
-                ),
+                )
+            return _RosterRefreshResult(
+                roster,
+                refreshed_state,
             )
 
         return jax.lax.cond(
@@ -556,11 +602,16 @@ def make_managed_batch_runner(
     refresh_roster = jax.jit(batch_rollout(refresh_one))
 
     def apply_tactics_one(rollout, management, roster, policy_state, active):
+        def apply(_):
+            if using_rule_player:
+                return apply_management_tactics(
+                    env, selected_player, rollout, management, roster, policy_state
+                )
+            return policy_state
+
         return jax.lax.cond(
             active,
-            lambda _: apply_management_tactics(
-                env, selected_player, rollout, management, roster, policy_state
-            ),
+            apply,
             lambda _: policy_state,
             operand=None,
         )
@@ -570,16 +621,32 @@ def make_managed_batch_runner(
     opening_decide = None
     if selected_opening is not None:
 
-        def opening_one(rollout, setup, squad, management, match_key):
-            observations = observe_opening_formations(
-                rollout.state, squad, management, env.normalization_context()
-            )
-            command = selected_opening(observations, match_key)
-            result = env.opening_formation_command(
-                rollout, setup, squad, management, command
-            )
-            return _OpeningDecisionResult(
-                result.rollout, result.setup, result.management, result.applied
+        def opening_one(rollout, setup, squad, management, match_key, active):
+            def decide(_):
+                observations = observe_opening_formations(
+                    rollout.state, squad, management, env.normalization_context()
+                )
+                command = selected_opening(observations, match_key)
+                result = env.opening_formation_command(
+                    rollout, setup, squad, management, command
+                )
+                return _OpeningDecisionResult(
+                    result.rollout,
+                    result.setup,
+                    result.management,
+                    result.applied,
+                )
+
+            return jax.lax.cond(
+                active,
+                decide,
+                lambda _: _OpeningDecisionResult(
+                    rollout,
+                    setup,
+                    management,
+                    jnp.zeros((2,), dtype=jnp.bool_),
+                ),
+                operand=None,
             )
 
         opening_decide = jax.jit(batch_rollout(opening_one))

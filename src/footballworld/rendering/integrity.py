@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shutil
+import socket
 import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -238,9 +239,78 @@ def write_completion_manifest(
         "outputs": outputs,
     }
     with path.open("w", encoding="utf-8") as stream:
-        json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+        json.dump(
+            payload,
+            stream,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
         stream.write("\n")
     return path
+
+
+def _lock_owner_is_alive(lock: Path) -> tuple[bool, os.stat_result]:
+    """Return whether a well-formed lock still belongs to a live process."""
+
+    with lock.open("r", encoding="ascii") as stream:
+        identity = os.fstat(stream.fileno())
+        payload = stream.read().strip()
+    fields = {}
+    for line in payload.splitlines():
+        name, separator, value = line.partition("=")
+        if separator:
+            fields[name] = value
+    owner_host = fields.get("host")
+    if owner_host is not None and owner_host != socket.gethostname():
+        return True, identity
+    if "pid" not in fields:
+        return True, identity
+    try:
+        pid = int(fields["pid"])
+    except ValueError:
+        return True, identity
+    if pid <= 0:
+        return True, identity
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False, identity
+    except (PermissionError, OSError):
+        return True, identity
+    return True, identity
+
+
+def _reserve_output_lock(lock: Path) -> int:
+    """Reserve a lock, reclaiming it only from a confirmed dead owner."""
+
+    try:
+        return os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        try:
+            alive, identity = _lock_owner_is_alive(lock)
+            current = lock.stat()
+        except FileNotFoundError:
+            return os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        if alive:
+            raise
+        if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+            raise FileExistsError(f"output lock changed while inspected: {lock}")
+        lock.unlink()
+        return os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+
+
+def _release_output_lock(lock: Path, lock_fd: int) -> None:
+    """Remove the lock only while the path still names our open inode."""
+
+    identity = os.fstat(lock_fd)
+    try:
+        current = lock.stat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+        return
+    lock.unlink()
 
 
 @contextmanager
@@ -257,13 +327,14 @@ def staged_output_directory(target: str | Path) -> Iterator[Path]:
 
     lock = parent / f".{target.name}.render.lock"
     try:
-        lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        lock_fd = _reserve_output_lock(lock)
     except FileExistsError as exc:
         raise FileExistsError(f"output_dir is already reserved: {target}") from exc
     staging: Path | None = None
     published = False
     try:
-        os.write(lock_fd, f"pid={os.getpid()}\n".encode("ascii"))
+        owner = f"host={socket.gethostname()}\npid={os.getpid()}\n"
+        os.write(lock_fd, owner.encode("ascii"))
         staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.staging-", dir=parent))
         yield staging
         if target.exists() or target.is_symlink():
@@ -271,11 +342,10 @@ def staged_output_directory(target: str | Path) -> Iterator[Path]:
         staging.rename(target)
         published = True
     finally:
-        os.close(lock_fd)
         try:
-            lock.unlink()
-        except FileNotFoundError:
-            pass
+            _release_output_lock(lock, lock_fd)
+        finally:
+            os.close(lock_fd)
         if not published and staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
 

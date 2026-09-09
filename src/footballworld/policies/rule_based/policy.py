@@ -45,6 +45,10 @@ from footballworld.core.contact import (
     OUTCOME_TRAP,
 )
 from footballworld.dynamics.ball import advance_supported_ground_motion
+from footballworld.dynamics.contest import (
+    challenge_foul_probability,
+    challenge_success_probability,
+)
 from footballworld.dynamics.stamina import effective_speed_limit
 from footballworld.environment.action_availability import intent_availability_hint
 from footballworld.environment.management import PlayerTacticalObservation
@@ -85,6 +89,7 @@ from footballworld.policies.rule_based.possession import (
     POSSESSION_DRIBBLE,
     POSSESSION_PASS,
     POSSESSION_SHOT,
+    PossessionCandidateTrace,
     decide_possession,
     plan_shot,
 )
@@ -117,6 +122,83 @@ if TYPE_CHECKING:
     from footballworld.environment.api import FootballWorld
 
 
+_CONTROL_BOUNDARY_MARGIN_M = 1.0
+_CONTROL_TOUCHLINE_GUARD_M = 5.0
+_CONTROL_GOAL_LINE_GUARD_M = 5.0
+
+
+def _touchline_control_risk(
+    ball_position: jax.Array,
+    ball_velocity: jax.Array,
+    half_width: float,
+) -> jax.Array:
+    """Return rows where an outward-moving ball needs a stronger infield trap."""
+
+    near_touchline = jnp.abs(ball_position[..., 1]) > (
+        jnp.float32(half_width) - jnp.float32(_CONTROL_TOUCHLINE_GUARD_M)
+    )
+    moving_outward = ball_position[..., 1] * ball_velocity[..., 1] > 0.0
+    return near_touchline & moving_outward
+
+
+def _goal_line_control_risk(
+    ball_position: jax.Array,
+    ball_velocity: jax.Array,
+    half_length: float,
+) -> jax.Array:
+    """Return rows where an outward-moving ball risks crossing a goal line."""
+
+    near_goal_line = jnp.abs(ball_position[..., 0]) > (
+        jnp.float32(half_length) - jnp.float32(_CONTROL_GOAL_LINE_GUARD_M)
+    )
+    moving_outward = ball_position[..., 0] * ball_velocity[..., 0] > 0.0
+    return near_goal_line & moving_outward
+
+
+def _boundary_safe_dribble_control(
+    direction: jax.Array,
+    power: jax.Array,
+    is_dribble: jax.Array,
+    touchline_risk: jax.Array,
+    inward_touchline: jax.Array,
+    touchline_power: float,
+) -> tuple[jax.Array, jax.Array]:
+    """Keep periodic dribble touches from bypassing touchline-safe control."""
+
+    direction = jnp.where(
+        (is_dribble & touchline_risk)[:, None],
+        inward_touchline,
+        direction,
+    )
+    power = jnp.where(
+        is_dribble & touchline_risk,
+        jnp.float32(touchline_power),
+        power,
+    )
+    return direction, power
+
+
+def _infield_ground_settle_direction(
+    ball_relative_xy: jax.Array,
+    self_position: jax.Array,
+    half_width: float,
+) -> jax.Array:
+    """Aim a ground trap at the player's feet, clamped inside the touchline."""
+
+    safe_target_y = jnp.clip(
+        self_position[..., 1],
+        -jnp.float32(half_width) + jnp.float32(_CONTROL_BOUNDARY_MARGIN_M),
+        jnp.float32(half_width) - jnp.float32(_CONTROL_BOUNDARY_MARGIN_M),
+    )
+    safe_target = jnp.stack((self_position[..., 0], safe_target_y), axis=-1)
+    ball_position = self_position + ball_relative_xy
+    delta = safe_target - ball_position
+    return delta / jnp.maximum(
+        jnp.linalg.norm(delta, axis=-1, keepdims=True),
+        jnp.float32(GEOMETRY_EPS),
+    )
+
+
 class _ActionDecision(NamedTuple):
     """Private action result plus the observer-local loose-ball assignment."""
 
@@ -128,11 +210,16 @@ class _ActionDecision(NamedTuple):
     planned_eta_ticks: jax.Array
     pass_plan_active: jax.Array
     service_opportunity: jax.Array
+    intended_receiver_ids: jax.Array
 
 
 _ActionForState = Callable[
     [Observation, RosterMetadata, RulePolicyState, jax.Array],
     _ActionDecision,
+]
+_ActionForStateWithPassDiagnostic = Callable[
+    [Observation, RosterMetadata, RulePolicyState, jax.Array],
+    tuple[_ActionDecision, PossessionCandidateTrace],
 ]
 
 
@@ -150,6 +237,27 @@ _RESTART_DECISION_RANDOM_STREAM = 0x52535452
 _REBOUND_SHOT_RANDOM_STREAM = 0x52425348
 _REBOUND_CHOICE_RANDOM_STREAM = 0x52424348
 _QUICK_RELAY_RANDOM_STREAM = 0x51524C59
+
+
+def _contextual_bernoulli_probability(
+    reference: jax.Array,
+    context: jax.Array,
+    logit_limit: float,
+) -> jax.Array:
+    """Move a reference Bernoulli probability by bounded context."""
+
+    reference = jnp.asarray(reference, dtype=jnp.float32)
+    context = jnp.clip(jnp.asarray(context, dtype=jnp.float32), 0.0, 1.0)
+    safe_reference = jnp.clip(reference, 1.0e-6, 1.0 - 1.0e-6)
+    reference_logit = jnp.log(safe_reference) - jnp.log1p(-safe_reference)
+    contextual = jax.nn.sigmoid(
+        reference_logit + jnp.float32(logit_limit) * (2.0 * context - 1.0)
+    )
+    return jnp.where(
+        reference <= 0.0,
+        jnp.float32(0.0),
+        jnp.where(reference >= 1.0, jnp.float32(1.0), contextual),
+    )
 
 
 def _policy_base_key(
@@ -645,6 +753,24 @@ class PolicyStep(NamedTuple):
     state: RulePolicyState
 
 
+class PolicyEventStep(NamedTuple):
+    """Capture-only action result with the submitted pass receiver receipt."""
+
+    action: IntentAction
+    state: RulePolicyState
+    intended_receiver_ids: jax.Array
+
+
+class PolicyPassDiagnosticStep(NamedTuple):
+    """Explicit diagnostic step; ordinary rollout methods never return this tree."""
+
+    action: IntentAction
+    state: RulePolicyState
+    intended_receiver_ids: jax.Array
+    carrier_slot: jax.Array
+    pass_candidates: PossessionCandidateTrace
+
+
 def _require_si_policy_inputs(
     observations: Observation, roster: RosterMetadata
 ) -> None:
@@ -672,6 +798,7 @@ class RuleBasedPolicy:
     counterpress_window_ticks: int
     secure_control_window_ticks: int
     _action_for_state: _ActionForState
+    _action_for_state_with_pass_diagnostic: _ActionForStateWithPassDiagnostic
 
     def initialize(
         self,
@@ -706,15 +833,19 @@ class RuleBasedPolicy:
             )
         return apply_tactical_observation(state, tactics, roster)
 
-    def step(
+    def _step_internal(
         self,
         observations: Observation,
         roster: RosterMetadata,
         state: RulePolicyState,
         match_key: jax.Array | None = None,
-    ) -> PolicyStep:
-        """Advance causal memory and emit this control frame's action."""
+        *,
+        with_pass_diagnostic: bool = False,
+    ) -> PolicyEventStep | PolicyPassDiagnosticStep:
+        """Advance memory through either the lean or explicit diagnostic path."""
 
+        if type(with_pass_diagnostic) is not bool:
+            raise TypeError("with_pass_diagnostic must be a static bool")
         _require_si_policy_inputs(observations, roster)
         next_state = update_rule_policy_state(state, observations, roster)
         bounded_counterpress_age = jnp.where(
@@ -734,7 +865,14 @@ class RuleBasedPolicy:
             secure_control_age=bounded_secure_control_age,
         )
         base_key = _policy_base_key(match_key, self.config.default_seed)
-        decision = self._action_for_state(observations, roster, next_state, base_key)
+        if with_pass_diagnostic:
+            decision, pass_candidates = self._action_for_state_with_pass_diagnostic(
+                observations, roster, next_state, base_key
+            )
+        else:
+            decision = self._action_for_state(
+                observations, roster, next_state, base_key
+            )
         next_state = next_state._replace(
             loose_chaser=jnp.where(
                 decision.loose_chase_active,
@@ -763,7 +901,72 @@ class RuleBasedPolicy:
             ),
             service_opportunity=decision.service_opportunity,
         )
-        return PolicyStep(action=decision.action, state=next_state)
+        if with_pass_diagnostic:
+            return PolicyPassDiagnosticStep(
+                action=decision.action,
+                state=next_state,
+                intended_receiver_ids=decision.intended_receiver_ids,
+                carrier_slot=jnp.asarray(pass_candidates.carrier_slot, dtype=jnp.int32),
+                pass_candidates=pass_candidates,
+            )
+        return PolicyEventStep(
+            action=decision.action,
+            state=next_state,
+            intended_receiver_ids=decision.intended_receiver_ids,
+        )
+
+    def _step_with_event_receipt(
+        self,
+        observations: Observation,
+        roster: RosterMetadata,
+        state: RulePolicyState,
+        match_key: jax.Array | None = None,
+    ) -> PolicyEventStep:
+        result = self._step_internal(
+            observations, roster, state, match_key, with_pass_diagnostic=False
+        )
+        if not isinstance(result, PolicyEventStep):
+            raise TypeError("lean policy path returned a diagnostic step")
+        return result
+
+    def step(
+        self,
+        observations: Observation,
+        roster: RosterMetadata,
+        state: RulePolicyState,
+        match_key: jax.Array | None = None,
+    ) -> PolicyStep:
+        """Advance causal memory and emit this control frame's action."""
+
+        result = self._step_with_event_receipt(observations, roster, state, match_key)
+        return PolicyStep(action=result.action, state=result.state)
+
+    def step_with_event_receipt(
+        self,
+        observations: Observation,
+        roster: RosterMetadata,
+        state: RulePolicyState,
+        match_key: jax.Array | None = None,
+    ) -> PolicyEventStep:
+        """Return the ordinary step plus capture-only intended receiver IDs."""
+
+        return self._step_with_event_receipt(observations, roster, state, match_key)
+
+    def step_with_pass_diagnostic(
+        self,
+        observations: Observation,
+        roster: RosterMetadata,
+        state: RulePolicyState,
+        match_key: jax.Array | None = None,
+    ) -> PolicyPassDiagnosticStep:
+        """Return fixed candidate telemetry without changing ordinary step output."""
+
+        result = self._step_internal(
+            observations, roster, state, match_key, with_pass_diagnostic=True
+        )
+        if not isinstance(result, PolicyPassDiagnosticStep):
+            raise TypeError("diagnostic policy path returned a lean step")
+        return result
 
     def __call__(
         self,
@@ -943,6 +1146,11 @@ def make_rule_based_policy(
         1,
         round(config.quick_relay_window_s * control_fps),
     )
+    kickoff_path_window_ticks = max(
+        1,
+        round(config.kickoff_path_window_s * control_fps),
+    )
+
     control_power = min(
         1.0,
         config.dribble_power
@@ -956,7 +1164,9 @@ def make_rule_based_policy(
         roster: RosterMetadata,
         _policy_state: RulePolicyState,
         base_key: jax.Array,
-    ) -> _ActionDecision:
+        *,
+        with_pass_diagnostic: bool = False,
+    ) -> _ActionDecision | tuple[_ActionDecision, PossessionCandidateTrace]:
         absolute_tick = _policy_absolute_tick(observations)
         frame_key = _policy_frame_key(observations, base_key)
         context = build_rule_policy_context(observations, roster)
@@ -1336,6 +1546,23 @@ def make_rule_based_policy(
             run_behind_receiver,
             jnp.int32(-1),
         )
+        safe_runner_index = jnp.clip(run_behind_receiver, 0, player_count - 1)
+        runner_speed = jnp.linalg.norm(
+            context.player_velocity[decision_row, safe_runner_index]
+        )
+        runner_speed_fraction = jnp.clip(
+            runner_speed
+            / jnp.maximum(
+                roster.max_speed[safe_runner_index], jnp.float32(GEOMETRY_EPS)
+            ),
+            0.0,
+            1.0,
+        )
+        timing_error_probability = _contextual_bernoulli_probability(
+            jnp.float32(config.offside_timing_error_probability),
+            runner_speed_fraction,
+            config.offside_timing_context_logit_limit,
+        )
         timing_error = (
             has_attack_episode
             & has_runner
@@ -1345,7 +1572,7 @@ def make_rule_based_policy(
                         attack_episode_key, _OFFSIDE_TIMING_RANDOM_STREAM
                     )
                 )
-                < config.offside_timing_error_probability
+                < timing_error_probability
             )
         ) & (attack_pattern == jnp.int32(AttackPattern.RUN_BEHIND_DIRECT))
         safe_run_behind_receiver = jnp.maximum(run_behind_receiver, 0)
@@ -1610,7 +1837,7 @@ def make_rule_based_policy(
         )
         # A completed reception is not automatically a 0.4 s one-touch pass.
         # The earlier cadence made 92% of observed different-teammate
-        # receptions relay within two seconds in a 60 s policy-34 diagnostic,
+        # receptions relay within two seconds in a 60 s policy diagnostic,
         # with 17/23 delays pinned to exactly 0.4 s. SoccerWorld gates quick
         # relays by context; adapt that principle to FootballWorld without
         # weakening its intentionally difficult 1v1 carry/contest physics.
@@ -1642,25 +1869,40 @@ def make_rule_based_policy(
         )
         relay_candidate = (
             pass_candidate
-            & (
-                pass_safety_row
-                >= jnp.float32(config.quick_relay_completion_floor)
-            )
-            & (
-                pass_continuation
-                >= jnp.float32(config.quick_relay_continuation_floor)
-            )
-            & (
-                relay_alignment
-                >= jnp.float32(config.quick_relay_alignment_floor)
-            )
+            & (pass_safety_row >= jnp.float32(config.quick_relay_completion_floor))
+            & (pass_continuation >= jnp.float32(config.quick_relay_continuation_floor))
+            & (relay_alignment >= jnp.float32(config.quick_relay_alignment_floor))
         )
         relay_key = jax.random.fold_in(
             carrier_episode_key, jnp.uint32(_QUICK_RELAY_RANDOM_STREAM)
         )
-        relay_draw_allowed = jax.random.uniform(relay_key) < jnp.float32(
-            config.quick_relay_probability
+        relay_progress = 0.5 + 0.5 * jnp.tanh(
+            pass_delta[:, 0]
+            / jnp.maximum(
+                jnp.float32(2.0 * config.pass_min_progress_m),
+                jnp.float32(GEOMETRY_EPS),
+            )
         )
+        relay_quality = (
+            0.25 * jnp.clip(source_pressure, 0.0, 1.0)
+            + 0.20 * jnp.max(jnp.where(relay_candidate, pass_safety_row, 0.0))
+            + 0.20 * jnp.max(jnp.where(relay_candidate, pass_continuation, 0.0))
+            + 0.15
+            * jnp.max(
+                jnp.where(
+                    relay_candidate,
+                    0.5 + 0.5 * relay_alignment,
+                    0.0,
+                )
+            )
+            + 0.20 * jnp.max(jnp.where(relay_candidate, relay_progress, 0.0))
+        )
+        relay_probability = _contextual_bernoulli_probability(
+            jnp.float32(config.quick_relay_probability),
+            relay_quality,
+            config.quick_relay_context_logit_limit,
+        )
+        relay_draw_allowed = jax.random.uniform(relay_key) < relay_probability
         relay_context_allowed = relay_draw_allowed & (
             source_pressure >= jnp.float32(config.quick_relay_pressure_floor)
         )
@@ -1713,7 +1955,7 @@ def make_rule_based_policy(
             lambda value: value[decision_row],
             context,
         )
-        possession_decision = decide_possession(
+        possession_result = decide_possession(
             carrier_context,
             projected_offside_row,
             roster.is_goalkeeper,
@@ -1729,6 +1971,10 @@ def make_rule_based_policy(
             cross_completion=cross_arrival,
             cross_candidate=effective_cross_candidate,
             possession_seconds=carrier_control_ticks / control_fps,
+            possession_episode_seconds=(
+                jnp.maximum(_policy_state.possession_age[decision_row], 0) / control_fps
+            ),
+            formation_anchor_y=_policy_state.formation_anchor[carrier_slot, 1],
             previous_actor=(
                 jnp.arange(player_count)
                 == _policy_state.previous_possessor[decision_row]
@@ -1747,7 +1993,12 @@ def make_rule_based_policy(
                     + env.action_scale.ground_launch_down_max_radians
                 )
             ),
+            with_candidate_trace=with_pass_diagnostic,
         )
+        if with_pass_diagnostic:
+            possession_decision, pass_candidates = possession_result
+        else:
+            possession_decision = possession_result
         pass_index = jnp.where(
             possession_decision.target >= 0,
             possession_decision.target,
@@ -1945,6 +2196,7 @@ def make_rule_based_policy(
             decision_key=distribution_key,
             temperature=config.receiver_choice_temperature,
         )
+        goalkeeper_hold_receiver = goalkeeper_distribution.receiver[0]
         selected_distribution = ground_pass_controls(
             ball_position[decision_row],
             goalkeeper_distribution.target[0],
@@ -2101,6 +2353,31 @@ def make_rule_based_policy(
             & (possession_decision.target == run_behind_receiver)
         )
 
+        carrier_goal_line_risk = _goal_line_control_risk(
+            ball_position,
+            context.ball_velocity,
+            half_length,
+        )
+        carrier_touchline_risk = _touchline_control_risk(
+            ball_position,
+            context.ball_velocity,
+            half_width,
+        )
+        carrier_inward_touchline = jnp.stack(
+            (
+                jnp.zeros_like(ball_position[:, 1]),
+                -jnp.sign(ball_position[:, 1]),
+            ),
+            axis=-1,
+        )
+        carrier_inward_goal_line = jnp.stack(
+            (
+                -jnp.sign(ball_position[:, 0]),
+                jnp.zeros_like(ball_position[:, 0]),
+            ),
+            axis=-1,
+        )
+        boundary_safe_dribble = carrier_kind == POSSESSION_DRIBBLE
         strike_direction = jnp.where(
             pass_ball[:, None], pass_direction, carrier_direction
         )
@@ -2139,6 +2416,14 @@ def make_rule_based_policy(
                 control_power,
                 carrier_decision_power,
             ),
+        )
+        strike_direction, strike_power = _boundary_safe_dribble_control(
+            strike_direction,
+            strike_power,
+            boundary_safe_dribble,
+            carrier_touchline_risk,
+            carrier_inward_touchline,
+            config.touchline_dribble_control_power,
         )
         strike_launch = jnp.where(
             pass_ball,
@@ -2183,6 +2468,17 @@ def make_rule_based_policy(
         shape_own_possession = (
             own_team_possession | reliable_pass_flight_attack | own_restart_phase
         )
+        kickoff_path_active = (
+            observations.ball.live
+            & restart_free
+            & (absolute_tick < kickoff_path_window_ticks)
+        )
+        kickoff_path_phase = jnp.where(
+            kickoff_path_active,
+            (absolute_tick + jnp.int32(1)) / jnp.float32(kickoff_path_window_ticks),
+            jnp.float32(0.0),
+        )
+
         formation_move = shape_movement(
             context,
             _policy_state,
@@ -2211,11 +2507,14 @@ def make_rule_based_policy(
             attack_pattern=attack_pattern_by_row,
             attack_phase=attack_phase_by_row,
             attack_pattern_shape_shift_m=config.attack_pattern_shape_shift_m,
+            forward_pocket_shift_m=config.forward_pocket_shift_m,
             run_behind_receiver=run_behind_receiver,
             run_behind_release=run_behind_release,
             run_behind_timing_error=timing_error,
             offside_line_error_m=jnp.float32(config.offside_timing_error_margin_m),
             forward_run_min_gap_m=config.pass_min_progress_m,
+            kickoff_path_phase=kickoff_path_phase,
+            kickoff_path_lateral_shift_m=config.kickoff_path_lateral_shift_m,
         )
         # The distance arrival taper applies only to ordinary formation actors.
         # Dedicated pressure, loose-ball, aerial, carrier,
@@ -2243,6 +2542,19 @@ def make_rule_based_policy(
             jnp.maximum(offball_power, config.offball_surge_cap),
             offball_power,
         )
+        role_power_scale = jnp.asarray(
+            (
+                1.0,
+                config.offball_cb_power_scale,
+                config.offball_fb_power_scale,
+                config.offball_cm_power_scale,
+                config.offball_wm_power_scale,
+                config.offball_cf_power_scale,
+                config.offball_wf_power_scale,
+            ),
+            dtype=jnp.float32,
+        )[_policy_state.role]
+        offball_power = jnp.clip(offball_power * role_power_scale, 0.0, 1.0)
         formation_power = jnp.where(active_pressure, pressure_power, offball_power)
         shape_move = _encode(formation_move.direction, formation_power)
 
@@ -2834,10 +3146,57 @@ def make_rule_based_policy(
         challenge_proximity = jnp.clip(
             1.0 - carrier_distance / config.pressure_distance_m, 0.0, 1.0
         )
+        safe_carrier_index = jnp.clip(carrier_index, 0, player_count - 1)
+        carrier_velocity = _row_gather(context.player_velocity, row, safe_carrier_index)
+        approach_direction = carrier_relative / jnp.maximum(
+            carrier_distance[:, None], jnp.float32(GEOMETRY_EPS)
+        )
+        relative_velocity = observations.self_state.velocity - carrier_velocity
+        challenge_closing_fraction = jnp.clip(
+            jnp.maximum(jnp.sum(relative_velocity * approach_direction, axis=-1), 0.0)
+            / jnp.maximum(
+                self_max_speed + roster.max_speed[safe_carrier_index],
+                jnp.float32(GEOMETRY_EPS),
+            ),
+            0.0,
+            1.0,
+        )
+        carrier_facing = jnp.stack(
+            (
+                _row_gather(observations.players.facing_cos, row, safe_carrier_index),
+                _row_gather(observations.players.facing_sin, row, safe_carrier_index),
+            ),
+            axis=-1,
+        )
+        challenge_behind_fraction = jnp.clip(
+            jnp.sum(approach_direction * carrier_facing, axis=-1), 0.0, 1.0
+        )
+        expected_challenge_success = challenge_success_probability(
+            challenge_closing_fraction,
+            challenge_behind_fraction,
+            jnp.full_like(challenge_proximity, jnp.float32(config.dribble_power)),
+            roster.ball_control[self_index] - roster.ball_control[safe_carrier_index],
+            config=env.contest,
+        )
+        success_opportunity = expected_challenge_success - jnp.float32(
+            env.contest.tackle_success_probability
+        )
+        expected_challenge_foul = challenge_foul_probability(
+            challenge_closing_fraction,
+            challenge_behind_fraction,
+            jnp.full_like(challenge_proximity, jnp.float32(config.dribble_power)),
+            config=env.contest,
+        )
+        foul_excess = jnp.maximum(
+            expected_challenge_foul - jnp.float32(env.contest.tackle_foul_probability),
+            0.0,
+        )
         challenge_probability = jnp.clip(
             (
                 config.challenge_attempt_probability
                 + config.challenge_proximity_gain * challenge_proximity
+                + config.challenge_success_opportunity_gain * success_opportunity
+                - config.challenge_foul_avoidance_gain * foul_excess
             )
             * jnp.where(counterpress_active, row_tactical.counterpress_gain, 1.0),
             0.0,
@@ -3109,9 +3468,24 @@ def make_rule_based_policy(
         # loose-ball CONTROL loop.  Direct the first touch toward the player's
         # feet at the smaller native control scale.  Aerial cushioning retains
         # the momentum-aligned behavior above.
-        ground_settle_direction = -ball_xy / jnp.maximum(
-            jnp.linalg.norm(ball_xy, axis=-1)[:, None],
-            jnp.float32(GEOMETRY_EPS),
+        ground_settle_direction = _infield_ground_settle_direction(
+            ball_xy,
+            self_position,
+            half_width,
+        )
+        goal_line_control_risk = carrier_goal_line_risk
+        touchline_control_risk = carrier_touchline_risk
+        inward_touchline_direction = carrier_inward_touchline
+        ground_settle_direction = jnp.where(
+            touchline_control_risk[:, None],
+            inward_touchline_direction,
+            ground_settle_direction,
+        )
+        inward_goal_line_direction = carrier_inward_goal_line
+        ground_settle_direction = jnp.where(
+            goal_line_control_risk[:, None],
+            inward_goal_line_direction,
+            ground_settle_direction,
         )
         ground_loose_control = loose_control & foot_contact_reachable
         first_touch_direction = jnp.where(
@@ -3120,9 +3494,17 @@ def make_rule_based_policy(
             reception_direction,
         )
         first_touch_power = jnp.where(
-            ground_loose_control,
-            jnp.float32(config.dribble_power),
-            jnp.float32(control_power),
+            ground_loose_control & goal_line_control_risk,
+            jnp.float32(config.goal_line_control_power),
+            jnp.where(
+                ground_loose_control & touchline_control_risk,
+                jnp.float32(config.touchline_control_power),
+                jnp.where(
+                    ground_loose_control,
+                    jnp.float32(config.dribble_power),
+                    jnp.float32(control_power),
+                ),
+            ),
         )
         control_force = _encode(first_touch_direction, first_touch_power)
         challenge_force = _encode(goal_direction, config.dribble_power)
@@ -3295,7 +3677,40 @@ def make_rule_based_policy(
         action = _finalize_policy_action(
             intent, move, force_to_ball, launch, spin, gaze_center
         )
-        return _ActionDecision(
+        intended_receiver = jnp.where(
+            pass_ball,
+            possession_decision.target,
+            jnp.int32(NO_PLAYER),
+        )
+        intended_receiver = jnp.where(
+            goalkeeper_foot_pass,
+            goalkeeper_distribution.receiver[0],
+            intended_receiver,
+        )
+        restart_receiver = jnp.where(
+            goalkeeper_hold_distribution,
+            goalkeeper_hold_receiver,
+            restart_decision.receiver,
+        )
+        intended_receiver = jnp.where(
+            restart_release & (intent == INTENT_PASS),
+            restart_receiver,
+            intended_receiver,
+        )
+        intended_receiver = jnp.where(
+            (intent == INTENT_PASS)
+            & (intended_receiver >= 0)
+            & (intended_receiver < player_count),
+            intended_receiver,
+            jnp.int32(NO_PLAYER),
+        )
+        safe_intended_receiver = jnp.maximum(intended_receiver, 0)
+        intended_receiver_ids = jnp.where(
+            intended_receiver >= 0,
+            roster.player_id[safe_intended_receiver],
+            jnp.int32(NO_PLAYER),
+        ).astype(jnp.int32)
+        action_decision = _ActionDecision(
             action=action,
             loose_chaser=loose_chaser_index,
             loose_chase_active=loose_ball & has_loose_chaser & ground_ball,
@@ -3304,6 +3719,25 @@ def make_rule_based_policy(
             planned_eta_ticks=planned_eta_ticks,
             pass_plan_active=own_ground_pass_flight,
             service_opportunity=service_opportunity_by_row,
+            intended_receiver_ids=intended_receiver_ids,
+        )
+        if with_pass_diagnostic:
+            pass_candidates = pass_candidates._replace(
+                carrier_slot=decision_row.astype(jnp.int32)
+            )
+            return action_decision, pass_candidates
+        return action_decision
+
+    def lean_action_for_state(observations, roster, state, base_key):
+        return action_for_state(observations, roster, state, base_key)
+
+    def traced_action_for_state(observations, roster, state, base_key):
+        return action_for_state(
+            observations,
+            roster,
+            state,
+            base_key,
+            with_pass_diagnostic=True,
         )
 
     return RuleBasedPolicy(
@@ -3311,8 +3745,15 @@ def make_rule_based_policy(
         team_tactical_plan=team_tactical_plan,
         counterpress_window_ticks=counterpress_window_ticks,
         secure_control_window_ticks=dribble_touch_interval_ticks,
-        _action_for_state=action_for_state,
+        _action_for_state=lean_action_for_state,
+        _action_for_state_with_pass_diagnostic=traced_action_for_state,
     )
 
 
-__all__ = ["PolicyStep", "RuleBasedPolicy", "make_rule_based_policy"]
+__all__ = [
+    "PolicyEventStep",
+    "PolicyPassDiagnosticStep",
+    "PolicyStep",
+    "RuleBasedPolicy",
+    "make_rule_based_policy",
+]

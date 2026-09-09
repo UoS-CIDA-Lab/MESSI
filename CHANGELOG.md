@@ -2,9 +2,9 @@
 
 All notable changes to MESSI are recorded here.
 
-## 1.0.0 - 2026-09-06
+## 0.1.0 - 2026-09-09
 
-Initial public release.
+Current research-preview baseline. This version is not a formal stable release.
 
 ### Added
 

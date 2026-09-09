@@ -19,9 +19,15 @@ import jax.numpy as jnp
 from footballworld.core.constants import (
     NO_PLAYER,
     RESTART_COUNT,
+    RK_CORNER,
+    RK_FREEKICK,
     RK_GK_HOLD,
+    RK_GOALKICK,
     RK_KICKOFF,
     RK_NONE,
+    RK_OFFSIDE,
+    RK_PENALTY,
+    RK_THROWIN,
 )
 from footballworld.core.numeric import require_float32_representable
 from footballworld.environment.management import (
@@ -51,13 +57,12 @@ _SUBSTITUTION_RANDOM_STREAM = 0x53554253  # ASCII "SUBS".
 _SUBSTITUTION_TIMING_STREAM = 0x54494D45  # ASCII "TIME".
 _SUBSTITUTION_OUTGOING_STREAM = 0x4F555447  # ASCII "OUTG".
 _SUBSTITUTION_INCOMING_STREAM = 0x494E434D  # ASCII "INCM".
-RULE_MANAGER_VERSION = 7
-
-# External substitution timing compatibility prior.
-# The timing figures are aggregate event quantiles, so this policy uses them as
-# scheduling anchors rather than claiming a fitted conditional hazard model.
+# Stage-specific medians from 36 non-halftime same-team windows in the private
+# seven-match DFL receipt (stage sample sizes 14, 14, and 8).  The policy uses
+# them as scheduling anchors rather than claiming a fitted conditional hazard
+# model.
 _SUBSTITUTION_PROGRESS = jnp.asarray(
-    [57.7 / 90.0, 68.3 / 90.0, 80.1 / 90.0], dtype=jnp.float32
+    [65.139 / 90.0, 80.739 / 90.0, 87.392 / 90.0], dtype=jnp.float32
 )
 # Turn the ordered anchors into disjoint nearest-anchor (Voronoi) intervals.
 # Adjacent midpoints are the internal boundaries.  The two outer boundaries
@@ -99,7 +104,32 @@ _SUBSTITUTION_PROGRESS_UPPER = jnp.concatenate(
         ),
     )
 )
-_WINDOW_SIZE_PROBABILITY = jnp.asarray([0.650, 0.310, 0.040], dtype=jnp.float32)
+# Exact descriptive counts from 38 same-team windows in the private seven-match
+# DFL receipt: 17 single, 16 double, and 5 triple substitutions.
+_WINDOW_SIZE_PROBABILITY = jnp.asarray(
+    [17.0 / 38.0, 16.0 / 38.0, 5.0 / 38.0], dtype=jnp.float32
+)
+# Match-kind preference shares fitted in the private calib simulator against
+# the seven-match DFL top-taker shares.  Zero keeps independent event draws;
+# one keeps a fully fixed match-kind hierarchy.  Throw-ins remain almost fully
+# situational, while corners, free kicks, and kickoffs retain specialists.
+_TAKER_PERSISTENCE = (
+    jnp.zeros(RESTART_COUNT, dtype=jnp.float32)
+    .at[RK_KICKOFF]
+    .set(0.75)
+    .at[RK_THROWIN]
+    .set(0.20)
+    .at[RK_GOALKICK]
+    .set(0.10)
+    .at[RK_CORNER]
+    .set(0.50)
+    .at[RK_FREEKICK]
+    .set(0.45)
+    .at[RK_PENALTY]
+    .set(0.55)
+    .at[RK_OFFSIDE]
+    .set(0.45)
+)
 # These are respectively an aggregate event-size distribution and marginal
 # player-event roles. They do not condition on the simulator's remaining
 # resources or eligible lineup, so both are ranking/sizing priors rather than
@@ -108,6 +138,20 @@ _ROLE_SUBSTITUTION_PROPENSITY = jnp.asarray(
     [0.000, 0.049, 0.100, 0.165, 0.220, 0.221, 0.259],
     dtype=jnp.float32,
 )
+
+
+def _prefer_declared_role_candidates(
+    candidate: jax.Array,
+    preferred_role_known: jax.Array,
+    preferred_role_mask: jax.Array,
+    outgoing_role: jax.Array,
+) -> jax.Array:
+    """Prefer declared role matches, preserving fallback when none exist."""
+
+    safe_role = jnp.clip(jnp.asarray(outgoing_role, dtype=jnp.int32), 0, 6)
+    declared_match = preferred_role_known & preferred_role_mask[:, safe_role]
+    has_match = jnp.any(candidate & declared_match)
+    return candidate & ((~has_match) | declared_match)
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +287,25 @@ def _normalized_candidate_score(
     return jnp.where(candidate, normalized, jnp.float32(0.0)).astype(jnp.float32)
 
 
+def _effective_formation_change_tick(
+    policy_tick: jax.Array,
+    tactical_epoch: jax.Array,
+    observed_tick: jax.Array,
+    counter_scale_ticks: int,
+) -> jax.Array:
+    """Synchronize the hold boundary with accepted external changes."""
+
+    restored_tick = jnp.rint(observed_tick * jnp.float32(counter_scale_ticks)).astype(
+        jnp.int32
+    )
+    observed_change = (tactical_epoch > 0) & (restored_tick >= 0)
+    return jnp.where(
+        observed_change,
+        jnp.maximum(policy_tick, restored_tick),
+        policy_tick,
+    ).astype(jnp.int32)
+
+
 def _identity_gumbel(base_key: jax.Array, identity: jax.Array) -> jax.Array:
     """Draw slot-order-invariant noise addressed by immutable player identity."""
 
@@ -338,7 +401,11 @@ class RuleBasedManager:
         # One permanently-invalid pad cell keeps no-bench squads legal without
         # a separate traced policy shape or unsafe zero-width reductions.
         bench = jax.tree.map(
-            lambda value: jnp.pad(value, ((0, 0), (0, 1))), observations.bench
+            lambda value: jnp.pad(
+                value,
+                ((0, 0), (0, 1)) + ((0, 0),) * (value.ndim - 2),
+            ),
+            observations.bench,
         )
         player_id = observations.on_field.player_id
         is_goalkeeper = observations.on_field.is_goalkeeper
@@ -481,6 +548,16 @@ class RuleBasedManager:
                     & (~bench.is_goalkeeper[team])
                     & (~used_bench)
                 )
+                outgoing_role = safe_role[safe_outgoing]
+                # A declared compatible role is a categorical roster fact,
+                # not another weighted coefficient. If none is available,
+                # retain the existing normalized ability-profile fallback.
+                bench_candidate = _prefer_declared_role_candidates(
+                    bench_candidate,
+                    bench.preferred_role_known[team],
+                    bench.preferred_role_mask[team],
+                    outgoing_role,
+                )
                 profile_distance = (
                     (bench.max_speed[team] - max_speed[team, safe_outgoing]) ** 2
                     + (bench.height[team] - height[team, safe_outgoing]) ** 2
@@ -544,6 +621,12 @@ class RuleBasedManager:
         control_tick = jnp.rint(
             observations.control_tick * jnp.float32(self.context.counter_scale_ticks)
         ).astype(jnp.int32)
+        formation_change_tick = _effective_formation_change_tick(
+            state.formation_change_tick,
+            observations.tactical_epoch,
+            observations.formation_changed_control_tick,
+            self.context.counter_scale_ticks,
+        )
         active_count = jnp.sum(observations.on_field.active, axis=1).astype(jnp.float32)
         for team in range(2):
             other = 1 - team
@@ -610,7 +693,7 @@ class RuleBasedManager:
             )
             score = jnp.where(valid_layout, score, -jnp.inf)
             selected = jnp.argmax(score).astype(jnp.int32)
-            held = control_tick[team] - state.formation_change_tick[team] >= jnp.int32(
+            held = control_tick[team] - formation_change_tick[team] >= jnp.int32(
                 self.formation_hold_ticks
             )
             request = (
@@ -712,11 +795,16 @@ class RuleBasedManager:
             event_key = restart_taker_random_key(
                 match_key, restart_tick[team], jnp.int32(team), kind
             )
+            preference_key = restart_taker_random_key(
+                match_key, jnp.int32(0), jnp.int32(team), kind
+            )
             selected = sample_restart_taker(
                 ranking,
                 projected_id[team],
                 event_key,
                 temperature=self.config.taker_temperature,
+                preference_key=preference_key,
+                persistence=_TAKER_PERSISTENCE[jnp.clip(kind, 0, RESTART_COUNT - 1)],
             )
             safe_kind = jnp.clip(kind, 0, RESTART_COUNT - 1)
             request = owns_restart & (selected != NO_PLAYER)
@@ -739,7 +827,7 @@ class RuleBasedManager:
             formation_change_tick=jnp.where(
                 formations.requested,
                 control_tick,
-                state.formation_change_tick,
+                formation_change_tick,
             ),
         )
         return ManagerPolicyStep(
@@ -787,7 +875,6 @@ def make_rule_based_manager(
 
 
 __all__ = [
-    "RULE_MANAGER_VERSION",
     "ManagerPolicyStep",
     "RuleBasedManager",
     "RuleManagerConfig",

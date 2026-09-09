@@ -164,66 +164,76 @@ def step_goalkeeper_holding(
         & (player_team == goalkeeper_team)
     )
     expired = expired & valid_team
-    restart_team = (TEAM_1 - goalkeeper_team).astype(jnp.int32)
-    corner_position = _corner_position(
-        post_physics_state,
-        safe_goalkeeper,
-        goalkeeper_team,
-        valid_goalkeeper,
-        stadium=stadium,
-        ball=ball_geometry,
-    )
-    taker = select_restart_taker(
-        post_physics_state,
-        RK_CORNER,
-        restart_team,
-        corner_position,
-        stadium=stadium,
-    )
 
-    ball = post_physics_state.ball._replace(
-        position=corner_position,
-        velocity=jnp.zeros_like(post_physics_state.ball.velocity),
-        spin=jnp.zeros_like(post_physics_state.ball.spin),
-        live=jnp.bool_(False),
+    def expire_holding(_):
+        restart_team = (TEAM_1 - goalkeeper_team).astype(jnp.int32)
+        corner_position = _corner_position(
+            post_physics_state,
+            safe_goalkeeper,
+            goalkeeper_team,
+            valid_goalkeeper,
+            stadium=stadium,
+            ball=ball_geometry,
+        )
+        taker = select_restart_taker(
+            post_physics_state,
+            RK_CORNER,
+            restart_team,
+            corner_position,
+            stadium=stadium,
+        )
+        ball = post_physics_state.ball._replace(
+            position=corner_position,
+            velocity=jnp.zeros_like(post_physics_state.ball.velocity),
+            spin=jnp.zeros_like(post_physics_state.ball.spin),
+            live=jnp.bool_(False),
+        )
+        possession = post_physics_state.possession._replace(
+            team=jnp.int32(NO_TEAM),
+            player=jnp.int32(NO_PLAYER),
+            previous_team=post_physics_state.possession.team.astype(jnp.int32),
+            control_ticks=jnp.int32(0),
+        )
+        restart = post_physics_state.restart._replace(
+            kind=jnp.int32(RK_CORNER),
+            team=restart_team,
+            substeps_remaining=jnp.int32(0),
+            taker=taker,
+            indirect=jnp.bool_(False),
+            opened_control_tick=post_physics_state.control_tick,
+        )
+        cleared_release = RestartReleaseProvenance(
+            active=jnp.bool_(False),
+            untouched=jnp.bool_(False),
+            kind=jnp.int32(RK_NONE),
+            team=jnp.int32(NO_TEAM),
+            taker=jnp.int32(NO_PLAYER),
+            indirect=jnp.bool_(False),
+            law11_direct_exempt=jnp.bool_(False),
+            release_mechanism=jnp.int32(MECHANISM_NONE),
+        )
+        corner_state = post_physics_state._replace(
+            ball=ball,
+            possession=possession,
+            restart=restart,
+            restart_release=cleared_release,
+            gk_backpass_team=jnp.int32(NO_TEAM),
+        )
+        return corner_state, restart_team, corner_position
+
+    def continue_holding(_):
+        return (
+            counted_state,
+            jnp.int32(NO_TEAM),
+            jnp.zeros(3, dtype=post_physics_state.ball.position.dtype),
+        )
+
+    state, restart_team, event_corner = jax.lax.cond(
+        expired,
+        expire_holding,
+        continue_holding,
+        operand=None,
     )
-    possession = post_physics_state.possession._replace(
-        team=jnp.int32(NO_TEAM),
-        player=jnp.int32(NO_PLAYER),
-        previous_team=post_physics_state.possession.team.astype(jnp.int32),
-        control_ticks=jnp.int32(0),
-    )
-    restart = post_physics_state.restart._replace(
-        kind=jnp.int32(RK_CORNER),
-        team=restart_team,
-        substeps_remaining=jnp.int32(0),
-        taker=taker,
-        indirect=jnp.bool_(False),
-        opened_control_tick=post_physics_state.control_tick,
-    )
-    cleared_release = RestartReleaseProvenance(
-        active=jnp.bool_(False),
-        untouched=jnp.bool_(False),
-        kind=jnp.int32(RK_NONE),
-        team=jnp.int32(NO_TEAM),
-        taker=jnp.int32(NO_PLAYER),
-        indirect=jnp.bool_(False),
-        law11_direct_exempt=jnp.bool_(False),
-        release_mechanism=jnp.int32(MECHANISM_NONE),
-    )
-    corner_state = post_physics_state._replace(
-        ball=ball,
-        possession=possession,
-        restart=restart,
-        restart_release=cleared_release,
-        gk_backpass_team=jnp.int32(NO_TEAM),
-    )
-    state = jax.tree_util.tree_map(
-        lambda changed, current: jnp.where(expired, changed, current),
-        corner_state,
-        counted_state,
-    )
-    event_corner = jnp.where(expired, corner_position, jnp.zeros_like(corner_position))
     reported_goalkeeper = (opened | expired) & valid_goalkeeper & valid_team
     reported_team = (opened | expired) & valid_team
     event = GoalkeeperHoldingEvent(

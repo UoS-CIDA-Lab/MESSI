@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import asdict, dataclass, is_dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, NamedTuple
@@ -17,7 +18,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from footballworld.core.action import IntentAction
 from footballworld.core.constants import (
+    NO_PLAYER,
     RESTART_COUNT,
     RK_GK_HOLD,
     RK_KICKOFF,
@@ -41,22 +44,12 @@ from footballworld.policies.manager import (
     ManagedManagerState,
     acknowledge_manager_boundary,
 )
-from footballworld.policies.opening_formation import (
-    RULE_OPENING_FORMATION_VERSION,
-    RuleBasedOpeningFormationPolicy,
-)
-from footballworld.policies.rule_based.manager import (
-    RULE_MANAGER_VERSION,
-    RuleBasedManager,
-)
+from footballworld.policies.rule_based.manager import RuleBasedManager
 from footballworld.policies.rule_based.policy import (
     RuleBasedPolicy,
     make_rule_based_policy,
 )
-from footballworld.policies.rule_based.provenance import (
-    RULE_POLICY_VERSION,
-    policy_config_fingerprint,
-)
+from footballworld.policies.rule_based.provenance import policy_config_fingerprint
 from footballworld.policies.rule_based.state import RulePolicyState
 from footballworld.rendering.defaults import DEFAULT_RENDER_FPS, RenderStyle
 from footballworld.rendering.integrity import (
@@ -87,7 +80,9 @@ from footballworld.rendering.transfer import HostFrame, prepare_host_frames
 from footballworld.rendering.window import ReplayWindow
 from footballworld.rollout import (
     _management_boundary,
+    _terminal_status,
     _transition_key,
+    _zero_step_output,
     initialize_policy_state,
     make_event_rollout,
 )
@@ -96,6 +91,72 @@ from footballworld.rules.restart_timing import forced_release_delay_substeps
 
 def _tree_at(tree: Any, index: int) -> Any:
     return jax.tree.map(lambda value: value[index], tree)
+
+
+def _device_get_prefix(tree: Any, count: int, *, side: Any | None = None) -> Any:
+    """Transfer a small power-of-two prefix instead of a padded device chunk."""
+
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise TypeError("count must be an integer")
+    if count <= 0:
+        raise ValueError("count must be positive")
+    bucket = 1 << (count - 1).bit_length()
+
+    def prefix(value):
+        if value.ndim == 0:
+            raise ValueError("prefix tree leaves must have a leading chunk axis")
+        if count > value.shape[0]:
+            raise ValueError("count exceeds the available chunk rows")
+        return value[: min(bucket, value.shape[0])]
+
+    prefixed = jax.tree.map(prefix, tree)
+    if side is None:
+        return jax.device_get(prefixed)
+    return jax.device_get((prefixed, side))
+
+
+def _host_managed_chunk_control(
+    result: Any,
+) -> tuple[int, np.ndarray, np.ndarray, bool, bool]:
+    """Transfer all per-chunk scheduler controls through one device barrier."""
+
+    progressed, valid, budget_exhausted, done, manager_required = jax.device_get(
+        (
+            result.steps_executed,
+            result.valid,
+            result.steps.event_budget_exhausted,
+            result.done,
+            result.manager_required,
+        )
+    )
+    return (
+        int(np.asarray(progressed)),
+        np.asarray(valid, dtype=bool),
+        np.asarray(budget_exhausted, dtype=bool),
+        bool(np.asarray(done)),
+        bool(np.asarray(manager_required)),
+    )
+
+
+def _host_event_chunk_control(
+    result: Any, start_control_tick: Any
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Transfer unmanaged per-chunk control flags through one device barrier."""
+
+    done, budget_exhausted, start_tick, final_tick = jax.device_get(
+        (
+            result.steps.done,
+            result.steps.event_budget_exhausted,
+            start_control_tick,
+            result.final_rollout.state.control_tick,
+        )
+    )
+    done = np.asarray(done, dtype=bool)
+    budget_exhausted = np.asarray(budget_exhausted, dtype=bool)
+    progressed = int(np.asarray(final_tick)) - int(np.asarray(start_tick))
+    if progressed < 0 or progressed > done.shape[0]:
+        raise RuntimeError("event rollout returned an invalid step count")
+    return done, budget_exhausted, progressed
 
 
 def _event_render_grid(env: FootballWorld, fps: float) -> tuple[float, int]:
@@ -197,6 +258,15 @@ def _render_sample_groups(
     return groups
 
 
+def _replace_last_render_sample(
+    render_groups: list[list[HostFrame]], frame: HostFrame
+) -> None:
+    """Replace a video endpoint only when its render group has a sample."""
+
+    if render_groups and render_groups[-1]:
+        render_groups[-1][-1] = frame
+
+
 def _append_event_budget_records(
     records: list[dict[str, Any]],
     steps: Any,
@@ -267,13 +337,8 @@ def _policy_identity(value: Any) -> dict[str, Any]:
     if value is None:
         return record
     if isinstance(value, RuleBasedPolicy):
-        record["version"] = RULE_POLICY_VERSION
         record["config_sha256"] = policy_config_fingerprint(value.config)
         return record
-    if isinstance(value, RuleBasedManager):
-        record["version"] = RULE_MANAGER_VERSION
-    if isinstance(value, RuleBasedOpeningFormationPolicy):
-        record["version"] = RULE_OPENING_FORMATION_VERSION
     config = getattr(value, "config", None)
     if is_dataclass(config) and not isinstance(config, type):
         record["config_sha256"] = stable_json_sha256(asdict(config))
@@ -561,6 +626,7 @@ class _ManagedEventChunkResult(NamedTuple):
     final_rollout: Rollout
     final_policy_state: RulePolicyState
     actions: Any
+    intended_receiver_ids: jax.Array
     steps: Any
     valid: jax.Array
     steps_executed: jax.Array
@@ -580,6 +646,17 @@ class _ExactManagerDecisionResult(NamedTuple):
     formation_requested: jax.Array
     formation_layout_index: jax.Array
     formations_applied: jax.Array
+    tactical_epoch: jax.Array
+    formation_changed_control_tick: jax.Array
+    set_piece_takers_applied: jax.Array
+    previous_restart_taker: jax.Array
+    previous_restart_taker_player_id: jax.Array
+    previous_restart_taker_slot_generation: jax.Array
+    restart_taker: jax.Array
+    restart_taker_player_id: jax.Array
+    restart_taker_slot_generation: jax.Array
+    restart_kind: jax.Array
+    restart_team: jax.Array
     roster_metadata_changed: jax.Array
 
 
@@ -590,6 +667,9 @@ class _ManagedBoundaryResult(NamedTuple):
     formation_requested: Any
     formation_layout_index: Any
     formations_applied: Any
+    tactical_epoch: Any
+    formation_changed_control_tick: Any
+    set_piece_taker_event: Any
     decided: bool
 
 
@@ -620,49 +700,95 @@ def _make_managed_event_chunk(
             fulltime_tick=fulltime_tick,
             minimum_team_players=minimum_team_players,
         )
+        initial_terminated, initial_truncated = _terminal_status(env, initial_rollout)
 
         def scan_step(carry, _):
             current, policy_state, executed, current_boundary, terminal = carry
-            observations = env.observe_all_si(current)
-            policy_step = policy.step(observations, roster, policy_state, match_key)
-            candidate = env._step_with_events_single(
+            terminated, truncated = _terminal_status(env, current)
+            terminal = terminal | terminated | truncated
+            event_step = getattr(policy, "step_with_event_receipt", policy.step)
+            neutral = IntentAction.neutral(current.state.players.player_id.shape[0])
+            step_shape = jax.eval_shape(
+                lambda value, match_setup, key: env._step_with_events_single(
+                    value,
+                    match_setup,
+                    neutral,
+                    key,
+                    _render_fps=render_fps,
+                    _entry_live=True,
+                ),
                 current,
                 setup,
-                policy_step.action,
                 _transition_key(match_key, current),
-                _render_fps=render_fps,
-            )
-            candidate_boundary = _management_boundary(
-                candidate.rollout,
-                boundary_state,
-                fulltime_tick=fulltime_tick,
-                minimum_team_players=minimum_team_players,
             )
             paused = current_boundary.required | terminal | (executed >= step_budget)
-            valid = ~paused
-            next_rollout = jax.tree.map(
-                lambda new, old: jnp.where(valid, new, old),
-                candidate.rollout,
-                current,
-            )
-            next_policy_state = jax.tree.map(
-                lambda new, old: jnp.where(valid, new, old),
-                policy_step.state,
-                policy_state,
-            )
-            next_boundary = jax.tree.map(
-                lambda new, old: jnp.where(valid, new, old),
-                candidate_boundary,
-                current_boundary,
-            )
-            next_terminal = jnp.where(valid, candidate.done, terminal)
-            return (
-                next_rollout,
-                next_policy_state,
-                executed + valid.astype(jnp.int32),
-                next_boundary,
-                next_terminal,
-            ), (policy_step.action, candidate, valid)
+
+            def pause(_):
+                step = _zero_step_output(
+                    step_shape,
+                    current,
+                    terminated,
+                    truncated,
+                    neutral,
+                    env.timebase.decimation,
+                )
+                return (
+                    current,
+                    policy_state,
+                    executed,
+                    current_boundary,
+                    terminal,
+                ), (
+                    neutral,
+                    jnp.full(
+                        current.state.players.player_id.shape,
+                        NO_PLAYER,
+                        dtype=jnp.int32,
+                    ),
+                    step,
+                    jnp.bool_(False),
+                )
+
+            def advance(_):
+                observations = env.observe_all_si(current)
+                policy_step = event_step(observations, roster, policy_state, match_key)
+                candidate = env._step_with_events_single(
+                    current,
+                    setup,
+                    policy_step.action,
+                    _transition_key(match_key, current),
+                    _render_fps=render_fps,
+                    _entry_live=True,
+                )
+                candidate_boundary = _management_boundary(
+                    candidate.rollout,
+                    boundary_state,
+                    fulltime_tick=fulltime_tick,
+                    minimum_team_players=minimum_team_players,
+                )
+                intended_receiver_ids = getattr(
+                    policy_step,
+                    "intended_receiver_ids",
+                    jnp.full(
+                        current.state.players.player_id.shape,
+                        NO_PLAYER,
+                        dtype=jnp.int32,
+                    ),
+                )
+                return (
+                    candidate.rollout,
+                    policy_step.state,
+                    executed + jnp.int32(1),
+                    candidate_boundary,
+                    candidate.done,
+                ), (
+                    policy_step.action,
+                    intended_receiver_ids,
+                    candidate,
+                    jnp.bool_(True),
+                )
+
+            return jax.lax.cond(paused, pause, advance, None)
 
         (
             (
@@ -672,7 +798,7 @@ def _make_managed_event_chunk(
                 final_boundary,
                 done,
             ),
-            (actions, steps, valid),
+            (actions, intended_receiver_ids, steps, valid),
         ) = jax.lax.scan(
             scan_step,
             (
@@ -680,7 +806,7 @@ def _make_managed_event_chunk(
                 initial_policy_state,
                 jnp.int32(0),
                 boundary,
-                jnp.bool_(False),
+                initial_terminated | initial_truncated,
             ),
             xs=None,
             length=num_steps,
@@ -689,6 +815,7 @@ def _make_managed_event_chunk(
             final_rollout=final_rollout,
             final_policy_state=final_policy_state,
             actions=actions,
+            intended_receiver_ids=intended_receiver_ids,
             steps=steps,
             valid=valid,
             steps_executed=steps_executed,
@@ -744,7 +871,14 @@ def _make_exact_manager_decision(
                 )
             if not env.policies.rule_based_set_piece_taker:
                 command = command._replace(set_piece_takers=empty.set_piece_takers)
+        previous_taker = rollout.state.restart.taker
+        player_count = rollout.state.players.player_id.shape[0]
+        previous_taker_valid = (previous_taker >= 0) & (previous_taker < player_count)
+        safe_previous_taker = jnp.clip(previous_taker, 0, player_count - 1)
         step = env.manager_command(rollout, squad, management, command)
+        next_taker = step.rollout.state.restart.taker
+        next_taker_valid = (next_taker >= 0) & (next_taker < player_count)
+        safe_next_taker = jnp.clip(next_taker, 0, player_count - 1)
         boundary = acknowledge_manager_boundary(
             boundary_state,
             rollout.state.restart.opened_control_tick,
@@ -761,6 +895,35 @@ def _make_exact_manager_decision(
             formation_requested=command.formations.requested,
             formation_layout_index=command.formations.layout_index,
             formations_applied=step.formations_applied,
+            tactical_epoch=step.management.tactical_epoch,
+            formation_changed_control_tick=(
+                step.management.formation_changed_control_tick
+            ),
+            set_piece_takers_applied=step.set_piece_takers_applied,
+            previous_restart_taker=previous_taker,
+            previous_restart_taker_player_id=jnp.where(
+                previous_taker_valid,
+                rollout.state.players.player_id[safe_previous_taker],
+                jnp.int32(NO_PLAYER),
+            ),
+            previous_restart_taker_slot_generation=jnp.where(
+                previous_taker_valid,
+                management.slot_generation[safe_previous_taker],
+                jnp.int32(-1),
+            ),
+            restart_taker=next_taker,
+            restart_taker_player_id=jnp.where(
+                next_taker_valid,
+                step.rollout.state.players.player_id[safe_next_taker],
+                jnp.int32(NO_PLAYER),
+            ),
+            restart_taker_slot_generation=jnp.where(
+                next_taker_valid,
+                step.management.slot_generation[safe_next_taker],
+                jnp.int32(-1),
+            ),
+            restart_kind=step.rollout.state.restart.kind,
+            restart_team=step.rollout.state.restart.team,
             roster_metadata_changed=step.roster_metadata_changed,
         )
 
@@ -797,6 +960,9 @@ def _handle_managed_boundary(
             formation_requested=None,
             formation_layout_index=None,
             formations_applied=None,
+            tactical_epoch=None,
+            formation_changed_control_tick=None,
+            set_piece_taker_event=None,
             decided=False,
         )
 
@@ -838,13 +1004,52 @@ def _handle_managed_boundary(
             state.player_policy_state,
         )
     )
-    formation_requested, formation_layout_index, formations_applied = jax.device_get(
+    (
+        formation_requested,
+        formation_layout_index,
+        formations_applied,
+        tactical_epoch,
+        formation_changed_control_tick,
+        set_piece_takers_applied,
+        previous_restart_taker,
+        previous_restart_taker_player_id,
+        previous_restart_taker_slot_generation,
+        restart_taker,
+        restart_taker_player_id,
+        restart_taker_slot_generation,
+        restart_kind,
+        restart_team,
+    ) = jax.device_get(
         (
             decision.formation_requested,
             decision.formation_layout_index,
             decision.formations_applied,
+            decision.tactical_epoch,
+            decision.formation_changed_control_tick,
+            decision.set_piece_takers_applied,
+            decision.previous_restart_taker,
+            decision.previous_restart_taker_player_id,
+            decision.previous_restart_taker_slot_generation,
+            decision.restart_taker,
+            decision.restart_taker_player_id,
+            decision.restart_taker_slot_generation,
+            decision.restart_kind,
+            decision.restart_team,
         )
     )
+    set_piece_taker_event = None
+    if bool(np.any(set_piece_takers_applied)):
+        set_piece_taker_event = {
+            "type": "set_piece_taker_changed",
+            "team": int(restart_team),
+            "restart_kind": int(restart_kind),
+            "previous_slot": int(previous_restart_taker),
+            "previous_player_id": int(previous_restart_taker_player_id),
+            "previous_slot_generation": int(previous_restart_taker_slot_generation),
+            "slot": int(restart_taker),
+            "player_id": int(restart_taker_player_id),
+            "slot_generation": int(restart_taker_slot_generation),
+        }
     return _ManagedBoundaryResult(
         state=state,
         substitution_events=decision.substitution_events,
@@ -852,6 +1057,11 @@ def _handle_managed_boundary(
         formation_requested=np.asarray(formation_requested, dtype=bool),
         formation_layout_index=np.asarray(formation_layout_index, dtype=np.int32),
         formations_applied=np.asarray(formations_applied, dtype=bool),
+        tactical_epoch=np.asarray(tactical_epoch, dtype=np.int32),
+        formation_changed_control_tick=np.asarray(
+            formation_changed_control_tick, dtype=np.int32
+        ),
+        set_piece_taker_event=set_piece_taker_event,
         decided=True,
     )
 
@@ -979,6 +1189,91 @@ class _RenderScheduler:
             self.pool = None
 
 
+_ROLE_NAMES = (
+    "goalkeeper",
+    "centre_back",
+    "full_back",
+    "centre_midfielder",
+    "wide_midfielder",
+    "centre_forward",
+    "wide_forward",
+)
+
+
+def _build_match_manifest(rollout: Rollout, squad: SquadSetup | None) -> dict[str, Any]:
+    """Build one host-only registered-roster and formation receipt."""
+
+    state = jax.device_get(rollout.state)
+    players = state.players
+    teams: list[dict[str, Any]] = []
+    for team in range(2):
+        starters = []
+        for slot in np.flatnonzero(np.asarray(players.team_id) == team):
+            starters.append(
+                {
+                    "registration": "on_field",
+                    "slot": int(slot),
+                    "player_id": int(players.player_id[slot]),
+                    "goalkeeper": bool(players.is_goalkeeper[slot]),
+                    "max_speed_mps": float(players.max_speed[slot]),
+                    "height_m": float(players.height[slot]),
+                    "max_reach_height_m": float(players.reach_height[slot]),
+                    "ball_control": float(players.ball_control[slot]),
+                    "endurance_factor": float(players.endurance_factor[slot]),
+                    "preferred_roles": [],
+                    "preferred_roles_known": False,
+                }
+            )
+        bench = []
+        if squad is not None:
+            packed = jax.device_get(squad)
+            for bench_index in np.flatnonzero(np.asarray(packed.valid[team])):
+                role_mask = np.asarray(packed.preferred_role_mask[team, bench_index])
+                preferred = np.flatnonzero(role_mask).astype(int).tolist()
+                bench.append(
+                    {
+                        "registration": "bench",
+                        "bench_index": int(bench_index),
+                        "player_id": int(packed.player_id[team, bench_index]),
+                        "goalkeeper": bool(packed.is_goalkeeper[team, bench_index]),
+                        "max_speed_mps": float(packed.max_speed[team, bench_index]),
+                        "height_m": float(packed.height[team, bench_index]),
+                        "max_reach_height_m": float(
+                            packed.reach_height[team, bench_index]
+                        ),
+                        "ball_control": float(packed.ball_control[team, bench_index]),
+                        "endurance_factor": float(
+                            packed.endurance_factor[team, bench_index]
+                        ),
+                        "preferred_roles": preferred,
+                        "preferred_roles_known": bool(preferred),
+                    }
+                )
+        teams.append({"team": team, "players": starters + bench})
+    formations = []
+    if squad is not None:
+        packed = jax.device_get(squad)
+        for index in range(int(packed.formation_layouts.shape[0])):
+            formations.append(
+                {
+                    "layout_index": index,
+                    "anchor_m": np.asarray(packed.formation_layouts[index]).tolist(),
+                    "role": np.asarray(packed.formation_roles[index]).tolist(),
+                    "probability_by_team": np.asarray(
+                        packed.formation_probabilities[:, index]
+                    ).tolist(),
+                }
+            )
+    return {
+        "schema": "footballworld.match-manifest/1",
+        "role_taxonomy": [
+            {"code": code, "name": name} for code, name in enumerate(_ROLE_NAMES)
+        ],
+        "teams": teams,
+        "formation_catalog": formations,
+    }
+
+
 class _WindowSink:
     def __init__(
         self,
@@ -991,10 +1286,12 @@ class _WindowSink:
         every: int,
         chunk_frames: int,
         scheduler: _RenderScheduler,
+        render_video: bool,
         control_fps: float,
         match_index: int,
         env: FootballWorld,
         metadata: Any,
+        match_manifest: Any,
         max_outfield_aerial_recovery_substeps: int,
         max_goalkeeper_aerial_recovery_substeps: int,
         ball_radius_m: float,
@@ -1005,7 +1302,8 @@ class _WindowSink:
         self.start, self.end = window.step_bounds(control_fps)
         output_dir = root / window.name if multiple else root
         output_dir.mkdir(parents=True, exist_ok=True)
-        self.video = output_dir / "match.mp4"
+        self.render_video = render_video
+        self.video = output_dir / ("match.mp4" if render_video else "report-only.json")
         self.every = every
         self.chunk_frames = chunk_frames
         self.scheduler = scheduler
@@ -1019,8 +1317,10 @@ class _WindowSink:
         )
         self.ball_radius_m = ball_radius_m
         self.event_chunk_steps = event_chunk_steps
-        self.adjudication_lookback_steps = math.ceil(
-            scheduler.requested_style.adjudication_seconds * control_fps
+        self.adjudication_lookback_steps = (
+            math.ceil(scheduler.requested_style.adjudication_seconds * control_fps)
+            if render_video
+            else 0
         )
         self.visual: list[Any] = []
         self.segments: list[Path] = []
@@ -1035,6 +1335,7 @@ class _WindowSink:
             fulltime_seconds=fulltime_tick / control_fps,
             halftime_enabled=env.match.halftime_enabled,
             metadata=metadata,
+            match_manifest=match_manifest,
             include_all_action_controls=include_all_action_controls,
         )
         self.segment_root = temp / f"video-{index:03d}"
@@ -1096,6 +1397,10 @@ class _WindowSink:
         self.spool.append(selected)
 
     def _flush_visual(self) -> None:
+        if not self.render_video:
+            if self.visual:
+                raise RuntimeError("report-only capture accumulated visual frames")
+            return
         if not self.visual:
             return
         segment = self.segment_root / f"{len(self.segments):06d}.mp4"
@@ -1108,8 +1413,45 @@ class _WindowSink:
     def finish(
         self, *, elapsed: float, workers: int, completion: dict[str, Any]
     ) -> RenderResult:
-        if not self.segments or self.spool.frame_count == 0:
+        if self.spool.frame_count == 0:
             raise ValueError(f"replay window {self.window.name!r} contains no frames")
+        if not self.render_video:
+            marker = {
+                "schema": "footballworld.report-only-marker/1",
+                "video_generated": False,
+                "source_frame_count": self.spool.frame_count,
+            }
+            self.video.write_text(
+                json.dumps(marker, sort_keys=True, allow_nan=False) + "\n",
+                encoding="utf-8",
+            )
+            event, tracking, metadata = self.spool.finalize(
+                video_sample_frame_count=self.spool.frame_count,
+                video_sample_fps=self.control_fps,
+                video_frame_count=self.spool.frame_count,
+                video_fps=self.control_fps,
+                sample_every=1,
+                render_metadata={
+                    "mode": "report-only",
+                    "video_generated": False,
+                    "video_fps": self.control_fps,
+                },
+                video_verification="not_requested",
+                completion=completion,
+            )
+            return RenderResult(
+                video=self.video,
+                event=event,
+                tracking=tracking,
+                metadata=metadata,
+                frames=self.spool.frame_count,
+                seconds=elapsed,
+                throughput_fps=self.spool.frame_count / max(elapsed, 1.0e-9),
+                workers=0,
+                video_generated=False,
+            )
+        if not self.segments:
+            raise ValueError(f"replay window {self.window.name!r} has no video")
         expected_encoded = self.spool.frame_count * self.scheduler.samples_per_control
         if self.encoded_frames != expected_encoded:
             raise RuntimeError(
@@ -1167,6 +1509,7 @@ class _WindowSink:
             video_fps=render_fps,
             sample_every=self.every,
             render_metadata=render_metadata,
+            video_verification="successful_encoder_close_and_segment_count",
             completion=completion,
         )
         return RenderResult(
@@ -1179,6 +1522,58 @@ class _WindowSink:
             throughput_fps=self.encoded_frames / max(elapsed, 1e-9),
             workers=effective_workers,
         )
+
+
+@lru_cache(maxsize=16)
+def _compiled_event_chunk(
+    env: FootballWorld,
+    policy: RuleBasedPolicy,
+    event_chunk_steps: int,
+    render_fps: float,
+):
+    """Reuse one in-process executable cache for identical scalar captures."""
+
+    return jax.jit(
+        make_event_rollout(
+            env,
+            policy,
+            event_chunk_steps,
+            render_fps=render_fps,
+        )
+    )
+
+
+def make_event_capture_runner(
+    env: FootballWorld,
+    policy: RuleBasedPolicy,
+    event_chunk_steps: int,
+    render_fps: float = DEFAULT_RENDER_FPS,
+):
+    """Return the shared scalar event-capture executable for this configuration."""
+
+    return _compiled_event_chunk(env, policy, event_chunk_steps, float(render_fps))
+
+
+@lru_cache(maxsize=16)
+def _compiled_managed_event_chunk(
+    runner: ManagedRunner,
+    event_chunk_steps: int,
+    render_fps: float,
+):
+    """Reuse event and manager executables across repeated managed captures."""
+
+    return jax.jit(_make_managed_event_chunk(runner, event_chunk_steps, render_fps))
+
+
+@lru_cache(maxsize=16)
+def _compiled_exact_manager_decision(
+    runner: ManagedRunner,
+    respect_environment_switches: bool,
+):
+    return _make_exact_manager_decision(
+        runner,
+        respect_environment_switches=respect_environment_switches,
+    )
 
 
 def render_event_match(
@@ -1285,17 +1680,11 @@ def render_event_match(
     )
     destination = Path(output_dir)
     provenance = _automatic_provenance(env, match_key, player_policy=policy)
+    match_manifest = _build_match_manifest(initial_rollout, None)
     watchdog = _RestartWatchdog.from_environment(env)
     start_control_tick = _host_control_tick(initial_rollout)
     started = time.perf_counter()
-    kernel = jax.jit(
-        make_event_rollout(
-            env,
-            policy,
-            event_chunk_steps,
-            render_fps=render_fps,
-        )
-    )
+    kernel = make_event_capture_runner(env, policy, event_chunk_steps, render_fps)
     current = initial_rollout
     current_policy_state = policy_state
     executed = 0
@@ -1353,6 +1742,7 @@ def render_event_match(
                     "provenance": provenance,
                     "user": metadata,
                 },
+                match_manifest=match_manifest,
                 max_outfield_aerial_recovery_substeps=(
                     max_outfield_aerial_recovery_substeps
                 ),
@@ -1367,29 +1757,36 @@ def render_event_match(
         ]
         try:
             while not done:
+                if maximum_steps is not None:
+                    remaining = maximum_steps - executed
+                    if remaining <= 0:
+                        break
+                    budget = min(event_chunk_steps, remaining)
+                else:
+                    budget = event_chunk_steps
                 result = kernel(
                     current,
                     setup,
                     roster,
                     current_policy_state,
                     match_key,
+                    jnp.int32(budget),
                 )
-                done_flags = np.asarray(jax.device_get(result.steps.done), dtype=bool)
-                valid = event_chunk_steps
-                terminal = np.flatnonzero(done_flags)
+                (
+                    done_flags,
+                    budget_flags,
+                    valid,
+                ) = _host_event_chunk_control(result, current.state.control_tick)
+                terminal = np.flatnonzero(done_flags[:valid])
                 terminal_valid = int(terminal[0]) + 1 if terminal.size else None
-                if maximum_steps is not None:
-                    remaining = maximum_steps - executed
-                    if remaining <= 0:
-                        break
-                    valid = min(valid, remaining)
                 if terminal_valid is not None and terminal_valid <= valid:
                     valid = terminal_valid
                     done = True
-                budget_flags = np.asarray(
-                    jax.device_get(result.steps.event_budget_exhausted[:valid]),
-                    dtype=bool,
-                )
+                elif valid == 0:
+                    done = bool(done_flags[0]) if done_flags.size else False
+                    if not done:
+                        raise RuntimeError("event rollout made no progress")
+                budget_flags = budget_flags[:valid]
                 event_budget_exhausted_count += int(np.count_nonzero(budget_flags))
                 _append_event_budget_records(
                     event_budget_exhausted_records,
@@ -1403,7 +1800,7 @@ def render_event_match(
                     for sink in sinks
                     if sink.visually_intersects(executed, chunk_end)
                 ]
-                if interested:
+                if interested and valid > 0:
                     valid_steps = jax.tree.map(
                         lambda value, count=valid: value[:count], result.steps
                     )
@@ -1422,7 +1819,11 @@ def render_event_match(
                     )
                     for sink in interested:
                         sink.append(host, executed, render_groups=render_groups)
-                final_rollout = _tree_at(result.steps.rollout, valid - 1)
+                final_rollout = (
+                    _tree_at(result.steps.rollout, valid - 1)
+                    if valid > 0
+                    else result.final_rollout
+                )
                 executed = chunk_end
                 watchdog.check(final_rollout, done=done)
                 if done or (maximum_steps is not None and executed >= maximum_steps):
@@ -1533,6 +1934,7 @@ def render_managed_event_match(
     metadata: Any = None,
     publication_guard: Callable[[], Mapping[str, Any] | None] | None = None,
     verify_video: bool = False,
+    render_video: bool = True,
     exact_actions: bool = False,
     match_index: int = 0,
 ) -> ManagedEventMatchRenderResult:
@@ -1573,6 +1975,10 @@ def render_managed_event_match(
         raise TypeError("publication_guard must be callable or None")
     if type(verify_video) is not bool:
         raise TypeError("verify_video must be bool")
+    if type(render_video) is not bool:
+        raise TypeError("render_video must be bool")
+    if not render_video and verify_video:
+        raise ValueError("report-only capture cannot verify a video")
     if type(exact_actions) is not bool:
         raise TypeError("exact_actions must be bool")
     if style is not None and type(style) is not RenderStyle:
@@ -1623,15 +2029,14 @@ def render_managed_event_match(
         manager_policy=runner.manager_policy,
         opening_policy=runner.opening_policy,
     )
+    match_manifest = _build_match_manifest(current.rollout, squad)
     watchdog = _RestartWatchdog.from_environment(env)
     start_control_tick = _host_control_tick(current.rollout)
     started = time.perf_counter()
-    chunk_kernel = jax.jit(
-        _make_managed_event_chunk(runner, event_chunk_steps, render_fps)
-    )
-    manager_kernel = _make_exact_manager_decision(
+    chunk_kernel = _compiled_managed_event_chunk(runner, event_chunk_steps, render_fps)
+    manager_kernel = _compiled_exact_manager_decision(
         runner,
-        respect_environment_switches=respect_environment_manager_switches,
+        respect_environment_manager_switches,
     )
     manager_event_width = int(getattr(runner.manager_policy, "max_simultaneous", 0))
     empty_substitution_events = jax.device_get(
@@ -1684,6 +2089,7 @@ def render_managed_event_match(
                 every=every,
                 chunk_frames=chunk_frames,
                 scheduler=scheduler,
+                render_video=render_video,
                 control_fps=control_fps,
                 match_index=match_index,
                 env=env,
@@ -1697,6 +2103,7 @@ def render_managed_event_match(
                     "provenance": provenance,
                     "user": metadata,
                 },
+                match_manifest=match_manifest,
                 max_outfield_aerial_recovery_substeps=(
                     max_outfield_aerial_recovery_substeps
                 ),
@@ -1728,11 +2135,13 @@ def render_managed_event_match(
                     jnp.int32(budget),
                     match_key,
                 )
-                progressed, valid_mask = jax.device_get(
-                    (result.steps_executed, result.valid)
-                )
-                progressed = int(np.asarray(progressed))
-                valid_mask = np.asarray(valid_mask, dtype=bool)
+                (
+                    progressed,
+                    valid_mask,
+                    budget_flags,
+                    done,
+                    manager_required,
+                ) = _host_managed_chunk_control(result)
                 if progressed != int(np.count_nonzero(valid_mask)):
                     raise RuntimeError("managed event chunk valid mask is inconsistent")
                 if np.any(valid_mask[progressed:]) or not np.all(
@@ -1741,10 +2150,7 @@ def render_managed_event_match(
                     raise RuntimeError(
                         "managed event chunk valid rows are not a prefix"
                     )
-                budget_flags = np.asarray(
-                    jax.device_get(result.steps.event_budget_exhausted[:progressed]),
-                    dtype=bool,
-                )
+                budget_flags = budget_flags[:progressed]
                 event_budget_exhausted_count += int(np.count_nonzero(budget_flags))
                 _append_event_budget_records(
                     event_budget_exhausted_records,
@@ -1762,8 +2168,21 @@ def render_managed_event_match(
                 host: list[HostFrame] = []
                 render_groups: list[list[HostFrame]] = []
                 if interested and progressed:
-                    full_steps, full_actions, host_generation = jax.device_get(
-                        (result.steps, result.actions, chunk_generation)
+                    (
+                        (
+                            full_steps,
+                            full_actions,
+                            full_receivers,
+                        ),
+                        host_generation,
+                    ) = _device_get_prefix(
+                        (
+                            result.steps,
+                            result.actions,
+                            result.intended_receiver_ids,
+                        ),
+                        progressed,
+                        side=chunk_generation,
                     )
                     valid_steps = jax.tree.map(
                         lambda value, count=progressed: value[:count],
@@ -1788,25 +2207,26 @@ def render_managed_event_match(
                     host = prepare_host_frames(
                         valid_steps,
                         submitted_actions=valid_actions,
+                        intended_receiver_ids=full_receivers[:progressed],
                         slot_generations=generations,
                         substitution_events=substitution_events,
                         acting_goalkeeper_events=acting_goalkeeper_events,
                     )
-                    render_groups = _render_sample_groups(
-                        valid_steps,
-                        host,
-                        control_fps=control_fps,
-                        render_fps=render_fps,
-                        slot_generations=generations,
+                    render_groups = (
+                        _render_sample_groups(
+                            valid_steps,
+                            host,
+                            control_fps=control_fps,
+                            render_fps=render_fps,
+                            slot_generations=generations,
+                        )
+                        if render_video
+                        else [[] for _ in host]
                     )
 
                 current = current._replace(
                     rollout=result.final_rollout,
                     player_policy_state=result.final_policy_state,
-                )
-                done = bool(np.asarray(jax.device_get(result.done)))
-                manager_required = bool(
-                    np.asarray(jax.device_get(result.manager_required))
                 )
                 if manager_required and not done:
                     boundary = _handle_managed_boundary(
@@ -1842,10 +2262,18 @@ def render_managed_event_match(
                                         boundary.formation_layout_index
                                     ),
                                     formations_applied=boundary.formations_applied,
+                                    tactical_epoch=boundary.tactical_epoch,
+                                    formation_changed_control_tick=(
+                                        boundary.formation_changed_control_tick
+                                    ),
+                                    set_piece_taker_event=(
+                                        boundary.set_piece_taker_event
+                                    ),
                                 )
                     if host and (
                         boundary.substitution_events is not None
                         or boundary.acting_goalkeeper_events is not None
+                        or boundary.set_piece_taker_event is not None
                     ):
                         post = prepare_host_frames(
                             current.rollout,
@@ -1860,6 +2288,7 @@ def render_managed_event_match(
                             post,
                             submitted_action=previous.submitted_action,
                             action_trace=previous.action_trace,
+                            intended_receiver_ids=previous.intended_receiver_ids,
                             frame_events=previous.frame_events,
                             observation=previous.observation,
                             telemetry=previous.telemetry,
@@ -1879,10 +2308,17 @@ def render_managed_event_match(
                                     requested=boundary.formation_requested,
                                     layout_index=boundary.formation_layout_index,
                                     applied=boundary.formations_applied,
+                                    tactical_epoch=boundary.tactical_epoch,
+                                    formation_changed_control_tick=(
+                                        boundary.formation_changed_control_tick
+                                    ),
+                                    set_piece_taker_event=(
+                                        boundary.set_piece_taker_event
+                                    ),
                                 )
 
                     if render_groups:
-                        render_groups[-1][-1] = host[-1]
+                        _replace_last_render_sample(render_groups, host[-1])
 
                 if host:
                     for sink in interested:

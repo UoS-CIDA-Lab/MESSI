@@ -20,7 +20,6 @@ from footballworld.policies.manager import (
 )
 from footballworld.policies.opening_formation import (
     OPENING_FORMATION_OBSERVATION_SCHEMA_VERSION,
-    RULE_OPENING_FORMATION_VERSION,
     NormalizedOpeningFormationObservation,
     OpeningFormationPolicy,
     RuleBasedOpeningFormationPolicy,
@@ -38,9 +37,6 @@ from footballworld.policies.player import (
     validate_player_policy_step,
 )
 from footballworld.policies.rule_based import (
-    RULE_MANAGER_VERSION,
-    RULE_OPENING_MANAGER_VERSION,
-    RULE_POLICY_VERSION,
     AttackPattern,
     AuthoredOpeningManagerPolicy,
     AuthoredOpeningSelection,
@@ -70,10 +66,6 @@ from footballworld.policies.rule_based import (
 __all__ = [
     "NO_POLICY_PARAMETERS",
     "OPENING_FORMATION_OBSERVATION_SCHEMA_VERSION",
-    "RULE_MANAGER_VERSION",
-    "RULE_OPENING_FORMATION_VERSION",
-    "RULE_OPENING_MANAGER_VERSION",
-    "RULE_POLICY_VERSION",
     "AttackPattern",
     "AuthoredOpeningManagerPolicy",
     "AuthoredOpeningSelection",

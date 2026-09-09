@@ -142,16 +142,15 @@ class IntentAction(NamedTuple):
     def decode(self) -> DecodedIntentAction:
         """Decode continuous controls without weakening categorical intent."""
 
-        valid = (self.intent >= INTENT_MOVE) & (self.intent < ACTION_INTENT_COUNT)
-        intent = jnp.where(valid, self.intent, INTENT_MOVE).astype(jnp.int32)
+        sanitized = self.from_array(self.intent, self.as_continuous_array())
         return DecodedIntentAction(
-            intent=intent,
-            contact=intent != INTENT_MOVE,
-            move=linf_radial_decode(self.move),
-            force_to_ball=linf_radial_decode(self.force_to_ball),
-            launch=signed_to_unit(self.launch),
-            spin=self.spin,
-            gaze_center=self.gaze_center,
+            intent=sanitized.intent,
+            contact=sanitized.intent != INTENT_MOVE,
+            move=linf_radial_decode(sanitized.move),
+            force_to_ball=linf_radial_decode(sanitized.force_to_ball),
+            launch=signed_to_unit(sanitized.launch),
+            spin=sanitized.spin,
+            gaze_center=sanitized.gaze_center,
         )
 
     @classmethod

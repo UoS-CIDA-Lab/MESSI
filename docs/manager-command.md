@@ -73,7 +73,7 @@ Player ids are random-stream identities, never ability inputs.
 The long-run render fixture instantiates its
 `RuleBasedOpeningManagerPolicy` explicitly rather than relying on an implicit
 environment default. Its metadata records the fully qualified policy class,
-policy version, canonical-JSON configuration SHA-256, and the identity-level
+canonical-JSON configuration SHA-256, source revision, and the identity-level
 decision for every valid candidate. The receipt includes the registered squad,
 starting XI in both candidate and formation-slot order, and registered bench.
 A replay therefore says which opening policy actually ran, not merely which
@@ -277,9 +277,14 @@ referee boundary may still assign an acting field goalkeeper when a team has
 none.
 
 `observe_player_tactics` exposes normalized model values and only the
-observer's own-team anchors and roles.
-Opponent entries are zero / `-1`, and no bench field enters the player view.
-The manager-only view includes one fixed `[L]` row for valid catalog entries,
+observer's own-team anchors and roles. It also exposes an exact tactical epoch
+and the control tick of the last accepted layout change. Opponent entries are
+zero / `-1`, and no bench field enters the player view.
+The manager-only view contains exact substitution resources, whether the current
+restart is the already-accounted substitution window, and both teams' public
+active-player centroid/spread in the observer's attacking frame. The opposing
+bench and registered formation command remain hidden. It also includes one fixed
+`[L]` row for valid catalog entries,
 content signatures, configured priors, mean attacking depth, maximum width,
 and defender fraction. Depth and width use the same immutable pitch scales as
 other positions and restore exactly to SI units; invalid manager rows mask all
@@ -302,14 +307,27 @@ A goalkeeper hold belongs to the player who physically caught the ball and
 cannot be reassigned by any manager command. Requests for the current taker,
 future or different restarts, and goalkeeper holds are idempotent no-ops.
 
-A different legal taker receives the previous taker's release pose while the
-previous taker receives the selected player's pose; both relocated players are
-stopped. The ordinary restart projector then audits law, field, and the
-configured oriented capsule clearance (default design prior
-`0.50 x 0.20 m`). Identity and poses commit together only
-when that complete layout is ready. A failed taker audit rolls back just this
+A different legal taker keeps the physical position and velocity held at the
+manager boundary. For throw-ins, corners, and ordinary free kicks, the new
+taker then walks from that causal position to the release pose at its effective
+speed; the restart countdown remains paused until arrival. The previous taker
+is not moved into the selected player's old position. The ordinary restart
+projector audits law, field, and the configured oriented capsule clearance
+(default design prior `0.50 x 0.20 m`) without moving the selected taker for a
+continuous-approach restart. Identity and the legal non-taker layout commit
+together only when that audit succeeds. A failed audit rolls back just this
 taker axis while retaining substitutions, formations, and acting-goalkeeper
 changes already authorized in the same manager transaction.
+
+This keeps SoccerWorld's sound restart behavior: an observed or newly selected
+ordinary-restart taker approaches the release pose through physical movement at
+the effective player speed. FootballWorld rejects its former atomic pose-swap
+shortcut. In the seed-29 full-match tracking audit, that shortcut
+changed the throw-in taker 28 times across 47 throw-ins and produced a one-frame
+new-taker displacement as large as `61.486 m`. Those values describe the
+rejected implementation's replay, not a football constant. The replacement
+uses the already-existing continuous restart approach and adds no per-frame
+branch or state to the lean transition.
 
 Independently of a manager proposal, each episode-step entry repairs a current
 restart taker that is out of range, inactive, on the wrong team, or ineligible
@@ -318,18 +336,23 @@ new taker must be positioned and observed before release rather than consuming
 the restart in that same frame.
 
 The manager proposes and the environment authorizes legality. A taker update
-also updates physical placement, preventing two actors from occupying one
-release pose. Restarts created midway through a physics frame expose their
-manager command boundary after the opening transition; the restart delay leaves
-time to submit the designation before release while keeping the hot path small
-and deterministic.
+changes the designated identity without relocating the newly designated
+player; the same transaction may still audit and repair the non-taker legal
+layout. The selected player's physical approach and separation remain
+environment transitions rather than manager teleports. Restarts created midway
+through a physics frame expose their manager command boundary after the opening
+transition; the restart delay leaves time to submit the designation before
+release while keeping the hot path small and deterministic.
 
 `make_rule_based_manager` supplies the default stochastic nomination. Its
 score shares the environment fallback's restart-role propensity, distance,
-readiness, and corner-target terms. The manager uses registered
-formation roles, while the deterministic fallback infers roles from current
-positions because management data deliberately stays outside the physics
-carry. A Gumbel-max draw avoids choosing the same highest-scoring player in
+readiness, and corner-target terms. The manager uses each active slot's current
+assigned `formation_role`; it does not treat a substitute's declared
+`preferred_roles` as set-piece skill. The deterministic fallback infers roles
+from current positions because management data deliberately stays outside the
+physics carry. This role affinity is a documented compatibility prior, not a
+measured set-piece rating. A Gumbel-max draw avoids choosing the same
+highest-scoring player in
 every match; the environment remains deterministic when no manager is used.
 
 The random contract is stateless. A dedicated taker stream is folded with the
@@ -351,9 +374,12 @@ keeps arbitrary pitch-scale catalogs responsive without adding a
 rollout-dependent normalizer or a new coefficient. Every response weight and
 the default five-minute hold are explicit design priors: DFL event feeds do not
 identify tactical formation changes.
-The initial kickoff has opening tick zero, so its management boundary remains
-immediate but the in-match hold prevents a second formation rewrite directly
-after the one-shot opening choice.
+The rule manager reconciles its private last-request tick with the environment's
+`formation_changed_control_tick` whenever `tactical_epoch > 0`. An externally
+accepted change or a restored checkpoint therefore restarts the hold interval
+even when the rule-manager memory is fresh or stale. Epoch zero deliberately
+leaves the initial policy boundary unchanged because no in-match layout change
+has yet been accepted.
 
 For an actual rollout, `make_managed_advance` detects that boundary without
 putting the manager in `env.step`; `make_management_decision` then performs
@@ -369,9 +395,14 @@ model. Provider data, derived aggregates, and the extraction pipeline are not
 distributed. Fatigue, booking, and role weights remain explicit design priors.
 
 Outgoing players are ranked by fatigue, booking, and role frequency. A bench
-player is matched to the outgoing player's normalized ability profile because
-FootballWorld does not invent an unobserved bench position label. Goalkeepers
-are excluded from routine replacement. If the active goalkeeper is missing,
+profile may declare zero or more stable `preferred_roles` (GK/CB/FB/CM/WM/CF/WF).
+Empty means unknown, not incompatible. When an otherwise eligible declared match
+exists, the built-in manager restricts the incoming candidates to players
+compatible with the outgoing slot's current assignment. If none exists, it falls
+back to the normalized ability-profile ranking instead of making the team unable
+to substitute. These categorical declarations are manager-only registered facts,
+not learned weights or player observations. Goalkeepers are excluded from routine
+replacement. If the active goalkeeper is missing,
 the first available registered goalkeeper takes priority and the nearest
 own-goal outfielder is nominated as the legal acting fallback.
 
@@ -381,7 +412,9 @@ couple their randomness. The manager remains outside `step`; no bench tensor,
 Gumbel draw, or substitution ranking enters the 10/80 Hz rollout graph.
 
 `RestartState.opened_control_tick` is also the authoritative substitution-window
-identity. Multiple commands during one restart can add simultaneous players
+identity. `current_substitution_window_open` states exactly whether that identity
+has already consumed the managed team's current window. Multiple commands during
+one restart can add simultaneous players
 without consuming another window, even if control time advanced while the
 ball remained dead. A later restart always has a different opening tick.
 
