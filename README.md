@@ -14,7 +14,7 @@
   <img src="docs/assets/rendering/latest-kickoff-10s.gif" alt="Ten-second MESSI kickoff replay" width="760">
 </a>
 
-<sub>MESSI 0.1.0 current reference policies: 80 Hz physics, 10 Hz decisions, and exact 20 fps rendering. Select the animation for the H.264 clip.</sub>
+<sub>MESSI 0.1.0 · seed 3 · <code>salida_lavolpiana</code> vs <code>gegenpress</code>: 80 Hz physics, 10 Hz decisions, and exact 20 fps rendering. Select the animation for the 1080p H.264 clip.</sub>
 
 </div>
 
