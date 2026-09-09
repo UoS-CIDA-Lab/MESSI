@@ -417,7 +417,7 @@ sound하지만, 세 번째 이후의 모든 깊이선을 forward로 clip하는 �
 defender와 forward로 두고 모든 interior line을 midfielder로 분류했다.
 포메이션 이름이나 슬롯 번호 특례는 추가하지 않았다.
 
-수정 후 seed 3의 transient diagnostic 경기에서는 5.5--6.8초 양 팀 모두
+수정 후 seed 3의 clean-source 최종 경기에서는 5.5--6.8초 양 팀 모두
 1.5 m 안에 다른 동료가 한 명도 없었다. team 0 최소 동료 거리는 같은
 구간에서 10.450 m에서 9.536 m 범위였다. PASS는 별도 검증했다. 0.1초
 1014→1002는 17.817 m/s의 실제 `PASS/RELEASE`였고 2.8초 최초 후속 접촉자가
@@ -437,3 +437,13 @@ executable text는 8,471,766자에서 8,065,795자로 줄었다. one-shot compil
 5.332초와 5.476초, warm median은 2.949 ms와 1.833 ms였다. 순차 단일-host
 측정이므로 속도 개선을 인과 주장하지 않으며, temporary 증가가 없고 graph
 증가가 작다는 배포 guard로만 사용한다.
+
+최종 공개 replay는 commit `db06af54a45198af0bed952e41fc4d858b78690e`
+상태에서 `output/player-cluster-pass-fix-seed3/match.mp4`로 생성했다. seed 3,
+100 control frame, 200 video frame, 1920x1080, 20 fps, 10초이며 전 프레임
+decode 검증을 통과했다. source authority와 git porcelain은 capture 전후 모두
+clean이었다. MP4 SHA-256은
+`1932b3a7b385f0b276f160623fcff3b12690001f53bdc249636f18defe9183df`다.
+같은 byte를 `docs/assets/rendering/latest-kickoff-10s.mp4`에 배치했고 README
+GIF는 그 MP4에서 960x540, 10 fps, 100 frame으로만 파생했다. GIF SHA-256은
+`17ca713ddfc4f86b98d09a2999c74e36b94c5ee9bb4ab615a2abebf0335e4d77`다.
