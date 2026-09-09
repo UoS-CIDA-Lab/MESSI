@@ -2485,11 +2485,26 @@ def make_rule_based_policy(
         counterpress_active = _policy_state.counterpress_age >= 0
         active_counterpress = counterpress_active & restart_free
         active_pressure = nearest_defender & restart_free
-        reliable_pass_flight_attack = (
+        reliable_team_lineage_attack = (
             possession_known
             & (observations.possession.team == NO_TEAM)
             & (_policy_state.possession_age >= 0)
             & (_policy_state.possession_team == self_team)
+        )
+        last_contact = observations.possession.last_contact
+        reliable_pass_flight_attack = (
+            reliable_team_lineage_attack
+            & last_contact.known
+            & (last_contact.intent == INTENT_PASS)
+            & (last_contact.outcome == OUTCOME_RELEASE)
+            & last_contact.kick_applied
+        )
+        reliable_control_lineage_attack = (
+            reliable_team_lineage_attack
+            & last_contact.known
+            & (last_contact.intent == INTENT_CONTROL)
+            & (last_contact.outcome == OUTCOME_TRAP)
+            & (~last_contact.kick_applied)
         )
         # A restart still has an attacking and defending team even though the
         # physical possession observation may be deliberately conservative.
@@ -2501,7 +2516,7 @@ def make_rule_based_policy(
             observations.restart.team != self_team
         )
         shape_own_possession = (
-            own_team_possession | reliable_pass_flight_attack | own_restart_phase
+            own_team_possession | reliable_team_lineage_attack | own_restart_phase
         )
         kickoff_path_active = (
             observations.ball.live
@@ -2755,6 +2770,9 @@ def make_rule_based_policy(
             air_drag_rate_per_s=drag_rate[goalkeeper_observer],
             goalkeeper_speed_mps=goalkeeper_speed,
             goalkeeper_reach_height_m=roster.reach_height[goalkeeper_self_index],
+            own_team_controlled=(own_team_possession | reliable_control_lineage_attack)[
+                goalkeeper_observer
+            ],
         )
         goalkeeper_direction = (
             goalkeeper_cover.target - goalkeeper_context.self_position

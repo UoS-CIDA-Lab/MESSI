@@ -472,6 +472,7 @@ def goalkeeper_cover_decision(
     air_drag_rate_per_s: jax.Array,
     goalkeeper_speed_mps: jax.Array,
     goalkeeper_reach_height_m: jax.Array,
+    own_team_controlled: jax.Array,
 ) -> GoalkeeperCoverDecision:
     """Return goalkeeper cover from public ball kinematics.
 
@@ -485,6 +486,12 @@ def goalkeeper_cover_decision(
     fail-closed. Very close threats use the same earliest reachable point
     instead of chasing the ball's current position.
 
+    ``own_team_controlled`` includes observed possession and a caller-proven
+    same-actor CONTROL/TRAP continuation, but not an own PASS in flight. A
+    goalkeeper therefore leaves a teammate settling touch alone while still
+    acting as the receiver of a genuine back-pass. A controlled ball that is
+    projected into the goal mouth remains an urgent threat.
+
     The helper does not decide hand legality or catch/parry; those remain
     environment rules and stochastic contest outcomes. ``goalkeeper_speed_mps``
     must be the public roster speed after the observed stamina limits. All
@@ -497,12 +504,15 @@ def goalkeeper_cover_decision(
     goalkeeper_speed = jnp.asarray(goalkeeper_speed_mps, dtype=jnp.float32)
     goalkeeper_reach_height = jnp.asarray(goalkeeper_reach_height_m, dtype=jnp.float32)
     air_drag_rate = jnp.asarray(air_drag_rate_per_s, dtype=jnp.float32)
+    own_team_controlled = jnp.asarray(own_team_controlled, dtype=jnp.bool_)
     if goalkeeper_speed.shape != (observers,):
         raise ValueError("goalkeeper_speed_mps must have shape (observers,)")
     if goalkeeper_reach_height.shape != (observers,):
         raise ValueError("goalkeeper_reach_height_m must have shape (observers,)")
     if air_drag_rate.shape != (observers,):
         raise ValueError("air_drag_rate_per_s must have shape (observers,)")
+    if own_team_controlled.shape != (observers,):
+        raise ValueError("own_team_controlled must have shape (observers,)")
     half_length = jnp.asarray(half_length_m, dtype=jnp.float32)
     half_goal_width = jnp.asarray(goal_width_m, dtype=jnp.float32) * 0.5
     penalty_length = jnp.asarray(penalty_area_length_m, dtype=jnp.float32)
@@ -652,24 +662,38 @@ def goalkeeper_cover_decision(
     first_reachable = jnp.argmax(reachable, axis=-1).astype(jnp.int32)
     intercept = future_ball[jnp.arange(observers, dtype=jnp.int32), first_reachable]
 
-    opponent_distance = _safe_norm(
+    intercept_distance = _safe_norm(
         context.player_position - intercept[:, None, :], axis=-1
     )
     has_visible_opponent = jnp.any(context.opponent, axis=-1)
     nearest_opponent_distance = jnp.min(
-        jnp.where(context.opponent, opponent_distance, jnp.inf), axis=-1
+        jnp.where(context.opponent, intercept_distance, jnp.inf), axis=-1
     )
+    goalkeeper_intercept_distance = _safe_norm(intercept - context.self_position)
     keeper_wins = has_visible_opponent & (
-        _safe_norm(intercept - context.self_position)
+        goalkeeper_intercept_distance
         <= nearest_opponent_distance - jnp.float32(_GK_SWEEP_OPPONENT_MARGIN_M)
+    )
+    # A visible lawful teammate who is already closer owns an ordinary loose
+    # recovery. Exclude the last actor just as the outfield receiver planner
+    # does, so a true back-pass can still nominate the goalkeeper rather than
+    # being blocked by the passer who may not immediately retouch it.
+    teammate_candidate = context.teammate & (~observations.players.last_actor)
+    has_visible_teammate = jnp.any(teammate_candidate, axis=-1)
+    nearest_teammate_distance = jnp.min(
+        jnp.where(teammate_candidate, intercept_distance, jnp.inf), axis=-1
+    )
+    goalkeeper_is_primary = (~has_visible_teammate) | (
+        goalkeeper_intercept_distance < nearest_teammate_distance
     )
 
     claimable_compatibility = ball_speed < _GK_CATCH_COMPATIBILITY_SPEED_MPS
-    toward_own_goal = -velocity[:, 0] > _GK_MIN_BALL_X_SPEED_MPS
-    own_possession = observations.possession.known & (
-        observations.possession.team == context.self_team
-    )
-    threat = toward_own_goal | (~own_possession)
+    # Retain the useful goalkeeper/outfielder role split inherited from
+    # SoccerWorld, but reject its broad toward-goal-or-not-physically-possessed
+    # rule. That rule makes the goalkeeper and a teammate converge on a
+    # settling CONTROL touch. Public causal lineage rejects that false threat
+    # without hiding a real goal-mouth trajectory or an unpossessed back-pass.
+    threat = heading | (~own_team_controlled)
     active = (
         context.self_active
         & context.self_goalkeeper
@@ -683,6 +707,7 @@ def goalkeeper_cover_decision(
         & (context.ball_position[:, 2] < _GK_SWEEP_BALL_HEIGHT_M)
         & claimable_compatibility
         & keeper_wins
+        & goalkeeper_is_primary
         & (ball[:, 0] < -jnp.float32(_GK_SWEEP_FIELD_FRACTION) * half_length)
         & threat
         & (distance < _GK_SWEEP_GOAL_DISTANCE_M)
@@ -691,7 +716,11 @@ def goalkeeper_cover_decision(
         active
         & has_reachable_intercept
         & (
-            (distance < _GK_RUSH_DISTANCE_M)
+            (
+                (distance < _GK_RUSH_DISTANCE_M)
+                & (~own_team_controlled)
+                & goalkeeper_is_primary
+            )
             | (
                 heading
                 & (distance < _GK_HEADING_RUSH_DISTANCE_M)

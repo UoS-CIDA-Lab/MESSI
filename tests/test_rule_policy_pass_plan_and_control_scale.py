@@ -27,6 +27,7 @@ from footballworld.core.contact import (
     INTENT_SOURCE_POLICY,
     LAW11_DELIBERATE_PLAY_RESET,
     MECHANISM_FOOT,
+    OUTCOME_PARRY,
     OUTCOME_TRAP,
 )
 from footballworld.policies import make_rule_based_policy
@@ -339,3 +340,131 @@ def test_misaligned_carrier_recovers_toward_ball_without_another_control(
     assert int(np.asarray(result.action.intent[actor])) == INTENT_MOVE
     assert not bool(np.asarray(decoded.contact[actor]))
     assert float(np.dot(move_direction, ball_direction)) > 0.999
+
+
+def test_settling_control_is_not_a_pass_runner_or_goalkeeper_sweep():
+    """One same-actor settling touch has one recovery runner, not a swarm."""
+
+    env = FootballWorld()
+    reset, actor, _ = _controlled_open_play(env)
+    controlled = reset.rollout.state
+    team = int(np.asarray(controlled.players.team_id[actor]))
+    goalkeeper = int(
+        np.flatnonzero(
+            (np.asarray(controlled.players.team_id) == team)
+            & np.asarray(controlled.players.is_goalkeeper, dtype=bool)
+        )[0]
+    )
+    positions = np.array(controlled.players.position, copy=True)
+    positions[goalkeeper] = (-40.0, -6.0)
+    positions[actor] = (-36.5, -8.0)
+    players = controlled.players._replace(
+        position=jnp.asarray(positions, dtype=jnp.float32),
+        velocity=jnp.zeros_like(controlled.players.velocity),
+    )
+    controlled = controlled._replace(
+        players=players,
+        ball=controlled.ball._replace(
+            position=jnp.asarray((-37.9, -8.2, env.ball.radius), dtype=jnp.float32),
+            velocity=jnp.asarray((-2.8, -0.6, 0.0), dtype=jnp.float32),
+        ),
+    )
+    controlled_reset = reset._replace(rollout=reset.rollout._replace(state=controlled))
+    roster = env.roster_metadata_si(controlled_reset.rollout)
+    policy = make_rule_based_policy(env)
+    policy_state = initialize_policy_state(
+        env, policy, controlled_reset.rollout, roster
+    )
+    player_team = np.asarray(roster.team_id)
+    team_observers = jnp.asarray(player_team == team, dtype=jnp.bool_)
+    stale_receiver = int(
+        np.flatnonzero(
+            (player_team == team)
+            & (~np.asarray(roster.is_goalkeeper, dtype=bool))
+            & (np.arange(player_team.size) != actor)
+        )[0]
+    )
+    policy_state = policy_state._replace(
+        planned_receiver=jnp.where(
+            team_observers, jnp.int32(stale_receiver), policy_state.planned_receiver
+        ),
+        planned_receiver_id=jnp.where(
+            team_observers,
+            roster.player_id[stale_receiver],
+            policy_state.planned_receiver_id,
+        ),
+        planned_arrival=jnp.where(
+            team_observers[:, None],
+            jnp.asarray((12.0, 8.0), dtype=jnp.float32),
+            policy_state.planned_arrival,
+        ),
+        planned_eta_ticks=jnp.where(
+            team_observers, jnp.int32(20), policy_state.planned_eta_ticks
+        ),
+    )
+
+    loose = controlled._replace(
+        possession=controlled.possession._replace(
+            team=jnp.int32(NO_TEAM),
+            player=jnp.int32(NO_PLAYER),
+            previous_team=jnp.int32(team),
+            control_ticks=jnp.int32(0),
+        )
+    )
+    loose_rollout = controlled_reset.rollout._replace(state=loose)
+    observations = env.observe_all_si(loose_rollout)
+    result = policy.step(
+        observations,
+        roster,
+        policy_state,
+        jax.random.key(6106),
+    )
+    decoded = result.action.decode()
+
+    # CONTROL lineage must not exclude the original actor as though it were a
+    # PASS release. The nearby actor, rather than a second teammate, recovers.
+    assert int(np.asarray(result.state.loose_chaser[actor])) == actor
+    np.testing.assert_array_equal(
+        np.asarray(result.state.planned_receiver)[player_team == team],
+        np.full(np.count_nonzero(player_team == team), NO_PLAYER, dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(result.state.planned_receiver_id)[player_team == team],
+        np.full(np.count_nonzero(player_team == team), NO_PLAYER, dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(result.state.planned_eta_ticks)[player_team == team],
+        np.zeros(np.count_nonzero(player_team == team), dtype=np.int32),
+    )
+    np.testing.assert_allclose(
+        np.asarray(result.state.planned_arrival)[player_team == team],
+        0.0,
+        rtol=0.0,
+        atol=0.0,
+    )
+    # The ball is moving toward the own half but outside the projected goal
+    # mouth. The keeper returns goalward instead of joining that recovery.
+    assert int(np.asarray(result.action.intent[goalkeeper])) == INTENT_MOVE
+    assert float(np.asarray(decoded.move.direction[goalkeeper, 0])) < 0.0
+
+    # After a keeper parry the control lineage is gone, but the visibly nearer
+    # outfielder still owns the recovery. The keeper must not rejoin the same
+    # point merely because the ball remains physically loose.
+    parry_contact = loose.possession.last_contact._replace(
+        actor=jnp.int32(goalkeeper),
+        outcome=jnp.int32(OUTCOME_PARRY),
+    )
+    parried = loose._replace(
+        possession=loose.possession._replace(last_contact=parry_contact)
+    )
+    parried_rollout = loose_rollout._replace(state=parried)
+    parried_result = policy.step(
+        env.observe_all_si(parried_rollout),
+        roster,
+        policy_state,
+        jax.random.key(6107),
+    )
+    parried_move = parried_result.action.decode().move.direction
+    assert int(np.asarray(parried_result.state.loose_chaser[actor])) == actor
+    assert int(np.asarray(parried_result.action.intent[goalkeeper])) == INTENT_MOVE
+    assert float(np.asarray(parried_move[goalkeeper, 0])) < 0.0

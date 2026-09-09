@@ -379,3 +379,61 @@ SHA-256은
 주장하지 않는다. warm 차이도 성능 개선률로 주장하지 않으며, 새 graph가
 고정 shape이고 이 fixture에서 뚜렷한 rollout 손실을 보이지 않았다는
 진단 경계로만 사용한다.
+
+## CONTROL 군집과 4-2-3-1 역할선 수정
+
+위 최종 영상의 5.5--6.8초를 lossless tracking으로 다시 검사하자, team 0의
+골키퍼 1011, 센터백 1002, 중앙 미드필더 1014가 같은 공에 수렴했다. 6.3초
+세 쌍의 거리는 0.948 m, 0.808 m, 1.000 m였고 6.7초 골키퍼--센터백 거리는
+0.233 m까지 줄었다. 80 Hz authoritative physics substep을 20 Hz로 직접
+표본화한 결과이므로 렌더 보간 착시가 아니다.
+
+원인은 두 개의 역할 중복이었다. `state.py`가 동일 선수의 `CONTROL/TRAP`
+뒤 짧은 loose 구간에도 팀 소유 lineage를 유지하는 것은 드리블 연속성을
+위해 타당하다. 그러나 `policy.py`는 그 팀 latch 전체를
+`reliable_pass_flight_attack`으로 취급해 마지막 CONTROL actor를 원 패서처럼
+제외했다. 실제 3.9초 공 거리는 1002가 1.275 m, 1014가 13.277 m였지만 먼
+1014가 수신 주자로 선택됐다. 이제 팀 소유 lineage는 공격 대형에만 넓게
+사용하고, 수신자 배정과 계획 보존은 공개 last-contact가
+`PASS/RELEASE/kick_applied`를 모두 증명할 때만 활성화한다. CONTROL은 기존
+stale PASS 계획도 즉시 지운다.
+
+SoccerWorld의 골키퍼는 상대와의 인터셉트 거리만 비교하고, 자기 골 방향
+속도가 있거나 물리 소유가 없으면 동료 회수자와 무관하게 스위프한다. 한
+명의 goalkeeper과 한 명의 outfield receiver를 분리한다는 구조는 유지하지만,
+이 상대 전용 경쟁과 단순 위협 gate는 동료 세 명 군집을 실제로 만들었으므로
+거부했다. FootballWorld는 이미 계산한 인터셉트 거리 배열에서 직전 actor를
+제외한 visible teammate 최소거리만 추가로 구한다. 더 가까운 합법 동료가
+있으면 일반 sweep와 비긴급 rush를 양보하고, 관측된 팀 소유 또는 동일
+CONTROL lineage 중에는 골문으로 실제 투영되는 `heading`만 위협으로 남긴다.
+진짜 back-pass flight, 상대 loose ball, goal-mouth emergency는 계속 처리한다.
+
+첫 수정 뒤 별도의 장기 2인 중첩도 확인됐다. 4-2-3-1의 -12 m 공격형
+미드필드선과 -5 m 스트라이커선이 모두 forward로 분류돼 같은 offside
+shoulder 목표를 받았고, 5.5--6.8초 두 선수 간 거리가 0.488--0.450 m로
+유지됐다. SoccerWorld에서 계승한 슬롯 비의존·앵커 상대 역할 분류는
+sound하지만, 세 번째 이후의 모든 깊이선을 forward로 clip하는 동작은
+4개 이상 outfield line에서 정확하지 않다. 최후방과 최전방 outfield line만
+defender와 forward로 두고 모든 interior line을 midfielder로 분류했다.
+포메이션 이름이나 슬롯 번호 특례는 추가하지 않았다.
+
+수정 후 seed 3의 transient diagnostic 경기에서는 5.5--6.8초 양 팀 모두
+1.5 m 안에 다른 동료가 한 명도 없었다. team 0 최소 동료 거리는 같은
+구간에서 10.450 m에서 9.536 m 범위였다. PASS는 별도 검증했다. 0.1초
+1014→1002는 17.817 m/s의 실제 `PASS/RELEASE`였고 2.8초 최초 후속 접촉자가
+지정 수신자 1002였다. 4.4초 1002→1010도 18.402 m/s의 실제 PASS였으나,
+6.9초 상대 2008이 공에서 0.31 m로 먼저 도달해 차단했다. 둘 모두 즉시
+공속과 현재 수신자 방향 오차는 float 출력 한계 안에서 0도였다. 성공 패스와
+정상 인터셉트를 구별하며, CONTROL을 패스 완료로 세지 않는다.
+
+관련 5개 테스트 파일의 27개 테스트는 80.86초에 통과했고, stale PASS
+계획을 주입한 CONTROL/패리 회귀도 별도로 통과했다. 최종 전체 suite는
+85개 테스트가 112.97초에 통과했다. Ruff와
+`git diff --check`도 통과했다. 수정 전 HEAD와 현재를 같은 CPU batch-1 정책 step,
+31회 warm 조건으로 측정했을 때 compiler temporary는 모두 120,608 byte로
+같았다. cost-analysis FLOP은 1,072,780에서 1,073,310으로 0.049% 늘었고,
+StableHLO text는 1,314,085자에서 1,316,027자로 0.148% 늘었지만 optimized
+executable text는 8,471,766자에서 8,065,795자로 줄었다. one-shot compile은
+5.332초와 5.476초, warm median은 2.949 ms와 1.833 ms였다. 순차 단일-host
+측정이므로 속도 개선을 인과 주장하지 않으며, temporary 증가가 없고 graph
+증가가 작다는 배포 guard로만 사용한다.
