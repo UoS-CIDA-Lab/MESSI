@@ -739,3 +739,24 @@ does not change match semantics. Eight concurrent CPU children in the v1 run
 used approximately 2.9 GB RSS each; extrapolating that observation gives about
 73 GB for 25 children, excluding filesystem cache and aggregation overhead.
 `--matrix-workers` remains available for hosts that cannot support that load.
+
+## 2026-09-11 tactical formation categorical calibration
+
+The opening order remains abilities, tactical-plan selection, formation
+selection, then starting-XI placement. Formation feasibility, role-weighted
+ability fit, preferred-position distance, caller probabilities, content-keyed
+catalog equivariance, and exact authored formations are retained. The former
+unit-scale Gumbel draw obscured the much smaller tactical/roster logit
+differences: over 100 seeds, all five tactical plans selected the same
+formation in 92% of team-0 rows and 88% of team-1 rows.
+
+`RuleOpeningManagerConfig.formation_choice_temperature` is now an explicit
+positive DESIGN_PRIOR with default 0.075. The deterministic logit is divided
+by this temperature before the existing Gumbel-max categorical. This changes
+only the start-only opening manager and adds no rollout-graph work. With equal
+abilities and equal formation priors over 100 seeds, the modal selections were
+4-2-3-1 for Salida Lavolpiana (57%/61%), 4-3-3 for Juego de Posicion
+(55%/58%), 4-2-3-1 for Gegenpress (50%/51%), 4-2-3-1 for Catenaccio
+(68%/73%), and 4-3-3 for Zona Mista (95%/91%), where each pair is team 0/team
+1. Alternatives remained reachable for every plan; these frequencies describe
+the current demo catalog and are not measured real-football rates.

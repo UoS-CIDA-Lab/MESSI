@@ -194,6 +194,53 @@ def test_opening_formation_softmax_runs_after_tactical_plan_is_fixed():
     np.testing.assert_array_equal(selected(TacticalPlan.SALIDA_LAVOLPIANA), [1, 1])
 
 
+def test_opening_formation_mode_is_tactical_and_slot_equivalent_across_seeds():
+    candidate_count = 20
+    fixed = tuple(False for _ in range(candidate_count))
+    inputs = build_opening_policy_inputs(
+        FootballWorld(),
+        render_full_match._team_candidates(0, candidate_count),
+        render_full_match._team_candidates(1, candidate_count),
+        render_full_match.FORMATION_CATALOG,
+        render_full_match.FORMATION_CATALOG,
+        max_registered_players=(candidate_count, candidate_count),
+        formation_probabilities=np.full(3, 1.0 / 3.0, dtype=np.float32),
+        sample_abilities=(fixed, fixed),
+        key=jax.random.key(0),
+    )
+    keys = jax.vmap(jax.random.key)(np.arange(64, dtype=np.uint32))
+    expected_mode = {
+        TacticalPlan.SALIDA_LAVOLPIANA: 1,
+        TacticalPlan.JUEGO_DE_POSICION: 0,
+        TacticalPlan.GEGENPRESS: 1,
+        TacticalPlan.CATENACCIO: 1,
+        TacticalPlan.ZONA_MISTA: 0,
+    }
+
+    for plan, expected in expected_mode.items():
+        policy = RuleBasedOpeningManagerPolicy(
+            RuleOpeningManagerConfig(team_tactical_plans=(plan, plan))
+        )
+        state = policy.initialize(inputs.observation)
+
+        def select(key, selected_policy=policy, selected_state=state):
+            return selected_policy.step(
+                inputs.observation, key, selected_state
+            ).decision.formation.layout_index
+
+        selected = np.asarray(jax.jit(jax.vmap(select))(keys))
+        for team in (0, 1):
+            counts = np.bincount(selected[:, team], minlength=3)
+            assert int(np.argmax(counts)) == expected
+            assert counts[expected] > max(np.delete(counts, expected))
+        assert np.unique(selected).size > 1
+
+
+def test_opening_formation_temperature_must_be_positive():
+    with pytest.raises(ValueError, match="formation_choice_temperature must be positive"):
+        RuleOpeningManagerConfig(formation_choice_temperature=0.0)
+
+
 def test_joint_lineup_formation_choice_is_catalog_permutation_equivariant():
     key = jax.random.key(73)
     env = FootballWorld()

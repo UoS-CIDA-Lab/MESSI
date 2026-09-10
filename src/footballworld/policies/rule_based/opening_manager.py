@@ -97,6 +97,10 @@ class RuleOpeningManagerConfig:
     # Softmax logit gain for the deterministic best-XI fit of each formation.
     # This is an explicit design prior, not a measured football constant.
     formation_fit_weight: float = 2.0
+    # Temperature for the final seeded formation categorical. This preserves
+    # stochastic alternatives while keeping tactical/roster fit visible
+    # against unit-scale Gumbel noise. It is a policy design prior.
+    formation_choice_temperature: float = 0.075
     lineup_noise_scale: float = 0.025
     registration_noise_scale: float = 0.02
 
@@ -118,6 +122,8 @@ class RuleOpeningManagerConfig:
             value = require_float32_representable(item.name, value)
             if value < 0.0:
                 raise ValueError(f"{item.name} must be non-negative")
+            if item.name == "formation_choice_temperature" and value == 0.0:
+                raise ValueError("formation_choice_temperature must be positive")
             object.__setattr__(self, item.name, value)
 
 
@@ -203,6 +209,7 @@ def _choose_formation(
     match_key: jax.Array,
     team: int,
     fit_weight: float,
+    temperature: float,
 ) -> tuple[jax.Array, jax.Array]:
     """Sample a layout only after every candidate has a feasible-XI receipt."""
 
@@ -215,7 +222,10 @@ def _choose_formation(
     logits = jnp.log(jnp.maximum(probability, 1e-12)) + jnp.float32(fit_weight) * (
         lineup_fit + tactical_fit
     )
-    selected = jnp.argmax(jnp.where(usable, logits + noise, -jnp.inf)).astype(jnp.int32)
+    scaled_logits = logits / jnp.float32(temperature)
+    selected = jnp.argmax(
+        jnp.where(usable, scaled_logits + noise, -jnp.inf)
+    ).astype(jnp.int32)
     return selected, jnp.any(usable)
 
 
@@ -395,6 +405,7 @@ class RuleBasedOpeningManagerPolicy:
                 match_key,
                 team,
                 self.config.formation_fit_weight,
+                self.config.formation_choice_temperature,
             )
             eligible = (
                 observations.formation.valid[team]
