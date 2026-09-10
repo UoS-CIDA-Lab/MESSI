@@ -483,3 +483,76 @@ def test_settling_control_is_not_a_pass_runner_or_goalkeeper_sweep():
     assert int(np.asarray(parried_result.state.loose_chaser[actor])) == actor
     assert int(np.asarray(parried_result.action.intent[goalkeeper])) == INTENT_MOVE
     assert float(np.asarray(parried_move[goalkeeper, 0])) < 0.0
+
+
+def test_loose_chaser_inside_control_reach_is_not_replaced_by_second_teammate():
+    """A slowing ground contest keeps one team claimant near the ball."""
+
+    env = FootballWorld()
+    reset, replacement, actor = _controlled_open_play(env)
+    state = reset.rollout.state
+    team = int(np.asarray(state.players.team_id[actor]))
+    team_rows = jnp.asarray(np.asarray(state.players.team_id) == team, dtype=jnp.bool_)
+    positions = np.array(state.players.position, copy=True)
+    velocities = np.zeros_like(np.asarray(state.players.velocity))
+    # Reproduce the relative geometry from seed 3 at 54:01.2. The retained
+    # claimant is 0.295 m from a slowing ground ball and moving away after the
+    # preceding contest; a second teammate is 0.228 m away on another side.
+    positions[actor] = (-5.321, -16.692)
+    velocities[actor] = (-1.568, 0.676)
+    positions[replacement] = (-5.596, -16.633)
+    velocities[replacement] = (0.124, -1.576)
+    max_speed = np.array(state.players.max_speed, copy=True)
+    endurance = np.array(state.players.endurance_factor, copy=True)
+    stamina_long = np.array(state.players.stamina_long, copy=True)
+    stamina_short = np.array(state.players.stamina_short, copy=True)
+    max_speed[actor], endurance[actor] = 8.9384, 0.8928
+    max_speed[replacement], endurance[replacement] = 7.7905, 1.0740
+    stamina_long[actor], stamina_short[actor] = 0.259, 0.638
+    stamina_long[replacement], stamina_short[replacement] = 0.924, 0.660
+    loose = state._replace(
+        players=state.players._replace(
+            position=jnp.asarray(positions, dtype=jnp.float32),
+            velocity=jnp.asarray(velocities, dtype=jnp.float32),
+            max_speed=jnp.asarray(max_speed, dtype=jnp.float32),
+            endurance_factor=jnp.asarray(endurance, dtype=jnp.float32),
+            stamina_long=jnp.asarray(stamina_long, dtype=jnp.float32),
+            stamina_short=jnp.asarray(stamina_short, dtype=jnp.float32),
+        ),
+        ball=state.ball._replace(
+            position=jnp.asarray((-5.4745, -16.4398, 0.1157), dtype=jnp.float32),
+            velocity=jnp.asarray((0.325, 0.285, 0.202), dtype=jnp.float32),
+        ),
+        possession=state.possession._replace(
+            team=jnp.int32(NO_TEAM),
+            player=jnp.int32(NO_PLAYER),
+            previous_team=jnp.int32(team),
+            control_ticks=jnp.int32(0),
+        ),
+    )
+    rollout = reset.rollout._replace(state=loose)
+    roster = env.roster_metadata_si(rollout)
+    policy = make_rule_based_policy(env)
+    policy_state = initialize_policy_state(env, policy, rollout, roster)._replace(
+        loose_chaser=jnp.where(team_rows, jnp.int32(actor), jnp.int32(NO_PLAYER))
+    )
+
+    result = policy.step(
+        env.observe_all_si(rollout),
+        roster,
+        policy_state,
+        jax.random.key(6108),
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(result.state.loose_chaser)[np.asarray(team_rows)],
+        np.full(np.count_nonzero(np.asarray(team_rows)), actor, dtype=np.int32),
+    )
+    assert int(np.asarray(result.action.intent[actor])) == INTENT_CONTROL
+    assert int(np.asarray(result.action.intent[replacement])) == INTENT_MOVE
+    decoded = result.action.decode()
+    replacement_ball_delta = np.asarray(
+        env.observe_all_si(rollout).ball.relative_state[replacement, :2]
+    )
+    replacement_move = np.asarray(decoded.move.direction[replacement])
+    assert float(np.dot(replacement_move, replacement_ball_delta)) < 0.0

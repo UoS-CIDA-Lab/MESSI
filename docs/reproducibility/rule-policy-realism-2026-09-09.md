@@ -496,3 +496,14 @@ event는 `0c697944598fb7d362c9178437bbaf08685a4f57d5b9b13c3a3b68c5ad8b2666`,
 tracking은 `92dd85c06061c26c9df2fb40740172579d41aa070f542e43a35726f363c24261`다.
 README MP4는 같은 byte이며 960x540, 10 fps GIF SHA-256은
 `df218478767101b5ceb357a9489ca5f1ef2a90c08b7009255205e6ebf7062dec`다.
+
+
+## 낮은 바운스 loose-ball claimant 유지 (2026-09-10)
+
+seed 3 전체 경기의 54:01.2--54:01.3에서 Team 0의 기존 claimant slot 10, 새로 선택된 slot 9, Team 1 압박자 slot 19가 공 0.35 m 안에 동시에 들어왔다. 세 역할은 달랐지만 같은 팀 claimant가 0.1초 사이 바뀐 것은 전술적 인계가 아니었다. 공은 반지름 위 5.7 mm, 수직속도 0.202 m/s인 미세 바운스여서 CONTROL 가능한 `ground_ball`이면서 supported-ground forecast 대상은 아니었다. 이 분기에서 과거 claimant hysteresis가 사라지고 raw nearest player가 slot 9를 불러들였다.
+
+SoccerWorld에서 유지한 sound contract는 관측된 공에 팀별 primary claimant 하나만 배정하는 것이다. 그러나 SoccerWorld에는 FootballWorld의 supported-ground forecast와 저고도 미세 바운스 분기가 없으므로 그 nearest fallback은 그대로 상속할 수 없다. FootballWorld는 기존 claimant가 공개 candidate이고 환경의 실제 `carry_radius_m + ball.radius` 접촉 범위 안에 있을 때 그 identity를 유지한다. 이 반경은 새 정책 계수나 측정 축구 상수가 아니라 환경의 기존 물리 도달 envelope다. 목표점은 계속 관측 공 중심이므로 trajectory attack과 swept-contact authority는 바뀌지 않는다.
+
+실제 상대 좌표, 속도, 체력과 5.7 mm 바운스를 고정한 회귀는 수정 전 Team 0 claimant가 10에서 9로 바뀌며 실패했고 수정 후 10을 유지했다. 또한 claimant가 이 물리 반경 안에 있을 때 같은 팀 비담당 선수가 반경 안으로 들어오면 공 반대 방향으로 공간을 비운다. 양 팀은 observer-local 후보 집합에서 각자 한 명을 선택하므로 상대 압박자는 그대로 경합한다. 관련 pass-plan/CONTROL 테스트 5개는 68.85초에 통과했고 별도 JIT 검증에서도 action과 recurrent state shape는 각각 `(22, 2)`, `(22,)`로 유지됐다.
+
+같은 seed 3 전체 경기 report-only 비교에서 수정 전 loose-ball 29,271프레임 중 공 0.6 m 안에 같은 팀 두 명과 상대 한 명이 동시에 있던 프레임은 5개였고, 54:01.1--54:01.4에는 4프레임 연속이었다. 수정 후 loose-ball 29,233프레임에서는 해당 3인 군집이 0개였다. 같은 팀 두 명이 공 0.6 m 안에 있던 프레임은 16개에서 11개로 줄었으며 수정 후에는 모두 연속되지 않는 단일 프레임이었다. 전체 57,424프레임은 regulation complete로 종료됐고 `event_budget_exhausted_count`는 0이었다. 이는 물리 이벤트 한도를 늘리지 않고 정책 간격 조절로 실패를 제거한 결과다. 같은 CPU batch-1 recurrent policy step을 31회 warm 조건으로 측정한 배포 guard는 StableHLO text 1,324,671 byte, compiler temporary 121,888 byte, cost-analysis FLOP 1,890,072, one-shot compile 5.399초, warm median 3.157 ms였다. 순차 단일-host 측정이므로 속도 개선률을 인과 주장하지 않는다. 최종 authoritative 렌더 receipt는 clean revision 검증 뒤 기록한다.

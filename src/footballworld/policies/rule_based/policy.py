@@ -2929,10 +2929,34 @@ def make_rule_based_policy(
         # release-time endpoint made the receiver wait there while an opponent
         # attacked the passing lane.  The trajectory forecast above is causal and
         # fixed-shape; only the environment decides the eventual contact.
+        previous_loose_chaser = _policy_state.loose_chaser
+        safe_previous_loose_chaser = jnp.clip(
+            previous_loose_chaser, 0, player_count - 1
+        )
+        previous_loose_chaser_valid = (
+            (previous_loose_chaser >= 0)
+            & (previous_loose_chaser < player_count)
+            & outfield_chaser_candidate[observer_row, safe_previous_loose_chaser]
+            & (
+                player_to_ball[observer_row, safe_previous_loose_chaser]
+                <= jnp.float32(env.reach.carry_radius_m + ball_radius)
+            )
+        )
+        # A millimetre-scale turf rebound is still reachable as a ground
+        # CONTROL, but it does not satisfy the supported-ground forecast gate.
+        # Preserve the already assigned claimant while that player remains
+        # inside the real contact envelope; otherwise a raw nearest-player
+        # fallback summons a second teammate into the same contest. Movement
+        # still targets the observed ball centre below.
+        stationary_chaser_index = jnp.where(
+            previous_loose_chaser_valid,
+            safe_previous_loose_chaser,
+            current_chaser_index,
+        )
         loose_chaser_index = jnp.where(
             moving_ground_loose,
             predicted_chaser_index,
-            current_chaser_index,
+            stationary_chaser_index,
         )
         loose_target = jnp.where(
             moving_ground_loose[:, None],
@@ -2979,10 +3003,34 @@ def make_rule_based_policy(
             & (~self_goalkeeper)
             & ground_ball
         )
+        safe_loose_chaser = jnp.clip(loose_chaser_index, 0, player_count - 1)
+        claimant_ball_distance = player_to_ball[observer_row, safe_loose_chaser]
+        control_envelope = jnp.float32(env.reach.carry_radius_m + ball_radius)
+        clear_claimant_space = (
+            loose_ball
+            & ground_ball
+            & has_loose_chaser
+            & (~self_goalkeeper)
+            & (self_index != loose_chaser_index)
+            & (claimant_ball_distance <= control_envelope)
+            & (ball_distance < control_envelope)
+        )
+        away_from_ball = self_position - context.ball_position[:, :2]
+        away_distance = jnp.linalg.norm(away_from_ball, axis=-1)
+        away_direction = jnp.where(
+            (away_distance > GEOMETRY_EPS)[:, None],
+            away_from_ball,
+            formation_move.direction,
+        )
+        claimant_clear_move = _encode(away_direction, config.support_power)
 
         move = jnp.zeros((player_count, 2), dtype=jnp.float32)
         shape_context = possession_known & (~own_possessor)
         move = jnp.where(shape_context[:, None], shape_move, move)
+        # Once one teammate owns a reachable loose ball, another teammate inside
+        # the same physical control envelope clears away instead of crowding the
+        # ball. The claimant branch below remains authoritative for pursuit.
+        move = jnp.where(clear_claimant_space[:, None], claimant_clear_move, move)
         move = jnp.where(loose_chaser[:, None], loose_approach_move, move)
         move = jnp.where(
             (aerial.direct_runner | aerial.cover_runner)[:, None],
