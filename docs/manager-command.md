@@ -319,7 +319,7 @@ together only when that audit succeeds. A failed audit rolls back just this
 taker axis while retaining substitutions, formations, and acting-goalkeeper
 changes already authorized in the same manager transaction.
 
-This keeps SoccerWorld's sound restart behavior: an observed or newly selected
+FootballWorld requires this restart behavior: an observed or newly selected
 ordinary-restart taker approaches the release pose through physical movement at
 the effective player speed. FootballWorld rejects its former atomic pose-swap
 shortcut. In the seed-29 full-match tracking audit, that shortcut

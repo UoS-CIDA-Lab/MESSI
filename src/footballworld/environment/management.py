@@ -131,11 +131,44 @@ def _safe_axis_index(name: str, value, size: int):
     return jnp.clip(array, 0, size - 1).astype(jnp.int32), valid
 
 
+def _coerce_command_array(name: str, value, shape: tuple[int, ...], dtype):
+    """Canonicalize host command arrays without narrowing traced leaves."""
+
+    expected_dtype = np.dtype(dtype)
+    if isinstance(value, (jax.Array, jax.core.Tracer)):
+        array = jnp.asarray(value)
+        if array.shape != shape:
+            raise ValueError(f"command {name} must have shape {shape}")
+        if array.dtype != jnp.dtype(expected_dtype):
+            raise TypeError(f"command {name} must have dtype {expected_dtype}")
+        return array
+
+    host = np.asarray(value)
+    if host.shape != shape:
+        raise ValueError(f"command {name} must have shape {shape}")
+    if expected_dtype == np.dtype(np.bool_):
+        if not np.issubdtype(host.dtype, np.bool_):
+            raise TypeError(f"command {name} must have dtype bool")
+    else:
+        if not np.issubdtype(host.dtype, np.integer) or np.issubdtype(
+            host.dtype, np.bool_
+        ):
+            raise TypeError(f"command {name} must have dtype int32")
+        if host.size:
+            lower = int(host.min())
+            upper = int(host.max())
+            info = np.iinfo(np.int32)
+            if lower < info.min or upper > info.max:
+                raise ValueError(
+                    f"command {name} contains a value not representable as int32"
+                )
+    return jnp.asarray(host, dtype=jnp.dtype(expected_dtype))
+
+
 def _set_if_valid(array, index, value, valid):
+    value = _coerce_command_array("update value", value, (), array.dtype)
     current = array[index]
-    return array.at[index].set(
-        jnp.where(valid, jnp.asarray(value, dtype=array.dtype), current)
-    )
+    return array.at[index].set(jnp.where(valid, value, current))
 
 
 class SquadSetup(NamedTuple):
@@ -1237,9 +1270,11 @@ def _validate_manager_command(
     state: State,
     squad: SquadSetup,
     command: ManagerCommand,
-) -> int:
+) -> tuple[int, ManagerCommand]:
     """Validate the fixed tree layout, leaving value legality to the kernel."""
 
+    if not isinstance(command, ManagerCommand):
+        raise TypeError("command must be ManagerCommand")
     requested_shape = command.substitutions.requested.shape
     if len(requested_shape) != 2 or requested_shape[0] != 2:
         raise ValueError("command substitutions.requested must have shape (2, K)")
@@ -1291,17 +1326,33 @@ def _validate_manager_command(
             jnp.int32,
         ),
     )
-    for name, value, shape, dtype in expected:
-        array = jnp.asarray(value)
-        if array.shape != shape:
-            raise ValueError(f"command {name} must have shape {shape}")
-        if array.dtype != jnp.dtype(dtype):
-            raise TypeError(f"command {name} must have dtype {jnp.dtype(dtype)}")
+    normalized = {
+        name: _coerce_command_array(name, value, shape, dtype)
+        for name, value, shape, dtype in expected
+    }
     if squad.formation_layouts.ndim != 3:
         raise ValueError("registered formation layouts must have rank three")
     if squad.formation_layouts.shape[1:] != (state.players.position.shape[0], 2):
         raise ValueError("registered formation layouts must match roster slots")
-    return width
+    return width, ManagerCommand(
+        substitutions=ManagerSubstitutionCommand(
+            requested=normalized["substitutions.requested"],
+            outgoing_index=normalized["substitutions.outgoing_index"],
+            incoming_bench_index=normalized["substitutions.incoming_bench_index"],
+        ),
+        formations=ManagerFormationCommand(
+            requested=normalized["formations.requested"],
+            layout_index=normalized["formations.layout_index"],
+        ),
+        acting_goalkeepers=ManagerActingGoalkeeperCommand(
+            requested=normalized["acting_goalkeepers.requested"],
+            player_slot=normalized["acting_goalkeepers.player_slot"],
+        ),
+        set_piece_takers=ManagerSetPieceTakerCommand(
+            requested=normalized["set_piece_takers.requested"],
+            player_slot=normalized["set_piece_takers.player_slot"],
+        ),
+    )
 
 
 def _apply_team_substitution_batch(
@@ -2045,7 +2096,7 @@ def apply_manager_command(
     or rolls that axis back.
     """
 
-    width = _validate_manager_command(state, squad, command)
+    width, command = _validate_manager_command(state, squad, command)
     next_state = state
     next_offside = offside
     next_management = management

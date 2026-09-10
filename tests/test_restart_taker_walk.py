@@ -159,3 +159,54 @@ def test_manager_selected_throwin_taker_keeps_position_then_walks_at_speed_limit
     assert 0.0 < travel <= maximum_travel + 1e-5
     assert distance_after < distance_before
     assert int(np.asarray(stepped.rollout.state.restart.kind)) == RK_THROWIN
+
+
+def test_kickoff_release_pose_is_invariant_to_roster_storage_order():
+    env = FootballWorld()
+    reset = env.reset(_team(1_000), _team(2_000))
+    state = reset.rollout.state
+    team = int(np.asarray(state.restart.team))
+    taker = int(np.asarray(state.restart.taker))
+    members = [
+        index
+        for index in np.flatnonzero(np.asarray(state.players.team_id) == team)
+        if index != taker
+    ][:3]
+    assert len(members) == 3
+
+    ball_y = state.ball.position[1]
+    position = state.players.position.at[:, 1].set(ball_y)
+    position = position.at[jnp.asarray(members), 1].set(
+        ball_y + jnp.asarray([2.0, -1.0, -1.0], dtype=position.dtype)
+    )
+    state = state._replace(players=state.players._replace(position=position))
+    target, facing = restart_taker_release_pose(
+        state, stadium=env.stadium, ball=env.ball, body=env.body
+    )
+
+    permutation = np.arange(state.players.position.shape[0])
+    permutation[members[0]], permutation[members[2]] = (
+        permutation[members[2]],
+        permutation[members[0]],
+    )
+    permutation = jnp.asarray(permutation)
+    permuted_players = jax.tree_util.tree_map(
+        lambda value: value[permutation], state.players
+    )
+    permuted_taker = int(np.flatnonzero(np.asarray(permutation) == taker)[0])
+    permuted = state._replace(
+        players=permuted_players,
+        restart=state.restart._replace(taker=jnp.int32(permuted_taker)),
+    )
+    permuted_target, permuted_facing = restart_taker_release_pose(
+        permuted, stadium=env.stadium, ball=env.ball, body=env.body
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(permuted_target), np.asarray(target), atol=2e-6
+    )
+    np.testing.assert_allclose(
+        [np.cos(float(permuted_facing)), np.sin(float(permuted_facing))],
+        [np.cos(float(facing)), np.sin(float(facing))],
+        atol=2e-6,
+    )

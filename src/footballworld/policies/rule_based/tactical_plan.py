@@ -50,6 +50,7 @@ class TacticalProfile:
     halfspace_gain: float
     overlap_run_m: float
     mixed_wide_mark_gain: float
+    settled_pressure_count: float
 
 
 # These bundles intentionally express relative policy differences only. Their
@@ -71,6 +72,7 @@ _TACTICAL_PROFILES = MappingProxyType(
             halfspace_gain=0.25,
             overlap_run_m=10.0,
             mixed_wide_mark_gain=0.0,
+            settled_pressure_count=1.0,
         ),
         TacticalPlan.JUEGO_DE_POSICION: TacticalProfile(
             progressive_pass_gain=0.10,
@@ -86,6 +88,7 @@ _TACTICAL_PROFILES = MappingProxyType(
             halfspace_gain=0.72,
             overlap_run_m=7.0,
             mixed_wide_mark_gain=0.0,
+            settled_pressure_count=2.0,
         ),
         TacticalPlan.GEGENPRESS: TacticalProfile(
             progressive_pass_gain=0.09,
@@ -101,6 +104,7 @@ _TACTICAL_PROFILES = MappingProxyType(
             halfspace_gain=0.35,
             overlap_run_m=6.0,
             mixed_wide_mark_gain=0.0,
+            settled_pressure_count=3.0,
         ),
         TacticalPlan.CATENACCIO: TacticalProfile(
             progressive_pass_gain=0.16,
@@ -116,6 +120,7 @@ _TACTICAL_PROFILES = MappingProxyType(
             halfspace_gain=0.15,
             overlap_run_m=0.0,
             mixed_wide_mark_gain=0.0,
+            settled_pressure_count=1.0,
         ),
         TacticalPlan.ZONA_MISTA: TacticalProfile(
             progressive_pass_gain=0.10,
@@ -131,6 +136,9 @@ _TACTICAL_PROFILES = MappingProxyType(
             halfspace_gain=0.42,
             overlap_run_m=9.0,
             mixed_wide_mark_gain=0.62,
+            # Preserve the hybrid plan's baseline marker behind one presser
+            # and one cover; its man-oriented gain acts through that marker.
+            settled_pressure_count=1.0,
         ),
     }
 )

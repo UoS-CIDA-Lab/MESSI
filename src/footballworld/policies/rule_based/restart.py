@@ -120,7 +120,9 @@ def _masked_choice(
         logits = jnp.log(jnp.maximum(value, 1.0e-4)) / jnp.float32(temperature)
         selected = jnp.argmax(
             jnp.where(
-                available, logits + jax.random.gumbel(key, value.shape), -jnp.inf
+                available,
+                logits + jax.random.gumbel(key, value.shape, dtype=jnp.float32),
+                -jnp.inf,
             ),
             axis=-1,
         )
@@ -254,14 +256,20 @@ def decide_restart(
         taker_to_ball / jnp.maximum(taker_to_ball_norm, jnp.float32(GEOMETRY_EPS)),
         jnp.asarray((1.0, 0.0), dtype=jnp.float32),
     )
-    ground_clears_taker = jnp.sum(
+    ground_clearance_projection = jnp.sum(
         (ground_target - context.ball_position[:, None, :2]) * escape_axis[:, None, :],
         axis=-1,
-    ) > jnp.float32(GEOMETRY_EPS)
-    aerial_clears_taker = jnp.sum(
+    )
+    aerial_clearance_projection = jnp.sum(
         (aerial_target - context.ball_position[:, None, :2]) * escape_axis[:, None, :],
         axis=-1,
-    ) > jnp.float32(GEOMETRY_EPS)
+    )
+    # A lateral kickoff pose makes forward/backward rays tangent to the torso
+    # capsule expanded by the ball radius. `nextafter` in the environment pose
+    # supplies strict physical clearance, so zero projection is safe; negative
+    # projection heads back through the taker and remains rejected.
+    ground_clears_taker = ground_clearance_projection >= 0.0
+    aerial_clears_taker = aerial_clearance_projection >= 0.0
     ground_candidate_mask = (
         legal_receiver
         & supplied_ground_candidate
@@ -400,6 +408,41 @@ def decide_restart(
         has_receiver[:, None], selected_receiver, fallback_target
     )
 
+    territorial_key = (
+        None if decision_key is None else jax.random.fold_in(decision_key, 0x54455252)
+    )
+    territorial_draw = (
+        jnp.full((observers,), 1.0, dtype=jnp.float32)
+        if territorial_key is None
+        else jax.random.uniform(territorial_key, shape=(observers,), dtype=jnp.float32)
+    )
+    territorial_target = jnp.stack(
+        (
+            jnp.minimum(
+                context.ball_position[:, 0]
+                + jnp.float32(config.kickoff_territorial_distance_m),
+                jnp.float32(half_length - 0.5),
+            ),
+            context.ball_position[:, 1],
+        ),
+        axis=-1,
+    )
+    territorial_clears_taker = (
+        jnp.sum(
+            (territorial_target - context.ball_position[:, :2]) * escape_axis,
+            axis=-1,
+        )
+        >= 0.0
+    )
+    territorial_kickoff = (
+        kickoff
+        & territorial_clears_taker
+        & (territorial_draw < jnp.float32(config.kickoff_territorial_probability))
+    )
+    selected_position = jnp.where(
+        territorial_kickoff[:, None], territorial_target, selected_position
+    )
+
     # Use a three-lane target set for direct restarts. The seeded choice is
     # weighted away from a visible goalkeeper; without one, all lanes are
     # equiprobable. These lane weights are explicit design priors.
@@ -466,7 +509,7 @@ def decide_restart(
     shot_draw = (
         jnp.full((observers,), 0.5, dtype=jnp.float32)
         if shot_key is None
-        else jax.random.uniform(shot_key, shape=(observers,))
+        else jax.random.uniform(shot_key, shape=(observers,), dtype=jnp.float32)
     )
     goal_clears_taker = jnp.sum(goal_vector * escape_axis, axis=-1) > jnp.float32(
         GEOMETRY_EPS
@@ -481,7 +524,7 @@ def decide_restart(
         )
     )
     pass_release = eligible_actor & (~restart_shot)
-    receiver_valid = pass_release & has_receiver
+    receiver_valid = pass_release & has_receiver & (~territorial_kickoff)
     valid = restart_shot | pass_release
     pass_direction = selected_position - context.ball_position[:, :2]
     direction = jnp.where(
@@ -524,7 +567,7 @@ def decide_restart(
         receiver_valid=receiver_valid,
         valid=valid,
         shot=restart_shot,
-        aerial_service=use_aerial & receiver_valid,
+        aerial_service=(use_aerial & receiver_valid) | (territorial_kickoff & valid),
         law11_direct_exempt=direct_exempt & eligible_actor,
     )
 

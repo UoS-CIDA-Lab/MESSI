@@ -28,7 +28,7 @@ from footballworld.config.roster import (
     player_profile_values_valid,
 )
 from footballworld.core.constants import NO_PLAYER, TEAM_0, TEAM_1
-from footballworld.core.randomness import RandomEvent
+from footballworld.core.randomness import RandomEvent, validate_prng_key
 from footballworld.environment.api import FootballWorld, ResetResult
 from footballworld.environment.management import (
     ManagementInitialization,
@@ -421,6 +421,8 @@ def build_opening_policy_inputs(
     if type(env) is not FootballWorld:
         raise TypeError("env must be exactly FootballWorld")
     validate_kickoff_team(kickoff_team)
+    if key is not None:
+        validate_prng_key(key, name="key")
     profiles, preferred = _candidate_rows(
         env, team_0_candidates, team_1_candidates, key
     )
@@ -485,6 +487,11 @@ def build_opening_policy_inputs(
         ):
             raise TypeError("max_registered_players must be a pair of integers")
         registered_maxima = tuple(int(value) for value in max_registered_players)
+        int32_max = int(np.iinfo(np.int32).max)
+        if any(value < 0 or value > int32_max for value in registered_maxima):
+            raise ValueError(
+                "max_registered_players must be in the non-negative int32 domain"
+            )
     for team in (TEAM_0, TEAM_1):
         if registered_maxima[team] < len(registered_indices[team]):
             raise ValueError(f"team_{team} authored registration exceeds its maximum")
@@ -1046,12 +1053,7 @@ def create_opening_match_from_policy(
             )
         policy = make_rule_based_opening_manager_policy()
     validate_opening_manager_policy(policy)
-    try:
-        key_data = jax.random.key_data(match_key)
-    except (TypeError, ValueError) as error:
-        raise TypeError("match_key must be one JAX PRNG key") from error
-    if key_data.shape != (2,):
-        raise ValueError("match_key must be one unbatched JAX PRNG key")
+    validate_prng_key(match_key, name="match_key")
 
     policy_state = policy.initialize(inputs.observation, parameters)
     policy_step = policy.step(

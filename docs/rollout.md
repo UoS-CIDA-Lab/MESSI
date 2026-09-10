@@ -60,6 +60,14 @@ compiled callable by output mode, batch strategy, length, environment
 configuration, and input shape/dtype. Reuse the executable rather than
 rebuilding a factory for every chunk.
 
+FootballWorld uses a fixed static-scan architecture and adds
+an explicit int32 horizon bound because FootballWorld's causal frame counters
+and interruptible runtime budgets are int32. All rollout factories and managed
+`chunk_steps` fail before policy construction or tracing when that bound is
+exceeded. Eager runtime budgets are range-checked on the host before JAX
+narrowing, so a wide unsigned value cannot alias zero; traced integer budgets
+remain a scalar, fail-closed data path and add no host callback to the scan.
+
 Player count <code>N</code> is shape-static, not fixed at seven or eleven. A
 2v2 rollout is supported with two-player rosters and
 <code>MatchConfig(minimum_team_players=(2, 2))</code>; the default remains
@@ -94,10 +102,70 @@ transition folds in the absolute pre-step control tick, so changing chunk
 boundaries does not restart the random stream. A completed match remains an
 absorbing state for the rest of a fixed-length scan.
 
+## Randomness boundary
+
+FootballWorld defines reproducible public-key contract:
+legacy `jax.random.PRNGKey` values and typed
+`jax.random.key(..., impl="threefry2x32")` values are equivalent, while RBG,
+unsafe-RBG, batched keys at scalar boundaries, and
+`JAX_THREEFRY_PARTITIONABLE=1` fail before a random draw. This is sound
+because the named stream addresses, stored seed, and environment fingerprint
+must determine one trajectory.
+
+FootballWorld does not expose its internal random-tree layout.
+Its append-only named `fold_in` streams remain independent of rollout chunk
+boundaries and keep roster sampling, contests, restarts, and management draws
+separate. What is rejected is JAX's otherwise valid permissive
+multi-implementation key behavior: accepting another implementation changed
+sampled rosters and stochastic transitions for the same recorded integer
+seed without changing FootballWorld's semantic environment configuration.
+The boundary validator inspects only static dtype, shape, and JAX PRNG
+configuration; regression tests require it to add zero JAXPR equations.
+Contest, foul, and per-frame transition folds use an internal
+already-validated path, keeping host contract checks out of the lean physics
+and rules graph. Public restart-key derivation retains the boundary check so
+direct callers cannot bypass the same contract.
+Concrete host event/tick addresses are range-checked before JAX conversion;
+negative and wider-than-uint32 values fail instead of silently aliasing another
+named stream after integer narrowing. Traced transition addresses retain their
+fixed-shape integer path without a host synchronization; wider-than-32-bit
+traced integer dtypes fail closed because their runtime range cannot be proven.
+
+The host substitution facade follows FootballWorld's pre-narrowing identifier
+rule for team, slot, player identity, and discipline counters. Concrete wide
+integers must be representable as int32 before JAX sees them; otherwise a value
+such as `2**32 + slot` could alias `slot` when x64 is disabled. The compiled
+fixed-shape substitution kernel continues to require exact int32 leaves. Host
+profile reals are likewise canonicalized before roster-domain checks, so the
+boundary decision is made on the same float32 value that dynamics consumes.
+Manager command builders and direct host command trees apply the same rule to
+slot, layout, and taker selectors. Safe host integer arrays are canonicalized
+to int32, while out-of-range values fail before they can alias a legal command;
+compiled manager commands continue to require exact fixed-shape dtypes.
+Starter construction also preserves FootballWorld's pre-narrowing identity
+contract. The public reset facade already enforced it; the lower-level
+`initialize_state` helper now rejects non-integral, negative, and wider-than-
+int32 identities and checks uniqueness before packing. This closes a direct
+test/tooling path where `2**32 + player_id` could previously alias a legal
+player after NumPy conversion. The same direct constructor now rejects boolean
+kickoff-team selectors and zero maximum speed, matching the public facade and
+the canonical profile predicate without adding work to any compiled step.
+
+FootballWorld permits `JAX_ENABLE_X64=1` while requiring
+every stochastic transition draw to take its dtype from a causal float state
+or probability. A contest audit found and removed four implicit-default draws:
+before the fix, the same 4,096 Threefry keys changed tackle and discipline
+counts when only x64 was toggled; afterward the complete outcome arrays are
+identical. The runtime receipt still records the process flag, and the focused
+cross-process probe is a failing contract for future dtype regressions.
+Host-only replay provenance applies the same key validator before recording
+raw key data, so a receipt cannot bless a key that the environment would refuse
+to execute.
+
 ## Observation-only ball decisions
 
 Ground loose-ball `CONTROL` is an inward settling touch at the policy's native
-control scale. This inherits SoccerWorld's bounded reception-control principle
+control scale. This preserves FootballWorld's bounded reception-control principle
 while adapting it to FootballWorld's explicit physical carry-radius ownership:
 an outward touch at the radius boundary could otherwise erase a successful
 trap on the next physics substep. Aerial cushioning remains momentum-aligned;
@@ -107,11 +175,11 @@ contact solver determine entry; it does not brake to zero on the mathematical
 outer tangent. A new trap also gets one causal decision opportunity before
 physical carrier verification may release it, and the built-in policy does not
 issue a dribble re-touch during its secure-follow window. FootballWorld keeps
-player-level possession rather than inheriting SoccerWorld's broader team-only
+player-level possession rather than using a broader team-only
 phase latch.
 
 During an own live pass, the lawful planned receiver now remains the sole
-primary runner until the first later contact. This inherits the SoccerWorld
+primary runner until the first later contact. This uses the FootballWorld
 stable receive-runner assignment and fixes a FootballWorld failure in which
 the forecast changed runner at the meeting point, sending the intended
 receiver back toward formation and turning a controllable pass into a passive
@@ -122,26 +190,24 @@ ball becomes dead/a restart; no hidden team-shared trajectory state is added.
 Reception is also distinct from an automatic relay. A 60-second policy
 diagnostic had 23 of 25 different-teammate receptions pass again within two
 seconds, with 17 delays exactly 0.4 seconds, exposing decision-cadence pinball
-rather than football timing. FootballWorld therefore inherits the SoccerWorld
-contextual quick-relay criteria: during the first two seconds after a linked
+rather than football timing. FootballWorld therefore uses contextual quick-relay criteria: during the first two seconds after a linked
 `CONTROL/TRAP` reception, the quick route needs pressure, body alignment, a
 completion-qualified first lane, a safe bounded second leg, and one
-episode-stable seeded draw. The rounded 0.31 probability is a transfer prior
-from the SoccerWorld receipt, not a FootballWorld measurement or physical
-constant. Unlike SoccerWorld's additive carrier release path, FootballWorld
+episode-stable seeded draw. The rounded 0.31 probability is a policy design prior recorded in the
+configuration receipt, not a measurement or physical constant. Instead of an additive carrier release path, FootballWorld
 keeps ordinary pass/cross candidates closed inside this bounded window when
 the relay gate fails; carry and support movement continue, then ordinary macro
 choice reopens after the window. This explicit rejection prevents the
 FootballWorld 0.4-second decision cadence from recreating the measured pinball
 sequence. Contact and tackle geometry remain unchanged.
 
-Ordinary restart positioning follows the same ownership boundary. SoccerWorld
+Ordinary restart positioning follows the same ownership boundary. FootballWorld
 keeps non-kickers in an attacking or defending set-piece phase while its rules
 layer enforces legality. FootballWorld now retains that phase continuity; only
 the taker's legal approach is left stationary for the environment to execute.
 For throw-ins, goal kicks, corners, free kicks, and offside free kicks, the
-built-in policy uses compact team centroid, depth, and width moments inherited
-from SoccerWorld's data-backed restart-shape abstraction. The source data,
+built-in policy uses compact team centroid, depth, and width moments from its
+restart-shape abstraction. The source data,
 player-level field, derived aggregates, and fit pipeline are private. Individual
 targets preserve FootballWorld's formation anchors; unsupported cells,
 kick-offs, penalties, goalkeeper holds, and goalkeepers fall back to the
@@ -300,8 +366,7 @@ cannot use this narrow exception.
 At kick-off, the solid-capsule release pose places the taker immediately beyond
 the centre mark in the attacking half, facing back toward the ball. IFAB Law 8
 explicitly exempts the taker from the own-half requirement, while every other
-player retains the existing half and centre-circle projections. SoccerWorld's
-behind-ball pose is not inherited here: with FootballWorld's passive body
+player retains the existing half and centre-circle projections. A behind-ball pose is not used here: with FootballWorld's passive body
 collision it blocks every trajectory toward a legally positioned own-half
 team-mate and forces the built-in policy into a receiverless forward release.
 The mirrored pose keeps the same ball/capsule clearance, enables an ordinary
@@ -315,12 +380,11 @@ pre-restart predecessor), so the eventual receiver is consistently the first
 same-team handoff after opening, post-goal, or half-time kickoffs. Once
 bootstrapped, the same observer-local receiver identity,
 arrival point, and countdown used for open-play passes remain causal until
-contact or invalidation. This inherits SoccerWorld's sound principle that a
+contact or invalidation. This preserves FootballWorld's sound principle that a
 receive runner approaches a physical rendezvous rather than chasing the ball's
-current position. FootballWorld also inherits its target-only receive motion:
+current position. FootballWorld also uses target-only receive motion:
 adding the future ball velocity to player velocity made a runner reverse before
-reaching an incoming pass. The full SoccerWorld receive graph is not copied;
-FootballWorld retains its fixed current-plus-ten-future-sample supported-ground forecast, public
+reaching an incoming pass. The receive graph remains deliberately bounded to its fixed current-plus-ten-future-sample supported-ground forecast, public
 per-observer memory, braking-distance arrival taper, and fail-closed visibility
 and identity checks to bound compilation and avoid hidden shared plans.
 

@@ -41,7 +41,7 @@ reachable aerial service with one `FOOT` release and no same-taker
 The scene generator, raw event/tracking sidecars, and any data-processing or
 fitting pipeline are intentionally excluded from the public distribution.
 
-The capture boundary follows the sound SoccerWorld showcase convention:
+The capture boundary follows the sound FootballWorld showcase convention:
 construct one non-transition restart boundary, then exercise real transitions.
 FootballWorld deliberately publishes only the verified videos and this bounded
 receipt instead of inheriting the public scene generator and raw sidecars. That

@@ -56,11 +56,7 @@ def classify_formation_roles(
             & representative[None, :]
             & (depth[None, :] > depth[:, None] + _DEPTH_TOLERANCE_M)
         )
-        # SoccerWorld counts deeper lines and clips every third-or-later line
-        # into the forward band. In a four-line 4-2-3-1 that turns both the
-        # attacking-midfield line and the striker into forwards, after which
-        # their shared offside-shoulder target can collapse central players.
-        # Preserve its slot-free, depth-relative classification but make only
+        # Slot-free, depth-relative classification makes only
         # the extreme outfield lines defenders/forwards; every interior line
         # is midfield. This also avoids adding a formation-name special case.
         has_deeper_line = jnp.any(deeper_representative, axis=1)

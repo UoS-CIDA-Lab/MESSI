@@ -258,18 +258,33 @@ def _release_pose(
 
     dtype = state.players.position.dtype
     kind = state.restart.kind
+    team = jnp.clip(state.restart.team, TEAM_0, TEAM_1)
     side_y = jnp.where(state.ball.position[1] >= 0.0, 1.0, -1.0)
     side_x = jnp.where(state.ball.position[0] >= 0.0, 1.0, -1.0)
     ordinary = jnp.asarray([restart_direction, 0.0], dtype=dtype)
-    # IFAB Law 8 exempts only the taker from the own-half requirement. Keep
-    # every other restart's conventional behind-ball approach, but put the
-    # kick-off taker just into the opponents' half facing back toward the
-    # centre mark. FootballWorld's solid torso capsule otherwise occupies the
-    # entire legal passing half-plane: the rule policy must reject every
-    # own-half team-mate and can only release its no-receiver fallback toward
-    # the opponents. The opposite release pose retains exact capsule clearance
-    # and makes a backward kick leave the taker's body instead of crossing it.
-    kickoff = -ordinary
+    taker = jnp.clip(state.restart.taker, 0, state.players.position.shape[0] - 1)
+    # Use a lateral foot-restart stance so both attacking and retreating
+    # trajectories are tangent to (or move away from) the solid torso capsule.
+    # The cubic lateral moment is permutation-invariant and changes sign under
+    # a y reflection. A perfectly reflection-symmetric state has no lawful
+    # non-zero equivariant side, so it keeps the validated forward-side fallback.
+    relative_y = state.players.position[taker, 1] - state.ball.position[1]
+    restart_roster = state.players.active & (state.players.team_id == team)
+    roster_relative_y = jnp.where(
+        restart_roster,
+        state.players.position[:, 1] - state.ball.position[1],
+        0.0,
+    )
+    roster_chirality = jnp.sum(
+        roster_relative_y * roster_relative_y * roster_relative_y
+    )
+    lateral_signal = jnp.where(
+        jnp.abs(relative_y) > GEOMETRY_EPS, relative_y, roster_chirality
+    )
+    lateral_valid = jnp.abs(lateral_signal) > GEOMETRY_EPS
+    lateral_side = jnp.where(lateral_signal >= 0.0, 1.0, -1.0)
+    lateral_kickoff = jnp.asarray([0.0, -lateral_side], dtype=dtype)
+    kickoff = jnp.where(lateral_valid, lateral_kickoff, -ordinary)
     throw = jnp.asarray([0.0, -side_y], dtype=dtype)
     corner = _safe_unit(jnp.asarray([-side_x, -side_y], dtype=dtype), ordinary)
     forward = jnp.where(
@@ -302,7 +317,6 @@ def _release_pose(
         jnp.nextafter(target, next_direction),
         target,
     )
-    taker = jnp.clip(state.restart.taker, 0, state.players.position.shape[0] - 1)
     target = jnp.where(kind == RK_GK_HOLD, state.players.position[taker], target)
     current_angle = body_angle_from_forward(state.players.body_forward[taker])
     angle = jnp.where(kind == RK_GK_HOLD, current_angle, angle)

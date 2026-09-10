@@ -78,6 +78,12 @@ PRESSURE_COVER_DISTANCE_M = 4.8
 PRESSURE_COVER_BALL_LEAD_S = 0.18
 """Visible ball-velocity lead used by the pressure-cover target."""
 
+SECONDARY_PRESSURE_BALL_LEAD_S = 0.30
+"""Visible ball-velocity lead used by supporting direct pressers."""
+
+SECONDARY_PRESSURE_GOAL_SIDE_GAP_M = 3.0
+"""Goal-side spacing for direct pressers behind the primary actor."""
+
 OPEN_FIELD_MARK_BASE_GAIN = 0.55
 """Zonal-to-goal-side blend for the sole open-field threat marker.
 
@@ -176,6 +182,7 @@ class ShapeMovement(NamedTuple):
     direction: jax.Array
     distance: jax.Array
     urgent: jax.Array
+    direct_pressure: jax.Array
 
 
 def _validate_shapes(
@@ -311,13 +318,14 @@ def _assign_box_runners(
             jnp.where(runner_pool, runner_threat, -jnp.inf), axis=-1
         )
         selected_position = runner_position[row, selected_runner]
-        distance = jnp.linalg.norm(
-            defender_position - selected_position[:, None, :], axis=-1
+        # The assignment consumes only nearest-defender rank.
+        distance_squared = jnp.sum(
+            jnp.square(defender_position - selected_position[:, None, :]), axis=-1
         )
         defender_pool = defender_candidate & (~current_defender)
         has_defender = jnp.any(defender_pool, axis=-1)
         selected_defender = jnp.argmin(
-            jnp.where(defender_pool, distance, jnp.inf), axis=-1
+            jnp.where(defender_pool, distance_squared, jnp.inf), axis=-1
         )
         can_assign = has_runner & has_defender
         previous_assignment = current_assignment[row, selected_defender]
@@ -452,13 +460,13 @@ def shape_movement(
     ``own_possession`` selects attacking support versus defending shape.
     ``opponent_possession`` distinguishes a controlled opposition attack from
     a loose ball or restart. ``nearest_pressure`` is the caller-selected
-    primary presser. The next-nearest visible outfielder covers behind that
-    player and never becomes an additional challenge actor in this module.
-    ``counterpress_active`` is a caller-owned time-window mask (normally
-    derived from ``RulePolicyState.counterpress_age``); during that window the
-    cover player closes the nearest visible outlet lane instead of joining a
-    swarm at the ball. All inputs have one boolean per observer and may differ
-    when view-limited observations differ.
+    primary presser. In settled defence a tactical profile may promote the
+    next one or two visible outfielders into supporting direct pressure; the
+    following player remains cover. ``counterpress_active`` is a caller-owned
+    time-window mask (normally derived from ``RulePolicyState.counterpress_age``);
+    during that window only the primary presses while the next player closes
+    the nearest visible outlet lane. All inputs have one boolean per observer
+    and may differ when view-limited observations differ.
 
     Coordinates and the returned target use each observer's attacking frame.
     The direction is a unit vector from that observer to its target and is zero
@@ -615,13 +623,23 @@ def shape_movement(
         jnp.float32(ATTACK_BALL_FOLLOW_Y),
         jnp.float32(DEFEND_BALL_FOLLOW_Y),
     )
+    # FootballWorld's fitted positional field cannot be transferred across this
+    # observation contract. Retain FootballWorld's bounded ball-follow prior:
+    # formation-relative roles advance together without turning ball depth into
+    # an absolute target or dragging the goalkeeper through the block.
+    attacking_shift_x = jnp.clip(
+        ball_from_center[:, 0] * jnp.float32(ATTACK_BALL_FOLLOW_X) * role_follow,
+        -BALL_SHIFT_X_CAP_M,
+        BALL_SHIFT_X_CAP_M,
+    )
+    defensive_shift_x = jnp.clip(
+        ball_from_center[:, 0] * follow_x * role_follow,
+        -BALL_SHIFT_X_CAP_M,
+        BALL_SHIFT_X_CAP_M,
+    )
     ball_shift = jnp.stack(
         (
-            jnp.clip(
-                ball_from_center[:, 0] * follow_x * role_follow,
-                -BALL_SHIFT_X_CAP_M,
-                BALL_SHIFT_X_CAP_M,
-            ),
+            jnp.where(own_possession, attacking_shift_x, defensive_shift_x),
             jnp.clip(
                 ball_from_center[:, 1] * follow_y * role_follow,
                 -BALL_SHIFT_Y_CAP_M,
@@ -656,6 +674,52 @@ def shape_movement(
     )
     target = target + kickoff_curve[:, None] * waypoint
 
+    # Select at most one public, active wide-role slot on either side. These
+    # players preserve the formation-scaled width before a pass arrives, but
+    # are never pinned to the touchline. Stable roster winners prevent an
+    # entire position group from being widened by the same rule. The lateral
+    # ball-follow term may move a ball-side outlet farther out; it may not drag
+    # either selected outlet inside its formation-relative attacking lane.
+    roster_slot = jnp.arange(self_index.shape[0], dtype=jnp.int32)[None, :]
+    observed_carrier = policy_state.current_possessor[:, None]
+    team_anchor_y = policy_state.formation_anchor[None, :, 1]
+    anchor_side = jnp.where(team_anchor_y >= 0.0, 1.0, -1.0)
+    self_anchor_side = jnp.where(anchor[:, 1] >= 0.0, 1.0, -1.0)
+    public_wide_candidate = (
+        team_slot
+        & context.participating
+        & ((team_roles == ROLE_FULL_BACK) | (team_roles == ROLE_WIDE_FORWARD))
+    )
+    side_wide_candidate = public_wide_candidate & (
+        anchor_side == self_anchor_side[:, None]
+    )
+    side_wide_index = jnp.argmax(
+        jnp.where(side_wide_candidate, jnp.abs(team_anchor_y), -jnp.inf),
+        axis=-1,
+    )
+    selected_wide = jnp.any(side_wide_candidate, axis=-1) & (
+        self_index == side_wide_index
+    )
+    is_observed_carrier = self_index == policy_state.current_possessor
+    proactive_wide = (
+        own_possession
+        & context.ball_visible
+        & context.self_active
+        & selected_wide
+        & (~is_observed_carrier)
+    )
+    formation_wide_y = anchor_center[:, 1] + (
+        anchor_offset[:, 1] * tactical.attack_width_scale
+    )
+    retained_wide_y = self_anchor_side * jnp.maximum(
+        self_anchor_side * target[:, 1],
+        self_anchor_side * formation_wide_y,
+    )
+    target = target.at[:, 1].set(
+        jnp.where(proactive_wide, retained_wide_y, target[:, 1])
+    )
+    ball_side = jnp.where(ball_xy[:, 1] >= 0.0, 1.0, -1.0)
+
     overlap_side = jnp.where(anchor[:, 1] >= 0.0, 1.0, -1.0)
     overlap_target = jnp.stack(
         (
@@ -681,11 +745,7 @@ def shape_movement(
     # different observation contract. Each role has
     # one stable roster-slot winner, excluding the currently observed carrier,
     # so a whole position group cannot collapse into the box.
-    ball_side = jnp.where(ball_xy[:, 1] >= 0.0, 1.0, -1.0)
-    team_anchor_y = policy_state.formation_anchor[None, :, 1]
     signed_anchor_y = team_anchor_y * ball_side[:, None]
-    roster_slot = jnp.arange(self_index.shape[0], dtype=jnp.int32)[None, :]
-    observed_carrier = policy_state.current_possessor[:, None]
     support_candidate = (
         team_slot & context.participating & (roster_slot != observed_carrier)
     )
@@ -938,10 +998,12 @@ def shape_movement(
     )
     target = target + jnp.where(squeeze[:, None], counterpress_delta, jnp.float32(0.0))
 
-    # The second-nearest defender protects the primary press instead of joining
-    # a two-player swarm. Recreate that structure from this observer's
-    # public row only. A stable roster-slot tie-break avoids ambiguous roles
-    # when two candidates are exactly the same distance from the ball.
+    # Rank visible outfielders once per public observer row. Tactical plans may
+    # use one, two, or three settled direct pressers. Supporting pressers lead
+    # the visible ball and remain goal-side instead of collapsing onto the same
+    # point as the primary actor. Immediately after a loss the existing
+    # counterpress contract remains 1+cover: the second player closes an outlet
+    # rather than creating an indiscriminate swarm.
     team_outfielder = (
         context.same_team
         & context.participating
@@ -960,19 +1022,40 @@ def shape_movement(
         )
     )
     pressure_rank = jnp.sum(closer_to_ball, axis=-1)
+    settled_pressure_count = jnp.clip(
+        jnp.rint(tactical.settled_pressure_count).astype(jnp.int32), 1, 3
+    )
+    settled_pressure_count = jnp.where(
+        (settled_pressure_count >= 3) & (ball_xy[:, 0] > 0.0),
+        jnp.int32(2),
+        settled_pressure_count,
+    )
+    active_pressure_count = jnp.where(
+        counterpress_active, jnp.int32(1), settled_pressure_count
+    )
+    supporting_pressure = (
+        opponent_possession
+        & (~counterpress_active)
+        & context.ball_visible
+        & context.self_active
+        & (role != ROLE_GOALKEEPER)
+        & (pressure_rank > 0)
+        & (pressure_rank < active_pressure_count)
+    )
+    direct_pressure = nearest_pressure | supporting_pressure
     pressure_cover = (
         opponent_possession
         & context.ball_visible
         & context.self_active
         & (role != ROLE_GOALKEEPER)
-        & (pressure_rank == 1)
-        & (~nearest_pressure)
+        & (pressure_rank == active_pressure_count)
+        & (~direct_pressure)
     )
 
     # Outside the box, mark the single most dangerous visible runner with one
     # eligible defender.  The old wide-role rule independently followed each
     # player's nearest opponent, so two wide players could converge on the same
-    # harmless outlet while a central runner advanced untracked.  SoccerWorld's
+    # harmless outlet while a central runner advanced untracked.  FootballWorld's
     # sound part is the *assignment contract*: predict visible opponents, rank
     # one threat, and let only the nearest non-pressing outfielder claim it.
     # FootballWorld keeps its observer-local fixed-shape implementation and
@@ -982,10 +1065,10 @@ def shape_movement(
         context.player_position + context.player_velocity * jnp.float32(box_mark_lead_s)
     )
     own_goal_position = jnp.asarray((-half_length, 0.0), dtype=jnp.float32)
-    open_field_threat = -jnp.linalg.norm(
-        predicted_opponent_position - own_goal_position,
-        axis=-1,
-    )
+    open_field_goal_delta = predicted_opponent_position - own_goal_position
+    # Negative squared distance has the same threat order as negative distance
+    # and is also reusable by the box assignment without a square root.
+    open_field_threat = -jnp.sum(jnp.square(open_field_goal_delta), axis=-1)
     opponent_outfielder = context.opponent & (
         policy_state.role[None, :] != ROLE_GOALKEEPER
     )
@@ -1003,8 +1086,8 @@ def shape_movement(
         own_goal_x=-half_length,
         distance_m=box_mark_goal_side_distance_m,
     )
-    open_field_mark_distance = jnp.linalg.norm(
-        context.player_position - open_field_runner_position[:, None, :],
+    open_field_mark_distance_squared = jnp.sum(
+        jnp.square(context.player_position - open_field_runner_position[:, None, :]),
         axis=-1,
     )
 
@@ -1024,17 +1107,20 @@ def shape_movement(
         & ((distance_i < distance_j) | ((distance_i == distance_j) & (slot_i < slot_j)))
     )
     all_pressure_rank = jnp.sum(closer_matrix, axis=1)
-    open_field_defender = team_outfielder & (all_pressure_rank >= 2)
+    reserved_pressure_slots = active_pressure_count[:, None] + jnp.int32(1)
+    open_field_defender = team_outfielder & (
+        all_pressure_rank >= reserved_pressure_slots
+    )
     has_open_field_defender = jnp.any(open_field_defender, axis=-1)
     open_field_marker = jnp.argmin(
-        jnp.where(open_field_defender, open_field_mark_distance, jnp.inf),
+        jnp.where(open_field_defender, open_field_mark_distance_squared, jnp.inf),
         axis=-1,
     )
     claims_open_field_mark = self_index == open_field_marker
-    box_defender_candidate = team_outfielder & (all_pressure_rank >= 2)
-    predicted_runner_position = (
-        context.player_position + context.player_velocity * jnp.float32(box_mark_lead_s)
+    box_defender_candidate = team_outfielder & (
+        all_pressure_rank >= reserved_pressure_slots
     )
+    predicted_runner_position = predicted_opponent_position
     box_edge_x = jnp.float32(-half_length + penalty_area_length)
     runner_in_box = (
         context.opponent
@@ -1048,11 +1134,7 @@ def shape_movement(
             <= 0.5 * penalty_area_width + jnp.float32(box_mark_runner_margin_m)
         )
     )
-    own_goal = jnp.broadcast_to(
-        jnp.asarray((-half_length, 0.0), dtype=jnp.float32),
-        predicted_runner_position.shape,
-    )
-    runner_threat = -jnp.linalg.norm(predicted_runner_position - own_goal, axis=-1)
+    runner_threat = open_field_threat
     box_assignment = _assign_box_runners(
         context.player_position,
         box_defender_candidate,
@@ -1078,7 +1160,7 @@ def shape_movement(
         & context.self_active
         & ball_threatens_box
         & (assigned_runner >= 0)
-        & (~nearest_pressure)
+        & (~direct_pressure)
         & (~pressure_cover)
     )
     open_field_mark = (
@@ -1089,7 +1171,7 @@ def shape_movement(
         & has_open_field_threat
         & has_open_field_defender
         & claims_open_field_mark
-        & (~nearest_pressure)
+        & (~direct_pressure)
         & (~pressure_cover)
     )
     # Every tactical plan tracks the one primary open-field threat without
@@ -1152,6 +1234,13 @@ def shape_movement(
         use_outlet_cover[:, None], counterpress_cover_target, normal_cover_target
     )
     target = jnp.where(pressure_cover[:, None], cover_target, target)
+
+    supporting_pressure_target = (
+        ball_xy
+        + context.ball_velocity[:, :2] * SECONDARY_PRESSURE_BALL_LEAD_S
+        + own_goal_offset * SECONDARY_PRESSURE_GOAL_SIDE_GAP_M
+    )
+    target = jnp.where(supporting_pressure[:, None], supporting_pressure_target, target)
 
     # One pressure actor contains from the goal side.  The caller decides who
     # is nearest using its own observation row; shape.py only applies the role.
@@ -1253,13 +1342,15 @@ def shape_movement(
                 | wide_pattern_support
                 | switch_setup_support
                 | switch_release_support
-                | run_pattern_support
+                | designated_forward_support
                 | squeeze
                 | open_field_mark
                 | pressure_cover
+                | supporting_pressure
                 | box_mark
             )
         ),
+        direct_pressure=direct_pressure.astype(jnp.bool_),
     )
 
 

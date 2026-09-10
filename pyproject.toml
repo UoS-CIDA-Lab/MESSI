@@ -37,6 +37,7 @@ dependencies = [
 
 [project.scripts]
 footballworld-report = "footballworld.analysis.cli:main"
+footballworld-matrix-report = "footballworld.analysis.multi_cli:main"
 
 [project.optional-dependencies]
 render = [
@@ -57,3 +58,9 @@ version = {attr = "footballworld._version.__version__"}
 [tool.ruff.lint]
 # All flagged defaults are frozen, immutable configuration value objects.
 ignore = ["B008"]
+
+[tool.pytest.ini_options]
+# Private local regressions intentionally use an explicit prefix so they stay
+# outside the distribution while remaining discoverable when the validation
+# directory is selected.
+python_files = ["test_*.py", "*_test.py", "local_regression_*.py"]

@@ -4,6 +4,7 @@ from pathlib import Path
 import jax
 import pytest
 
+from footballworld import FootballWorld, build_opening_policy_inputs
 from footballworld.policies import TacticalPlan
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,4 +99,129 @@ def test_demo_plan_resolution_rejects_unknown_names():
     with pytest.raises(ValueError, match="unknown demo tactical plan"):
         render_full_match._resolve_team_tactical_plans(
             ("unknown", "random"), jax.random.key(0)
+        )
+
+
+def test_demo_matrix_defaults_to_cpu_bounded_parallel_two_leg_runs(tmp_path):
+    args = render_full_match._parser().parse_args(
+        ["--output", str(tmp_path / "matrix"), "--plan-matrix"]
+    )
+
+    assert args.plan_matrix
+    assert args.matrix_platform == "cpu"
+    assert args.matrix_workers == 2
+    assert args.matrix_legs == 2
+    assert args.matrix_include_self_play
+
+
+def test_demo_matrix_enumerates_all_unordered_pairs_and_slot_reversals():
+    one_leg = render_full_match._matrix_matchups(1, include_self_play=False)
+    two_legs = render_full_match._matrix_matchups(2, include_self_play=False)
+
+    assert len(one_leg) == 10
+    assert len(two_legs) == 20
+    assert len({frozenset((team_0, team_1)) for team_0, team_1, _ in one_leg}) == 10
+    assert all(team_0 != team_1 and leg == 1 for team_0, team_1, leg in one_leg)
+    for team_0, team_1, _ in one_leg:
+        assert (team_0, team_1, 1) in two_legs
+        assert (team_1, team_0, 2) in two_legs
+
+
+def test_demo_matrix_can_enumerate_complete_ordered_plan_space():
+    matchups = render_full_match._matrix_matchups(2, include_self_play=True)
+
+    assert len(matchups) == 25
+    assert len({(team_0, team_1) for team_0, team_1, _ in matchups}) == 25
+    assert sum(team_0 == team_1 for team_0, team_1, _ in matchups) == 5
+    assert all(leg == 1 for team_0, team_1, leg in matchups if team_0 == team_1)
+
+
+def test_demo_matrix_child_arguments_remove_parent_and_pairing_options():
+    retained = render_full_match._matrix_child_arguments(
+        [
+            "--plan-matrix",
+            "--matrix-workers=4",
+            "--matrix-legs",
+            "1",
+            "--matrix-platform",
+            "cpu",
+            "--no-matrix-include-self-play",
+            "--team-0-plan",
+            "gegenpress",
+            "--team-1-plan=juego_de_posicion",
+            "--output",
+            "matrix",
+            "--maximum-steps",
+            "12",
+            "--report-only",
+        ]
+    )
+
+    assert retained == ["--maximum-steps", "12", "--report-only"]
+
+
+def test_demo_matrix_runs_each_pair_in_an_isolated_child_and_writes_summary(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "matrix"
+    argv = [
+        "--output",
+        str(output),
+        "--plan-matrix",
+        "--matrix-legs",
+        "1",
+        "--no-matrix-include-self-play",
+        "--maximum-steps",
+        "3",
+        "--report-only",
+    ]
+    args = render_full_match._parser().parse_args(argv)
+    commands = []
+    multi_reports = []
+
+    def write_multi(summary_path):
+        multi_reports.append(summary_path)
+        target = output / "multi-report"
+        return target / "report.html", target / "report.json"
+
+    monkeypatch.setattr(render_full_match, "write_tactical_matrix_report", write_multi)
+
+    def completed(command, **kwargs):
+        commands.append((command, kwargs))
+        return render_full_match.subprocess.CompletedProcess(command, 0, "{}\n", "")
+
+    monkeypatch.setattr(render_full_match.subprocess, "run", completed)
+
+    assert render_full_match._run_plan_matrix(args, argv) == 0
+    summary = render_full_match.json.loads(
+        (output / "matrix-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["pair_count"] == 10
+    assert summary["match_count"] == 10
+    assert summary["failure_count"] == 0
+    assert summary["multi_report"] == {
+        "html": str(output / "multi-report" / "report.html"),
+        "json": str(output / "multi-report" / "report.json"),
+    }
+    assert multi_reports == [output / "matrix-summary.json"]
+    assert len(commands) == 10
+    assert all(call[1]["env"]["JAX_PLATFORMS"] == "cpu" for call in commands)
+    assert all("--plan-matrix" not in call[0] for call in commands)
+    assert all("--match-report" in call[0] for call in commands)
+    assert all("--allow-diagnostic-report" in call[0] for call in commands)
+
+
+def test_opening_rejects_registration_maximum_before_int32_narrowing():
+    env = FootballWorld()
+    team_0 = render_full_match._team_candidates(0, 20)
+    team_1 = render_full_match._team_candidates(1, 20)
+
+    with pytest.raises(ValueError, match="non-negative int32 domain"):
+        build_opening_policy_inputs(
+            env,
+            team_0,
+            team_1,
+            render_full_match.FORMATION_CATALOG,
+            render_full_match.FORMATION_CATALOG,
+            max_registered_players=(2**32 + 20, 20),
         )

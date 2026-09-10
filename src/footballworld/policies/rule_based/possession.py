@@ -163,7 +163,7 @@ def _masked_categorical(
         jnp.log(jnp.maximum(values, jnp.float32(1.0e-4))) / temperature,
         -jnp.inf,
     )
-    sampled = jax.random.categorical(key, logits).astype(jnp.int32)
+    sampled = jax.random.categorical(key, logits.astype(jnp.float32)).astype(jnp.int32)
     return jnp.where(available, sampled, fallback), available
 
 
@@ -269,7 +269,9 @@ def plan_shot(
         portion_logits = (
             jnp.log(jnp.maximum(portion_value, 1e-4)) / config.shot_portion_temperature
         )
-        portion_index = jax.random.categorical(portion_key, portion_logits)
+        portion_index = jax.random.categorical(
+            portion_key, portion_logits.astype(jnp.float32)
+        )
     desired_goal_y = goal_portions[portion_index]
     target_side = jnp.where(
         jnp.abs(desired_goal_y) > _EPS,
@@ -293,7 +295,8 @@ def plan_shot(
     curve_strength = (
         jnp.float32(1.0)
         if curve_key is None
-        else jnp.float32(0.72) + jnp.float32(0.28) * jax.random.uniform(curve_key)
+        else jnp.float32(0.72)
+        + jnp.float32(0.28) * jax.random.uniform(curve_key, dtype=jnp.float32)
     )
     curve_control = config.shoot_curl_spin * curve_fraction * curve_strength
     aim_y = desired_goal_y * (
@@ -351,7 +354,8 @@ def plan_shot(
     if decision_key is not None:
         horizontal_error = (
             jax.random.normal(
-                jax.random.fold_in(decision_key, _SHOT_DIRECTION_RANDOM_STREAM)
+                jax.random.fold_in(decision_key, _SHOT_DIRECTION_RANDOM_STREAM),
+                dtype=jnp.float32,
             )
             * shot_noise
         )
@@ -365,7 +369,8 @@ def plan_shot(
         ).astype(jnp.float32)
         vertical_error = (
             jax.random.normal(
-                jax.random.fold_in(decision_key, _SHOT_LAUNCH_RANDOM_STREAM)
+                jax.random.fold_in(decision_key, _SHOT_LAUNCH_RANDOM_STREAM),
+                dtype=jnp.float32,
             )
             * shot_noise
         )
@@ -400,6 +405,52 @@ def _progressive_pass_gain(
     inherited = jnp.asarray(tactical_gain, jnp.float32) * progress
     calibrated = jnp.asarray(policy_gain, jnp.float32) * completion * progress
     return jnp.clip(inherited + calibrated, 0.0, 1.0)
+
+
+def _backward_pass_cost(
+    signed_progress: jax.Array,
+    current_pressure: jax.Array,
+    build_up_depth: jax.Array,
+    base_penalty: float | jax.Array,
+    advanced_gain: float | jax.Array,
+) -> jax.Array:
+    """Penalize safe recycling more after midfield, fading under pressure."""
+
+    advanced_depth = jnp.clip(
+        jnp.float32(2.0) * jnp.asarray(build_up_depth, jnp.float32) - jnp.float32(1.0),
+        0.0,
+        1.0,
+    )
+    penalty = (
+        jnp.asarray(base_penalty, jnp.float32)
+        + jnp.asarray(advanced_gain, jnp.float32) * advanced_depth
+    )
+    return (
+        penalty
+        * jnp.maximum(-jnp.asarray(signed_progress, jnp.float32), 0.0)
+        * (1.0 - jnp.clip(jnp.asarray(current_pressure, jnp.float32), 0.0, 1.0))
+    )
+
+
+def _pass_width_context(source_y, target_y, completion, half_width):
+    """Return wide-source, switch-lane and contextual lateral-cost arrays."""
+
+    source_y = jnp.asarray(source_y, dtype=jnp.float32)
+    target_y = jnp.asarray(target_y, dtype=jnp.float32)
+    completion = jnp.asarray(completion, dtype=jnp.float32)
+    hy = jnp.maximum(jnp.asarray(half_width, dtype=jnp.float32), _EPS)
+    source_width = jnp.clip(jnp.abs(source_y) / hy, 0.0, 1.0)
+    target_width = jnp.clip(jnp.abs(target_y) / hy, 0.0, 1.0)
+    source_is_wide = source_width >= jnp.float32(0.18)
+    switch_lane = (
+        source_is_wide
+        & (source_y * target_y < 0.0)
+        & (jnp.abs(target_y - source_y) >= jnp.float32(0.35) * hy)
+    )
+    width_expansion = jnp.maximum(target_width - source_width, 0.0)
+    productive_width = jnp.maximum(width_expansion, switch_lane.astype(jnp.float32))
+    lateral_cost_scale = 1.0 - jnp.clip(completion * productive_width, 0.0, 1.0)
+    return source_is_wide, switch_lane, lateral_cost_scale
 
 
 def decide_possession(
@@ -657,6 +708,12 @@ def decide_possession(
     lateral_fraction = jnp.clip(jnp.abs(pass_delta[:, 1]) / (2.0 * hy), 0.0, 1.0)
     target_width = jnp.clip(jnp.abs(receiver_target[:, 1]) / hy, 0.0, 1.0)
     build_up_depth = jnp.clip((source[0] + hx) / (2.0 * hx), 0.25, 1.0)
+    # A completed pass that creates usable width or switches the point of
+    # attack is not the sterile lateral circulation penalized below. Unsafe
+    # or merely sideways candidates retain the full cost.
+    source_is_wide, switch_lane, lateral_cost_scale = _pass_width_context(
+        source[1], receiver_target[:, 1], pass_lane, hy
+    )
     immediate_return = previous_actor & (possession_seconds < jnp.float32(1.0))
     # Progression/width preference is conditional on a completion-qualified
     # pass. Reference numerical floors are not copied because this policy's
@@ -682,15 +739,17 @@ def decide_possession(
     # the backward component, and fade that cost under pressure so a safe
     # reset remains available. This is a policy prior, never an eligibility
     # gate, and therefore cannot suppress the only reachable teammate.
-    backward_cost = (
-        config.backward_pass_penalty
-        * jnp.maximum(-signed_progress, 0.0)
-        * (1.0 - current_pressure)
+    backward_cost = _backward_pass_cost(
+        signed_progress,
+        current_pressure,
+        build_up_depth,
+        config.backward_pass_penalty,
+        config.advanced_backward_pass_penalty_gain,
     )
     pass_completion_weight = jnp.square(pass_lane)
     pass_value = jnp.clip(
         pass_lane * (pass_base * distance_retention + tactical_gain)
-        - config.pass_lateral_penalty * lateral_fraction
+        - config.pass_lateral_penalty * lateral_fraction * lateral_cost_scale
         - return_cost
         - backward_cost,
         0.0,
@@ -721,7 +780,6 @@ def decide_possession(
         third_man_setup_value,
         third_man_execution_value,
     )
-    source_is_wide = jnp.abs(source[1]) >= jnp.float32(0.18) * hy
     same_flank = jnp.where(
         source_is_wide,
         (source[1] * receiver_target[:, 1] >= 0.0).astype(jnp.float32),
@@ -732,11 +790,6 @@ def decide_possession(
         wide_active.astype(jnp.float32)
         * same_flank
         * (0.55 * target_width + 0.45 * progress_value)
-    )
-    switch_lane = (
-        source_is_wide
-        & (source[1] * receiver_target[:, 1] < 0.0)
-        & (jnp.abs(pass_delta[:, 1]) >= jnp.float32(0.35) * hy)
     )
     switch_setup_value = same_flank * (0.70 * receiver_security + 0.30 * progress_value)
     switch_release_value = switch_lane.astype(jnp.float32) * (
@@ -1173,7 +1226,9 @@ def decide_possession(
             jnp.log(jnp.maximum(values, 1e-4)) / config.macro_choice_temperature
         )
         masked_logits = jnp.where(macro_available, macro_logits, -jnp.inf)
-        kind = jax.random.categorical(macro_key, masked_logits).astype(jnp.int32)
+        kind = jax.random.categorical(
+            macro_key, masked_logits.astype(jnp.float32)
+        ).astype(jnp.int32)
     progressive_commit = (
         progressive_pattern
         & setup_phase

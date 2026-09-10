@@ -20,6 +20,8 @@ from footballworld.policies.rule_based.possession import (
     POSSESSION_PASS,
     POSSESSION_SHOT,
     ShotPlan,
+    _backward_pass_cost,
+    _pass_width_context,
     decide_possession,
 )
 from footballworld.policies.rule_based.shape import shape_movement
@@ -34,7 +36,12 @@ from footballworld.policies.rule_based.state import (
     RulePolicyState,
     _next_carrier_age,
 )
-from footballworld.policies.rule_based.tactical_plan import gather_tactical_profile
+from footballworld.policies.rule_based.tactical_plan import (
+    TacticalPlan,
+    gather_tactical_profile,
+    tactical_plan_code,
+)
+from footballworld.policies.rule_based.tactics import moving_receiver_target
 
 
 def _carrier_context(*, teammate_available: bool = True) -> RulePolicyContext:
@@ -114,6 +121,62 @@ def _fixed_ranking_metrics(monkeypatch) -> None:
     monkeypatch.setattr(possession_module, "openness", zeros)
     monkeypatch.setattr(possession_module, "shot_quality", zeros)
     monkeypatch.setattr(possession_module, "pitch_value", pitch)
+
+
+def test_productive_width_and_switch_reduce_only_safe_lateral_cost():
+    central_wide, central_switch, central_scale = _pass_width_context(
+        jnp.float32(0.0),
+        jnp.asarray((0.0, 30.0), dtype=jnp.float32),
+        jnp.asarray((1.0, 1.0), dtype=jnp.float32),
+        jnp.float32(34.0),
+    )
+    assert not bool(central_wide)
+    np.testing.assert_array_equal(np.asarray(central_switch), (False, False))
+    assert float(central_scale[0]) == pytest.approx(1.0)
+    assert float(central_scale[1]) < 0.12
+
+    wide, switch, safe_scale = _pass_width_context(
+        jnp.float32(20.0),
+        jnp.asarray((-20.0, 20.0), dtype=jnp.float32),
+        jnp.ones((2,), dtype=jnp.float32),
+        jnp.float32(34.0),
+    )
+    assert bool(wide)
+    np.testing.assert_array_equal(np.asarray(switch), (True, False))
+    assert float(safe_scale[0]) == pytest.approx(0.0)
+    assert float(safe_scale[1]) == pytest.approx(1.0)
+
+    _, _, unsafe_scale = _pass_width_context(
+        jnp.float32(0.0),
+        jnp.asarray((30.0,), dtype=jnp.float32),
+        jnp.zeros((1,), dtype=jnp.float32),
+        jnp.float32(34.0),
+    )
+    assert float(unsafe_scale[0]) == pytest.approx(1.0)
+
+
+def test_moving_receiver_lead_and_advanced_recycling_cost_are_bounded():
+    config = RulePolicyConfig()
+    receiver = jnp.asarray(((18.0, 2.0),), dtype=jnp.float32)
+    target = moving_receiver_target(
+        jnp.asarray((0.0, 0.0), dtype=jnp.float32),
+        receiver,
+        jnp.asarray(((12.0, 0.0),), dtype=jnp.float32),
+        jnp.asarray((True,), dtype=jnp.bool_),
+        half_length=52.5,
+        half_width=34.0,
+        velocity_weight=config.pass_receiver_velocity_weight,
+        lead_time_cap_s=config.pass_receiver_lead_time_cap_s,
+        lead_distance_cap_m=config.pass_receiver_lead_distance_cap_m,
+    )
+    lead = float(jnp.linalg.norm(target[0] - receiver[0]))
+    assert 0.0 < lead <= config.pass_receiver_lead_distance_cap_m + 1e-6
+
+    own_half = _backward_pass_cost(-0.5, 0.0, 0.25, 0.18, 0.12)
+    advanced = _backward_pass_cost(-0.5, 0.0, 0.90, 0.18, 0.12)
+    pressured = _backward_pass_cost(-0.5, 1.0, 0.90, 0.18, 0.12)
+    assert float(advanced) > float(own_half)
+    assert float(pressured) == pytest.approx(0.0)
 
 
 def test_turnover_settle_suppresses_only_fresh_low_quality_shots(monkeypatch):
@@ -547,8 +610,27 @@ def _shape_fixture() -> tuple[RulePolicyContext, RulePolicyState]:
     return context, state
 
 
-def _shape_call(context, state, *, phase, lateral_shift=2.4):
+def _shape_call(
+    context,
+    state,
+    *,
+    phase,
+    lateral_shift=2.4,
+    own_possession=None,
+    opponent_possession=None,
+    nearest_pressure=None,
+    counterpress_active=None,
+    tactical_plan=TacticalPlan.SALIDA_LAVOLPIANA,
+):
     player_count = context.self_index.shape[0]
+    if own_possession is None:
+        own_possession = jnp.zeros((player_count,), dtype=jnp.bool_)
+    if opponent_possession is None:
+        opponent_possession = jnp.zeros((player_count,), dtype=jnp.bool_)
+    if nearest_pressure is None:
+        nearest_pressure = jnp.zeros((player_count,), dtype=jnp.bool_)
+    if counterpress_active is None:
+        counterpress_active = jnp.zeros((player_count,), dtype=jnp.bool_)
     return shape_movement(
         context,
         state,
@@ -564,11 +646,17 @@ def _shape_call(context, state, *, phase, lateral_shift=2.4):
         box_mark_runner_margin_m=0.8,
         box_mark_ball_margin_m=1.2,
         box_mark_goal_side_distance_m=1.4,
-        own_possession=jnp.zeros((player_count,), dtype=jnp.bool_),
-        opponent_possession=jnp.zeros((player_count,), dtype=jnp.bool_),
-        nearest_pressure=jnp.zeros((player_count,), dtype=jnp.bool_),
-        counterpress_active=jnp.zeros((player_count,), dtype=jnp.bool_),
-        tactical=gather_tactical_profile(jnp.zeros((player_count,), dtype=jnp.int32)),
+        own_possession=jnp.asarray(own_possession, dtype=jnp.bool_),
+        opponent_possession=jnp.asarray(opponent_possession, dtype=jnp.bool_),
+        nearest_pressure=jnp.asarray(nearest_pressure, dtype=jnp.bool_),
+        counterpress_active=jnp.asarray(counterpress_active, dtype=jnp.bool_),
+        tactical=gather_tactical_profile(
+            jnp.full(
+                (player_count,),
+                tactical_plan_code(tactical_plan),
+                dtype=jnp.int32,
+            )
+        ),
         attack_pattern=jnp.full((player_count,), -1, dtype=jnp.int32),
         attack_phase=jnp.full((player_count,), -1, dtype=jnp.int32),
         attack_pattern_shape_shift_m=3.0,
@@ -604,6 +692,199 @@ def test_kickoff_waypoint_is_bounded_role_diverse_and_endpoint_inert():
     assert len(np.unique(np.round(np.abs(delta[np.abs(delta) > 0.1]), 3))) >= 3
     assert float(np.max(np.abs(delta_xy[:, 0]))) <= 1.5 * 2.4 + 1e-6
     assert float(np.max(np.abs(delta_xy[:, 1]))) <= 2.0 * 2.4 + 1e-6
+
+
+def test_attacking_shape_advances_by_phase_and_establishes_width_before_service():
+    context, state = _shape_fixture()
+    player_count = context.self_index.shape[0]
+    # Include selected wide roles on both sides of Team 0. A central ball must
+    # preserve both formation-relative outlets without choosing an arbitrary run side.
+    team_id = jnp.asarray((0, 0, 0, 1, 1, 0), dtype=jnp.int32)
+    same_team = team_id[None, :] == team_id[:, None]
+    eye = jnp.eye(player_count, dtype=jnp.bool_)
+    context = context._replace(
+        self_team=team_id,
+        same_team=same_team,
+        teammate=same_team & (~eye),
+        opponent=(~same_team),
+    )
+    player_position = np.broadcast_to(
+        np.asarray(context.self_position), (player_count, player_count, 2)
+    ).copy()
+    # Give Team 0 a visible, legal forward line so the test isolates shape
+    # construction rather than the final Law-11 cap.
+    player_position[np.ix_((0, 1, 2, 5), (3, 4), (0,))] = np.asarray(
+        (42.0, 40.0), dtype=np.float32
+    )[None, :, None]
+    own = jnp.asarray((True, True, True, False, False, True), dtype=jnp.bool_)
+    state = state._replace(
+        role=state.role.at[5].set(ROLE_FULL_BACK),
+        current_possessor=jnp.asarray((1, 1, 1, 4, 4, 1), dtype=jnp.int32),
+    )
+
+    def at_ball(x):
+        ball = jnp.broadcast_to(
+            jnp.asarray((x, 0.0, 0.11), dtype=jnp.float32),
+            (player_count, 3),
+        )
+        observed = context._replace(
+            player_position=jnp.asarray(player_position),
+            ball_position=ball,
+            ball_visible=jnp.ones((player_count,), dtype=jnp.bool_),
+        )
+        return _shape_call(observed, state, phase=jnp.float32(0.0), own_possession=own)
+
+    build = at_ball(-35.0)
+    progression = at_ball(0.0)
+    final_third = at_ball(35.0)
+
+    # The centre-back reference moves with build-up/progression/final-third
+    # ball depth instead of saturating at the old global translation cap.
+    assert float(build.target[1, 0]) < float(progression.target[1, 0])
+    assert float(progression.target[1, 0]) < float(final_third.target[1, 0])
+    # Both stable outer roles retain more than their anchor width without being
+    # pinned to the 33 m policy boundary. A central ball creates no arbitrary
+    # positive-side run or urgent role.
+    assert 22.0 < float(progression.target[2, 1]) < 33.0
+    assert -33.0 < float(progression.target[5, 1]) < -24.0
+    assert not bool(progression.urgent[2])
+    assert not bool(progression.urgent[5])
+
+
+def test_tactical_profiles_allocate_bounded_direct_pressers_and_keep_cover():
+    context, state = _shape_fixture()
+    player_count = context.self_index.shape[0]
+    # Team 0 has four visible outfielders ranked by distance to a Team 1 carrier.
+    team_id = jnp.asarray((0, 0, 0, 1, 0, 0), dtype=jnp.int32)
+    same_team = team_id[None, :] == team_id[:, None]
+    eye = jnp.eye(player_count, dtype=jnp.bool_)
+    positions = jnp.asarray(
+        ((-45.0, 0.0), (-1.0, 0.0), (-2.0, 0.0), (0.0, 0.0), (-3.0, 0.0), (-4.0, 0.0)),
+        dtype=jnp.float32,
+    )
+    player_position = jnp.broadcast_to(positions, (player_count, player_count, 2))
+    ball = jnp.broadcast_to(
+        jnp.asarray((-0.1, 0.0, 0.11), dtype=jnp.float32),
+        (player_count, 3),
+    )
+    context = context._replace(
+        self_team=team_id,
+        same_team=same_team,
+        teammate=same_team & (~eye),
+        opponent=(~same_team),
+        self_position=positions,
+        player_position=player_position,
+        ball_position=ball,
+        ball_visible=jnp.ones((player_count,), dtype=jnp.bool_),
+    )
+    state = state._replace(
+        role=(
+            state.role.at[4]
+            .set(ROLE_CENTRE_MIDFIELDER)
+            .at[5]
+            .set(ROLE_CENTRE_MIDFIELDER)
+        )
+    )
+    defending = team_id == 0
+    primary = jnp.arange(player_count) == 1
+
+    catenaccio = _shape_call(
+        context,
+        state,
+        phase=jnp.float32(0.0),
+        opponent_possession=defending,
+        nearest_pressure=primary,
+        tactical_plan=TacticalPlan.CATENACCIO,
+    )
+    positional = _shape_call(
+        context,
+        state,
+        phase=jnp.float32(0.0),
+        opponent_possession=defending,
+        nearest_pressure=primary,
+        tactical_plan=TacticalPlan.JUEGO_DE_POSICION,
+    )
+    gegenpress = _shape_call(
+        context,
+        state,
+        phase=jnp.float32(0.0),
+        opponent_possession=defending,
+        nearest_pressure=primary,
+        tactical_plan=TacticalPlan.GEGENPRESS,
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(catenaccio.direct_pressure),
+        (False, True, False, False, False, False),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(positional.direct_pressure),
+        (False, True, True, False, False, False),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(gegenpress.direct_pressure),
+        (False, True, True, False, True, False),
+    )
+    # Rank three remains behind the three-player press as cover, not a fourth
+    # claimant at the carrier.
+    assert not bool(gegenpress.direct_pressure[5])
+    assert float(gegenpress.target[5, 0]) < float(ball[5, 0])
+
+    transition = _shape_call(
+        context,
+        state,
+        phase=jnp.float32(0.0),
+        opponent_possession=defending,
+        nearest_pressure=primary,
+        counterpress_active=defending,
+        tactical_plan=TacticalPlan.GEGENPRESS,
+    )
+    np.testing.assert_array_equal(
+        np.asarray(transition.direct_pressure),
+        (False, True, False, False, False, False),
+    )
+
+
+def test_gegenpress_uses_two_not_three_direct_pressers_high_upfield():
+    context, state = _shape_fixture()
+    player_count = context.self_index.shape[0]
+    team_id = jnp.asarray((0, 0, 0, 1, 0, 0), dtype=jnp.int32)
+    same_team = team_id[None, :] == team_id[:, None]
+    eye = jnp.eye(player_count, dtype=jnp.bool_)
+    positions = jnp.asarray(
+        ((-45.0, 0.0), (11.0, 0.0), (9.0, 0.0), (12.0, 0.0), (8.0, 0.0), (7.0, 0.0)),
+        dtype=jnp.float32,
+    )
+    context = context._replace(
+        self_team=team_id,
+        same_team=same_team,
+        teammate=same_team & (~eye),
+        opponent=(~same_team),
+        self_position=positions,
+        player_position=jnp.broadcast_to(positions, (player_count, player_count, 2)),
+        ball_position=jnp.broadcast_to(
+            jnp.asarray((12.0, 0.0, 0.11), dtype=jnp.float32),
+            (player_count, 3),
+        ),
+        ball_visible=jnp.ones((player_count,), dtype=jnp.bool_),
+    )
+    state = state._replace(
+        role=(
+            state.role.at[4]
+            .set(ROLE_CENTRE_MIDFIELDER)
+            .at[5]
+            .set(ROLE_CENTRE_MIDFIELDER)
+        )
+    )
+    result = _shape_call(
+        context,
+        state,
+        phase=jnp.float32(0.0),
+        opponent_possession=team_id == 0,
+        nearest_pressure=jnp.arange(player_count) == 1,
+        tactical_plan=TacticalPlan.GEGENPRESS,
+    )
+    assert int(np.count_nonzero(np.asarray(result.direct_pressure))) == 2
 
 
 def test_new_scalar_inputs_fail_closed_before_tracing():

@@ -1,10 +1,12 @@
 """Authoritative fixed-shape player actions for one control frame."""
 
 from enum import IntEnum
+from numbers import Integral
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from footballworld.core.action_mapping import (
     RadialControl,
@@ -34,6 +36,88 @@ from footballworld.core.contact import (
 
 ACTION_SCHEMA_VERSION = 2
 ACTION_SCHEMA = f"footballworld.intent-action/{ACTION_SCHEMA_VERSION}"
+
+
+def _canonicalize_intent(
+    intent: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Return submitted, effective, and invalid intent without narrowing aliases.
+
+    Host integers are range-checked before conversion to JAX's canonical int32
+    wire dtype. Values that cannot be represented use ``-1`` as the submitted
+    telemetry sentinel and fail closed to MOVE. Traced arrays follow the same
+    rule using dtype-aware JAX operations.
+    """
+
+    int32_limits = np.iinfo(np.int32)
+    if isinstance(intent, (jax.Array, jax.core.Tracer)):
+        source = jnp.asarray(intent)
+        if jnp.issubdtype(source.dtype, jnp.bool_) or not jnp.issubdtype(
+            source.dtype, jnp.integer
+        ):
+            raise TypeError("intent must have a non-boolean integer dtype")
+        source_limits = np.iinfo(np.dtype(source.dtype))
+        if (
+            source_limits.min >= int32_limits.min
+            and source_limits.max <= int32_limits.max
+        ):
+            submitted = source.astype(jnp.int32)
+        else:
+            if jnp.issubdtype(source.dtype, jnp.unsignedinteger):
+                representable = source <= np.asarray(
+                    int32_limits.max, dtype=np.dtype(source.dtype)
+                )
+            else:
+                representable = (source >= int32_limits.min) & (
+                    source <= int32_limits.max
+                )
+            narrowed = jnp.where(representable, source, jnp.zeros_like(source)).astype(
+                jnp.int32
+            )
+            submitted = jnp.where(representable, narrowed, jnp.int32(-1))
+    else:
+        try:
+            source = np.asarray(intent)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("intent must be an integer array") from exc
+        if source.dtype == np.dtype(object):
+            flat_values = tuple(source.flat)
+            if any(
+                isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral)
+                for value in flat_values
+            ):
+                raise TypeError("intent must have a non-boolean integer dtype")
+            submitted_host = np.asarray(
+                [
+                    int(value)
+                    if int32_limits.min <= int(value) <= int32_limits.max
+                    else -1
+                    for value in flat_values
+                ],
+                dtype=np.int32,
+            ).reshape(source.shape)
+        else:
+            if np.issubdtype(source.dtype, np.bool_) or not np.issubdtype(
+                source.dtype, np.integer
+            ):
+                raise TypeError("intent must have a non-boolean integer dtype")
+            representable = source <= int32_limits.max
+            if np.issubdtype(source.dtype, np.signedinteger):
+                representable &= source >= int32_limits.min
+            narrowed_source = np.where(
+                representable,
+                source,
+                np.zeros((), dtype=source.dtype),
+            )
+            submitted_host = narrowed_source.astype(np.int32)
+            submitted_host = np.where(
+                representable, submitted_host, np.int32(-1)
+            ).astype(np.int32)
+        submitted = jnp.asarray(submitted_host, dtype=jnp.int32)
+
+    valid = (submitted >= INTENT_MOVE) & (submitted < ACTION_INTENT_COUNT)
+    effective = jnp.where(valid, submitted, jnp.int32(INTENT_MOVE))
+    return submitted, effective, ~valid
 
 
 class ActionIntent(IntEnum):
@@ -89,16 +173,12 @@ class IntentAction(NamedTuple):
                 "continuous trailing dimension must be "
                 f"{INTENT_ACTION_CONTINUOUS_DIM}, got {continuous.shape}"
             )
-        intent = jnp.asarray(intent)
-        if not jnp.issubdtype(intent.dtype, jnp.integer):
-            raise TypeError("intent must have an integer dtype")
-        if intent.shape != continuous.shape[:-1]:
+        _, effective_intent, _ = _canonicalize_intent(intent)
+        if effective_intent.shape != continuous.shape[:-1]:
             raise ValueError(
                 "intent shape must equal the continuous prefix, got "
-                f"{intent.shape} and {continuous.shape[:-1]}"
+                f"{effective_intent.shape} and {continuous.shape[:-1]}"
             )
-        valid = (intent >= INTENT_MOVE) & (intent < ACTION_INTENT_COUNT)
-        intent = jnp.where(valid, intent, INTENT_MOVE).astype(jnp.int32)
         controls = jnp.clip(
             jnp.nan_to_num(
                 continuous,
@@ -117,7 +197,7 @@ class IntentAction(NamedTuple):
             axis=-1,
         )
         return cls(
-            intent=intent,
+            intent=effective_intent,
             move=controls[..., INTENT_ACTION_MOVE],
             force_to_ball=controls[..., INTENT_ACTION_FORCE_TO_BALL],
             launch=controls[..., INTENT_ACTION_LAUNCH],

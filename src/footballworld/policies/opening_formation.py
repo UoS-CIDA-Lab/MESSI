@@ -308,7 +308,8 @@ class RuleBasedOpeningFormationPolicy:
             )
             selected.append(
                 jax.random.categorical(
-                    opening_formation_random_key(match_key, team), logits
+                    opening_formation_random_key(match_key, team),
+                    logits.astype(jnp.float32),
                 ).astype(jnp.int32)
             )
             has_mass.append(usable)

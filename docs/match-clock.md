@@ -23,10 +23,9 @@ Replay sidecars retain both the raw monotonic clock and the public clock.
 When `halftime_enabled=False`, `halftime_seconds` is inactive: the environment
 and renderer canonicalize it to the full-time boundary. Ordering and positivity
 of the half-time boundary are
-validated only when the transition can occur. This inherits the sound static
-gate in SoccerWorld—its half-time transition cannot fire when the flag is
-false—but rejects the unconditional `0 < halftime_tick < fulltime_tick`
-constructor restriction there. FootballWorld exposes independent half/full-
+validated only when the transition can occur. The static gate prevents the half-time transition when the flag is false,
+while the constructor validates `0 < halftime_tick < fulltime_tick` only when
+that boundary is active. FootballWorld exposes independent half/full-
 time seconds for short clips, so validating an inactive boundary would create
 configuration-dependent environment/renderer disagreement with no rules
 benefit.

@@ -333,8 +333,8 @@ def _bounded_two_hop_continuation(
 ):
     """Score one physically reachable second ground leg per first receiver.
 
-    This inherits SoccerWorld's receiver-to-support continuation principle but
-    rejects its full multi-row producer. FootballWorld evaluates one
+    This scores receiver-to-support continuation without a full multi-row
+    producer. FootballWorld evaluates one
     receiver-by-support-by-visible-opponent tensor for the sparse carrier row,
     with fixed roster axes and no sampled trajectory or hidden team state.
     The returned values are bounded tactical rankings, not probabilities.
@@ -535,7 +535,7 @@ def _ground_loose_interception(
         physical_position_xy = (
             physical_position_xy + _GROUND_LOOSE_STEP_S * velocity[:, :2]
         )
-        # SoccerWorld clips its receive forecast directly to the pitch. Keep
+        # FootballWorld clips its receive forecast directly to the pitch. Keep
         # that useful bounded target, but reject the clip-only chronology: an
         # unclipped carry plus the environment's complete-ball extent prevents
         # a sample after an exit from becoming a reachable interception.
@@ -1282,11 +1282,13 @@ def make_rule_based_policy(
             pressure_candidate,
             team_player,
         )
-        teammate_to_carrier = jnp.linalg.norm(
-            relative_players - carrier_relative[:, None, :], axis=-1
+        # Only ordering is needed; squared distance preserves rank without a
+        # 22-by-22 square-root pass.
+        teammate_to_carrier_squared = jnp.sum(
+            jnp.square(relative_players - carrier_relative[:, None, :]), axis=-1
         )
         pressure_index = jnp.argmin(
-            jnp.where(pressure_candidate, teammate_to_carrier, jnp.inf),
+            jnp.where(pressure_candidate, teammate_to_carrier_squared, jnp.inf),
             axis=-1,
         )
         nearest_defender = has_visible_carrier & (self_index == pressure_index)
@@ -1544,7 +1546,9 @@ def make_rule_based_policy(
         )
         run_behind_receiver = jax.random.categorical(
             runner_key,
-            jnp.where(safe_runner_candidate, 0.0, -jnp.inf),
+            jnp.where(safe_runner_candidate, jnp.float32(0.0), -jnp.inf).astype(
+                jnp.float32
+            ),
         ).astype(jnp.int32)
         run_behind_receiver = jnp.where(
             has_runner,
@@ -1575,7 +1579,8 @@ def make_rule_based_policy(
                 jax.random.uniform(
                     jax.random.fold_in(
                         attack_episode_key, _OFFSIDE_TIMING_RANDOM_STREAM
-                    )
+                    ),
+                    dtype=jnp.float32,
                 )
                 < timing_error_probability
             )
@@ -1631,6 +1636,9 @@ def make_rule_based_policy(
             teammate[decision_row],
             half_length=half_length,
             half_width=half_width,
+            velocity_weight=config.pass_receiver_velocity_weight,
+            lead_time_cap_s=config.pass_receiver_lead_time_cap_s,
+            lead_distance_cap_m=config.pass_receiver_lead_distance_cap_m,
         )
         pass_delta = pass_target - ball_position[decision_row]
         distance = jnp.linalg.norm(pass_delta, axis=-1)
@@ -1810,7 +1818,7 @@ def make_rule_based_policy(
             .set(current_service_opportunity)
         )
 
-        # SoccerWorld's useful two-hop principle is retained, while its dense
+        # FootballWorld's useful two-hop principle is retained, while its dense
         # all-observer producer is rejected. The helper excludes each receiver
         # itself and boundary-invalid exits, but permits the original passer
         # (a physical wall pass). Law 11 applies at the later second kick, not
@@ -1843,7 +1851,7 @@ def make_rule_based_policy(
         # A completed reception is not automatically a 0.4 s one-touch pass.
         # The earlier cadence made 92% of observed different-teammate
         # receptions relay within two seconds in a 60 s policy diagnostic,
-        # with 17/23 delays pinned to exactly 0.4 s. SoccerWorld gates quick
+        # with 17/23 delays pinned to exactly 0.4 s. FootballWorld gates quick
         # relays by context; adapt that principle to FootballWorld without
         # weakening its intentionally difficult 1v1 carry/contest physics.
         last_contact = observations.possession.last_contact
@@ -1873,7 +1881,7 @@ def make_rule_based_policy(
             distance_scale_m=config.pressure_distance_m,
         )
         pass_direction_row = pass_delta / jnp.maximum(
-            jnp.linalg.norm(pass_delta, axis=-1)[:, None],
+            distance[:, None],
             jnp.float32(GEOMETRY_EPS),
         )
         relay_alignment = jnp.sum(
@@ -1914,7 +1922,9 @@ def make_rule_based_policy(
             relay_quality,
             config.quick_relay_context_logit_limit,
         )
-        relay_draw_allowed = jax.random.uniform(relay_key) < relay_probability
+        relay_draw_allowed = (
+            jax.random.uniform(relay_key, dtype=jnp.float32) < relay_probability
+        )
         relay_context_allowed = relay_draw_allowed & (
             source_pressure >= jnp.float32(config.quick_relay_pressure_floor)
         )
@@ -2395,7 +2405,7 @@ def make_rule_based_policy(
         )
         # A newly secured planned reception cushions along the receiver's
         # current momentum (or the incoming ball direction from rest). This
-        # carries SoccerWorld's first-touch stabilization principle without a
+        # carries FootballWorld's first-touch stabilization principle without a
         # hidden shared receive plan or an extra fitted speed coefficient.
         reception_velocity = context.self_velocity
         reception_speed = jnp.linalg.norm(reception_velocity, axis=-1)
@@ -2508,7 +2518,7 @@ def make_rule_based_policy(
         )
         # A restart still has an attacking and defending team even though the
         # physical possession observation may be deliberately conservative.
-        # SoccerWorld carries that phase into its set-piece positioning.  Keep
+        # FootballWorld carries that phase into its set-piece positioning.  Keep
         # FootballWorld's lean formation field, but preserve the same causal
         # phase continuity instead of leaving the role choice undefined.
         own_restart_phase = restart_active & (observations.restart.team == self_team)
@@ -2605,7 +2615,15 @@ def make_rule_based_policy(
             dtype=jnp.float32,
         )[_policy_state.role]
         offball_power = jnp.clip(offball_power * role_power_scale, 0.0, 1.0)
-        formation_power = jnp.where(active_pressure, pressure_power, offball_power)
+        formation_power = jnp.where(
+            active_pressure,
+            pressure_power,
+            jnp.where(
+                formation_move.direct_pressure,
+                jnp.maximum(offball_power, jnp.float32(config.support_power)),
+                offball_power,
+            ),
+        )
         shape_move = _encode(formation_move.direction, formation_power)
 
         measured_restart_target, measured_restart_valid = restart_shape_target(
@@ -2820,14 +2838,16 @@ def make_rule_based_policy(
             reliable_pass_flight_attack,
         )
 
-        player_to_ball = jnp.linalg.norm(
-            relative_players - ball_xy[:, None, :], axis=-1
+        # Reuse one squared-distance matrix for claimant rank and contact-
+        # envelope comparisons. No downstream consumer needs metric distance.
+        player_to_ball_squared = jnp.sum(
+            jnp.square(relative_players - ball_xy[:, None, :]), axis=-1
         )
         has_loose_chaser = jnp.any(outfield_chaser_candidate, axis=-1)
         current_chaser_index = jnp.argmin(
-            jnp.where(outfield_chaser_candidate, player_to_ball, jnp.inf),
+            jnp.where(outfield_chaser_candidate, player_to_ball_squared, jnp.inf),
             axis=-1,
-        )
+        ).astype(jnp.int32)
         ground_ball = context.ball_position[:, 2] <= ball_radius + 0.08
         supported_ground_ball = (
             (context.ball_position[:, 2] <= ball_radius + GEOMETRY_EPS)
@@ -2870,7 +2890,7 @@ def make_rule_based_policy(
                 outfield_chaser_candidate,
                 previous_ground_receiver,
                 ball_radius_m=ball_radius,
-                # SoccerWorld sends its primary claimant to the receive point.
+                # FootballWorld sends its primary claimant to the receive point.
                 # Homing on the ball centre lets the swept contact solver, not
                 # a tangent-distance approximation, decide the first entry.
                 contact_radius_m=0.0,
@@ -2905,7 +2925,7 @@ def make_rule_based_policy(
         # reassigning at the meeting point.  The former feasibility-only
         # hysteresis could switch one frame before arrival: the designated
         # receiver then resumed formation movement and met the ball only as a
-        # passive body deflection.  SoccerWorld likewise holds one
+        # passive body deflection.  FootballWorld likewise holds one
         # ``receive_runner`` for an own live pass.  FootballWorld retains its
         # observer-local public plan and the environment remains authoritative
         # for the actual swept contact.
@@ -2938,8 +2958,8 @@ def make_rule_based_policy(
             & (previous_loose_chaser < player_count)
             & outfield_chaser_candidate[observer_row, safe_previous_loose_chaser]
             & (
-                player_to_ball[observer_row, safe_previous_loose_chaser]
-                <= jnp.float32(env.reach.carry_radius_m + ball_radius)
+                player_to_ball_squared[observer_row, safe_previous_loose_chaser]
+                <= jnp.square(jnp.float32(env.reach.carry_radius_m + ball_radius))
             )
         )
         # A millimetre-scale turf rebound is still reachable as a ground
@@ -3004,17 +3024,41 @@ def make_rule_based_policy(
             & ground_ball
         )
         safe_loose_chaser = jnp.clip(loose_chaser_index, 0, player_count - 1)
-        claimant_ball_distance = player_to_ball[observer_row, safe_loose_chaser]
+        claimant_ball_distance_squared = player_to_ball_squared[
+            observer_row, safe_loose_chaser
+        ]
         control_envelope = jnp.float32(env.reach.carry_radius_m + ball_radius)
-        clear_claimant_space = (
+        control_envelope_squared = jnp.square(control_envelope)
+        loose_claimant_space = (
             loose_ball
             & ground_ball
             & has_loose_chaser
             & (~self_goalkeeper)
             & (self_index != loose_chaser_index)
-            & (claimant_ball_distance <= control_envelope)
+            & (claimant_ball_distance_squared <= control_envelope_squared)
             & (ball_distance < control_envelope)
         )
+        visible_team_possessor = observations.players.possessor & team_player
+        has_visible_team_possessor = jnp.any(visible_team_possessor, axis=-1)
+        visible_team_possessor_index = jnp.argmax(
+            visible_team_possessor.astype(jnp.int32), axis=-1
+        )
+        safe_team_possessor = jnp.clip(
+            visible_team_possessor_index, 0, player_count - 1
+        )
+        possessor_ball_distance_squared = player_to_ball_squared[
+            observer_row, safe_team_possessor
+        ]
+        controlled_possessor_space = (
+            own_team_possession
+            & ground_ball
+            & has_visible_team_possessor
+            & (~own_possessor)
+            & (~self_goalkeeper)
+            & (possessor_ball_distance_squared <= control_envelope_squared)
+            & (ball_distance < control_envelope)
+        )
+        clear_claimant_space = loose_claimant_space | controlled_possessor_space
         away_from_ball = self_position - context.ball_position[:, :2]
         away_distance = jnp.linalg.norm(away_from_ball, axis=-1)
         away_direction = jnp.where(
@@ -3027,9 +3071,10 @@ def make_rule_based_policy(
         move = jnp.zeros((player_count, 2), dtype=jnp.float32)
         shape_context = possession_known & (~own_possessor)
         move = jnp.where(shape_context[:, None], shape_move, move)
-        # Once one teammate owns a reachable loose ball, another teammate inside
-        # the same physical control envelope clears away instead of crowding the
-        # ball. The claimant branch below remains authoritative for pursuit.
+        # Once one teammate owns a reachable loose ball or is the visible,
+        # controlled possessor, another outfielder inside that same physical
+        # control envelope clears away instead of crowding the ball. The loose
+        # claimant branch below remains authoritative for pursuit.
         move = jnp.where(clear_claimant_space[:, None], claimant_clear_move, move)
         move = jnp.where(loose_chaser[:, None], loose_approach_move, move)
         move = jnp.where(
@@ -3043,7 +3088,7 @@ def make_rule_based_policy(
         # At a corner, contact reach can become true while the taker is still
         # approaching from the field side. Arming there sends the ball back
         # through the taker's solid moving capsule and triggers a lawful
-        # same-actor retouch. SoccerWorld waits for its executable kicker pose;
+        # same-actor retouch. FootballWorld waits for its executable kicker pose;
         # FootballWorld keeps the exact statutory corner point and instead
         # fails closed until the observed ball lies on the actual kick side of
         # the taker. This is a sign-only geometry gate, not a fitted margin.
@@ -3206,7 +3251,7 @@ def make_rule_based_policy(
         rebound_choose_shot = (
             jax.random.categorical(
                 jax.random.fold_in(frame_key, _REBOUND_CHOICE_RANDOM_STREAM),
-                rebound_logits,
+                rebound_logits.astype(jnp.float32),
             )
             == 0
         )
@@ -3222,7 +3267,9 @@ def make_rule_based_policy(
             == 0
         )
         challenge_key = jax.random.fold_in(frame_key, _CHALLENGE_RANDOM_STREAM)
-        challenge_draw = jax.random.uniform(challenge_key, shape=(player_count,))
+        challenge_draw = jax.random.uniform(
+            challenge_key, shape=(player_count,), dtype=jnp.float32
+        )
         challenge_proximity = jnp.clip(
             1.0 - carrier_distance / config.pressure_distance_m, 0.0, 1.0
         )
@@ -3328,10 +3375,10 @@ def make_rule_based_policy(
         ) & (~self_booked)
         # The environment owns the ordinary restart taker's legal approach and
         # projects every player's minimum IFAB separation.  It does not own
-        # tactical positioning.  SoccerWorld likewise keeps non-takers moving
-        # in an attack/defence phase during a restart; FootballWorld inherits
+        # tactical positioning.  FootballWorld likewise keeps non-takers moving
+        # in an attack/defence phase during a restart; FootballWorld keeps
         # that separation of responsibility through its existing fixed-shape
-        # formation field rather than importing SoccerWorld's K-League-fitted
+        # formation field rather than importing FootballWorld's K-League-fitted
         # set-piece table as if it were DFL evidence.  A goalkeeper hold remains
         # live play and continues to use the ordinary formation branches.
         ordinary_restart = restart_active & (observations.restart.kind != RK_GK_HOLD)

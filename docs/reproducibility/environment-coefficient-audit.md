@@ -22,7 +22,7 @@ fit the exact runtime scalar.
 
 No local receipt presently identifies a fitted coefficient for the current
 FootballWorld ball/contact equation. `BallPhysics.bounce_h_keep=0.732` is a
-compatibility prior inherited from an older SoccerWorld reconstruction whose
+compatibility prior inherited from an older FootballWorld reconstruction whose
 named held-out artifact is not present locally and whose ball equation predates
 the current swept-event, spin/slip, and rolling implementation. The four
 post-foul discipline fields inherit a conditional-card aggregate: three remain
@@ -115,7 +115,7 @@ bounce coefficients.
 | `ball_inertia_ratio` | 0.667 | PHYSICAL | DEFER | Ideal thin-shell approximation; the layered real ball was not identified. |
 | `bounce_tangential_e` | 0.0 | DESIGN_PRIOR | DEFER | Sticking-impulse convention; requires spin-observed impacts. |
 | `bounce_spin_vmin` | 0.7 | NUMERICAL | KEEP | Excludes low-amplitude ground vibration from impulse coupling. |
-| `bounce_h_keep` | 0.732 | DESIGN_PRIOR | DEFER | SoccerWorld compatibility prior; refit the complete bounce group against the current equations. |
+| `bounce_h_keep` | 0.732 | DESIGN_PRIOR | DEFER | FootballWorld compatibility prior; refit the complete bounce group against the current equations. |
 | `goal_frame_radius` | 0.06 | DESIGN_PRIOR | KEEP | Law-constrained circular profile selecting the 0.12 m maximum frame width/depth. |
 | `goal_frame_e_rest` | 0.68 | PHYSICAL | DEFER | Explicit unfitted hollow-frame prior. |
 | `goal_frame_mu` | 0.35 | PHYSICAL | DEFER | Explicit unfitted frame/ball friction prior. |
@@ -234,7 +234,7 @@ bounce, or rolling values.
 | `block_speed_limit_mps` | 31.0 | DESIGN_PRIOR | DEFER | Event-preserving eligibility boundary, not a unique human limit. |
 | `height_speed_penalty_mps_per_m` | 3.5 | DESIGN_PRIOR | DEFER | Coupled speed/height reach slope. |
 
-FootballWorld retains SoccerWorld's useful separation between an active-only
+FootballWorld retains FootballWorld's useful separation between an active-only
 aerial recovery lock and passive swept body contact: a recovering player still
 has a solid body. It also retains the player-specific maximum vertical reach
 and the goalkeeper's larger lawful hand envelope. The fixed 0.5 second lock for

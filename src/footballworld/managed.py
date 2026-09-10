@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from footballworld.core.randomness import validate_prng_key
 from footballworld.environment.api import (
     FootballWorld,
     ManagerState,
@@ -100,12 +101,7 @@ class _OpeningDecisionResult(NamedTuple):
 
 
 def _one_key(key: jax.Array) -> None:
-    try:
-        data = jax.random.key_data(key)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("match_key must be one JAX PRNG key") from exc
-    if data.shape != (2,):
-        raise ValueError("match_key must be one unbatched JAX PRNG key")
+    validate_prng_key(key, name="match_key")
 
 
 def _host_bool(value: jax.Array) -> bool:
@@ -220,6 +216,8 @@ class ManagedRunner:
             raise TypeError("num_steps must be an integer")
         if num_steps < 0:
             raise ValueError("num_steps must be non-negative")
+        if num_steps > np.iinfo(np.int32).max:
+            raise ValueError("num_steps exceeds the supported int32 step budget")
         if type(apply_opening_formation) is not bool:
             raise TypeError("apply_opening_formation must be a bool")
         _one_key(match_key)
@@ -390,6 +388,12 @@ def make_managed_runner(
 
     if not isinstance(env, FootballWorld):
         raise TypeError("env must be FootballWorld")
+    if not isinstance(chunk_steps, int) or isinstance(chunk_steps, bool):
+        raise TypeError("chunk_steps must be an integer")
+    if chunk_steps < 1:
+        raise ValueError("chunk_steps must be positive")
+    if chunk_steps > np.iinfo(np.int32).max:
+        raise ValueError("chunk_steps exceeds the supported int32 step budget")
     selected_player = player_policy
     if selected_player is None:
         if not env.policies.rule_based_player:
@@ -399,11 +403,6 @@ def make_managed_runner(
         selected_player = make_rule_based_policy(env)
     validate_player_policy(selected_player)
     using_rule_player = isinstance(selected_player, RuleBasedPolicy)
-    if not isinstance(chunk_steps, int) or isinstance(chunk_steps, bool):
-        raise TypeError("chunk_steps must be an integer")
-    if chunk_steps < 1:
-        raise ValueError("chunk_steps must be positive")
-
     selected_manager = manager_policy
     manager_default = env.policies.rule_based_match_manager
     taker_default = env.policies.rule_based_set_piece_taker

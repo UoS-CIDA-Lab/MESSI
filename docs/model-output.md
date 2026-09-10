@@ -110,6 +110,22 @@ Normalized physical values may exceed `[-1, 1]` when the authoritative state
 is outside the ordinary envelope. This is deliberate: clipping would destroy
 information and make restoration impossible.
 
+The host-only `restore_global_state_view` boundary enforces an exact typed-state
+contract: continuous and normalized-counter leaves are float32,
+categorical/counter identities are int32, and predicates are bool.
+FootballWorld rejects its earlier permissive restore behavior, where a float
+team ID or float64 position could survive normalization and become an invalid
+authoritative checkpoint. Finite physical channels are not blanket-clipped or
+rejected at `[-1, 1]`: that older check contradicted the reversible global-view
+contract and rejected valid positions and velocities outside the ordinary scale
+envelope. Intrinsic domains remain strict: normalized roster attributes and
+stamina lie in `[0, 1]`, gaze stays in its configured interval, facing vectors
+remain unit length, causal counters must fit their int32 tick representation,
+and nested contact/restart provenance must use valid enum and address domains.
+Validation and its batched device-to-host transfers happen once before
+denormalization and never enter `step`, rollout scans, or model observation
+graphs.
+
 ## Match clock
 
 The clock exposes current period, regulation progress, dead-ball time accrued,

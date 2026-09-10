@@ -22,7 +22,7 @@ from footballworld.policies.rule_based.state import ROLE_GOALKEEPER, RulePolicyS
 
 # [restart kind, side (0 restart team / 1 defending team), pitch third,
 #  (centroid x, positive-ball-side centroid y, x std, y std)].  These are
-# compressed team moments from the SoccerWorld K-League transfer fit, not DFL
+# compressed team moments from the FootballWorld K-League transfer fit, not DFL
 # measurements and not a player-level data product. Unsupported cells remain
 # invalid and fall back to FootballWorld's ordinary formation field.
 _MOMENTS = jnp.asarray(

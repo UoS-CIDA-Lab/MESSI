@@ -28,8 +28,22 @@ from footballworld.config.roster import Player, PlayerProfile
 from footballworld.config.roster_sampling import RosterSampling
 from footballworld.config.stamina import LongStamina, ShortStamina
 from footballworld.core.action import IntentAction
-from footballworld.core.constants import RESTART_COUNT, RK_NONE, TEAM_0, TEAM_1
-from footballworld.core.randomness import RandomEvent
+from footballworld.core.constants import (
+    RESTART_COUNT,
+    RK_GK_HOLD,
+    RK_KICKOFF,
+    RK_NONE,
+    TEAM_0,
+    TEAM_1,
+)
+from footballworld.core.contact import (
+    INTENT_COUNT,
+    INTENT_SOURCE_COUNT,
+    LAW11_EFFECT_COUNT,
+    MECHANISM_COUNT,
+    OUTCOME_COUNT,
+)
+from footballworld.core.randomness import RandomEvent, validate_prng_key
 from footballworld.core.state import State, body_forward_from_angle
 from footballworld.core.timebase import DEFAULT_TIMEBASE, Timebase
 from footballworld.environment.clock import MatchClockTicks, NormalizedMatchClock
@@ -113,6 +127,9 @@ from footballworld.environment.substitution import (
     SubstitutionRequest,
     _apply_substitution,
     request_within_roster_domain,
+)
+from footballworld.environment.substitution import (
+    _validate_layout as _validate_substitution_layout,
 )
 from footballworld.environment.transition import (
     ActionReceipt,
@@ -234,6 +251,29 @@ class StepWithEventsResult(NamedTuple):
     events: FrameEvents
 
 
+class StepWithActionReceiptResult(NamedTuple):
+    """Compact opt-in action credit without retaining ``FrameEvents``.
+
+    This privileged dataset telemetry preserves forced restart effective
+    actions and per-dimension consumption while leaving :meth:`step` lean.
+    """
+
+    rollout: Rollout
+    outcome: RuleOutcome
+    contact_attempted: jax.Array
+    kick_applied: jax.Array
+    restart_opened: jax.Array
+    event_budget_exhausted: jax.Array
+    contest_override_valid: jax.Array
+    terminated: jax.Array
+    truncated: jax.Array
+    done: jax.Array
+    terminal_frozen: jax.Array
+    halftime_reset: jax.Array
+    action_trace: ActionTrace
+    action_receipt: ActionReceipt
+
+
 class _StepWithEventsAndRenderSamplesResult(NamedTuple):
     """Eventful transition with bounded renderer-only physics samples."""
 
@@ -349,6 +389,15 @@ def _host_array(name: str, value: Any, shape: tuple[int, ...]) -> np.ndarray:
     return array
 
 
+def _require_host_dtype(name: str, value: Any, dtype: Any) -> None:
+    """Require one exact external checkpoint dtype before restoration."""
+
+    actual = np.asarray(jax.device_get(value)).dtype
+    expected = np.dtype(dtype)
+    if actual != expected:
+        raise TypeError(f"{name} must have dtype {expected}, got {actual}")
+
+
 def _validate_normalized_clock_host(
     clock: NormalizedMatchClock, *, allow_invalid_sentinel: bool = False
 ) -> None:
@@ -396,6 +445,8 @@ def _validate_normalized_global_view_host(
 
     if type(view.state) is not NormalizedGlobalState:
         raise TypeError("view.state must be exactly NormalizedGlobalState")
+    source_view = view
+    view = jax.device_get(source_view)
     _validate_normalized_clock_host(view.state.clock)
     raw_position = np.asarray(jax.device_get(view.state.players.position))
     if (
@@ -435,34 +486,251 @@ def _validate_normalized_global_view_host(
     _host_array("offside.flagged", view.offside.flagged, (player_count,))
     _host_array("offside.direct_exempt_team", view.offside.direct_exempt_team, ())
 
+    integer_fields = (
+        ("clock.period", view.state.clock.period),
+        ("players.team_id", view.state.players.team_id),
+        ("players.player_id", view.state.players.player_id),
+        ("players.yellow_cards", view.state.players.yellow_cards),
+        ("kickoff_team", view.state.kickoff_team),
+        ("possession.team", view.state.possession.team),
+        ("possession.player", view.state.possession.player),
+        ("possession.previous_team", view.state.possession.previous_team),
+        ("restart.kind", view.state.restart.kind),
+        ("restart.team", view.state.restart.team),
+        ("restart.taker", view.state.restart.taker),
+        ("score", view.state.score),
+        ("gk_backpass_team", view.state.gk_backpass_team),
+        ("penalty_completion_team", view.state.penalty_completion_team),
+        ("offside.direct_exempt_team", view.offside.direct_exempt_team),
+    )
+    integer_fields += tuple(
+        (
+            f"possession.last_contact.{name}",
+            getattr(view.state.possession.last_contact, name),
+        )
+        for name in view.state.possession.last_contact._fields
+        if name != "kick_applied"
+    )
+    integer_fields += tuple(
+        (f"restart_release.{name}", getattr(view.state.restart_release, name))
+        for name in ("kind", "team", "taker", "release_mechanism")
+    )
+    boolean_fields = (
+        ("clock.added_time_active", view.state.clock.added_time_active),
+        ("ball.live", view.state.ball.live),
+        ("players.on_pitch", view.state.players.on_pitch),
+        ("players.sent_off", view.state.players.sent_off),
+        ("players.is_goalkeeper", view.state.players.is_goalkeeper),
+        (
+            "possession.last_contact.kick_applied",
+            view.state.possession.last_contact.kick_applied,
+        ),
+        ("restart.indirect", view.state.restart.indirect),
+        ("restart_release.active", view.state.restart_release.active),
+        ("restart_release.untouched", view.state.restart_release.untouched),
+        ("restart_release.indirect", view.state.restart_release.indirect),
+        (
+            "restart_release.law11_direct_exempt",
+            view.state.restart_release.law11_direct_exempt,
+        ),
+        ("first_half_wall_end_known", view.state.first_half_wall_end_known),
+        ("penalty_completion_active", view.state.penalty_completion_active),
+        ("restart_layout_ready", view.state.restart_layout_ready),
+        ("offside.flagged", view.offside.flagged),
+    )
+    float_fields = (
+        ("control_tick", view.state.control_tick),
+        ("ball.position", view.state.ball.position),
+        ("ball.velocity", view.state.ball.velocity),
+        ("ball.spin", view.state.ball.spin),
+        ("players.position", view.state.players.position),
+        ("players.velocity", view.state.players.velocity),
+        ("players.body_forward", view.state.players.body_forward),
+        ("players.gaze_yaw", view.state.players.gaze_yaw),
+        ("players.max_speed", view.state.players.max_speed),
+        ("players.reach_height", view.state.players.reach_height),
+        ("players.height", view.state.players.height),
+        ("players.ball_control", view.state.players.ball_control),
+        ("players.endurance_factor", view.state.players.endurance_factor),
+        ("players.stamina_long", view.state.players.stamina_long),
+        ("players.stamina_short", view.state.players.stamina_short),
+        (
+            "players.challenge_recovery_substeps",
+            view.state.players.challenge_recovery_substeps,
+        ),
+        ("players.contact_lock_substeps", view.state.players.contact_lock_substeps),
+        (
+            "players.aerial_recovery_substeps",
+            view.state.players.aerial_recovery_substeps,
+        ),
+        (
+            "players.possession_loss_lock_substeps",
+            view.state.players.possession_loss_lock_substeps,
+        ),
+        ("attack_direction", view.state.attack_direction),
+        ("possession.control_ticks", view.state.possession.control_ticks),
+        ("restart.substeps_remaining", view.state.restart.substeps_remaining),
+        ("restart.opened_control_tick", view.state.restart.opened_control_tick),
+        ("dead_ball_control_ticks", view.state.dead_ball_control_ticks),
+        ("first_half_wall_end_tick", view.state.first_half_wall_end_tick),
+        (
+            "first_half_live_extension_ticks",
+            view.state.first_half_live_extension_ticks,
+        ),
+    )
+    float_fields += tuple(
+        (f"clock.{name}", getattr(view.state.clock, name))
+        for name in view.state.clock._fields
+        if name not in ("period", "added_time_active")
+    )
+    for name, value in integer_fields:
+        _require_host_dtype(name, value, np.int32)
+    for name, value in boolean_fields:
+        _require_host_dtype(name, value, np.bool_)
+    for name, value in float_fields:
+        _require_host_dtype(name, value, np.float32)
+
+    def require_tick_representable(
+        name: str,
+        value: Any,
+        scale: int,
+        *,
+        lower: int = 0,
+    ) -> None:
+        scaled = np.asarray(value, dtype=np.float64) * float(scale)
+        if np.any(scaled < lower) or np.any(scaled > np.iinfo(np.int32).max):
+            raise ValueError(f"{name} cannot be represented as int32 ticks")
+
+    counter_scale = context.counter_scale_ticks
+    for name, value, scale, lower in (
+        ("control_tick", view.state.control_tick, counter_scale, 0),
+        (
+            "players.challenge_recovery_substeps",
+            view.state.players.challenge_recovery_substeps,
+            context.challenge_lock_substeps,
+            0,
+        ),
+        (
+            "players.contact_lock_substeps",
+            view.state.players.contact_lock_substeps,
+            context.contact_lock_substeps,
+            0,
+        ),
+        (
+            "players.aerial_recovery_substeps",
+            view.state.players.aerial_recovery_substeps,
+            context.aerial_lock_substeps,
+            0,
+        ),
+        (
+            "players.possession_loss_lock_substeps",
+            view.state.players.possession_loss_lock_substeps,
+            context.possession_loss_lock_substeps,
+            0,
+        ),
+        (
+            "possession.control_ticks",
+            view.state.possession.control_ticks,
+            counter_scale,
+            0,
+        ),
+        (
+            "restart.opened_control_tick",
+            view.state.restart.opened_control_tick,
+            counter_scale,
+            -1,
+        ),
+        (
+            "dead_ball_control_ticks",
+            view.state.dead_ball_control_ticks,
+            counter_scale,
+            0,
+        ),
+        (
+            "first_half_wall_end_tick",
+            view.state.first_half_wall_end_tick,
+            counter_scale,
+            0,
+        ),
+        (
+            "first_half_live_extension_ticks",
+            view.state.first_half_live_extension_ticks,
+            counter_scale,
+            0,
+        ),
+    ):
+        require_tick_representable(name, value, scale, lower=lower)
+
+    restart_kind = int(np.asarray(view.state.restart.kind))
+    if restart_kind == RK_GK_HOLD:
+        restart_scale = context.goalkeeper_hold_substeps
+    elif restart_kind in (RK_NONE, RK_KICKOFF):
+        restart_scale = 1
+    else:
+        restart_scale = context.restart_delay_substeps
+    require_tick_representable(
+        "restart.substeps_remaining",
+        view.state.restart.substeps_remaining,
+        restart_scale,
+    )
+
     for index, leaf in enumerate(jax.tree_util.tree_leaves(view)):
-        array = np.asarray(jax.device_get(leaf))
+        array = np.asarray(leaf)
         if np.issubdtype(array.dtype, np.floating):
+            if array.dtype != np.dtype(np.float32):
+                raise TypeError(
+                    f"normalized global leaf {index} must have dtype float32, "
+                    f"got {array.dtype}"
+                )
             if not np.all(np.isfinite(array)):
                 raise ValueError(f"normalized global leaf {index} must be finite")
-            if np.any(np.abs(array) > 1.00001):
-                raise ValueError(f"normalized global leaf {index} lies outside [-1, 1]")
 
-    restored = denormalize_global_state(view.state, context)
-    team_id = np.asarray(jax.device_get(restored.players.team_id))
+    for name in (
+        "max_speed",
+        "reach_height",
+        "height",
+        "ball_control",
+        "endurance_factor",
+        "stamina_long",
+        "stamina_short",
+    ):
+        value = np.asarray(getattr(view.state.players, name))
+        if np.any((value < 0.0) | (value > 1.0)):
+            raise ValueError(f"players.{name} must lie in [0, 1]")
+    body_forward = np.asarray(view.state.players.body_forward)
+    body_norm = np.linalg.norm(body_forward, axis=-1)
+    if not np.allclose(body_norm, 1.0, rtol=1.0e-5, atol=1.0e-5):
+        raise ValueError("players.body_forward must contain unit vectors")
+    gaze_yaw = np.asarray(view.state.players.gaze_yaw)
+    if np.any(np.abs(gaze_yaw) > 1.00001):
+        raise ValueError("players.gaze_yaw must lie in [-1, 1]")
+
+    device_restored = denormalize_global_state(source_view.state, context)
+    restored = jax.device_get(device_restored)
+    team_id = np.asarray(restored.players.team_id)
     if np.any((team_id != TEAM_0) & (team_id != TEAM_1)):
         raise ValueError("players.team_id must contain only team 0 or 1")
-    attack = np.asarray(jax.device_get(restored.attack_direction))
+    attack = np.asarray(restored.attack_direction)
     if not np.array_equal(np.sort(attack), np.asarray([-1.0, 1.0], dtype=attack.dtype)):
         raise ValueError("attack_direction must contain opposite unit directions")
-    if int(np.asarray(jax.device_get(restored.kickoff_team))) not in (TEAM_0, TEAM_1):
+    if int(np.asarray(restored.kickoff_team)) not in (TEAM_0, TEAM_1):
         raise ValueError("kickoff_team must identify team 0 or 1")
-    score = np.asarray(jax.device_get(restored.score))
+    score = np.asarray(restored.score)
     if not np.issubdtype(score.dtype, np.integer) or np.any(score < 0):
         raise ValueError("score must contain non-negative integers")
 
     def integer_scalar(name: str, value: Any, lower: int, upper: int) -> None:
-        array = np.asarray(jax.device_get(value))
+        array = np.asarray(value)
         if (
             not np.issubdtype(array.dtype, np.integer)
             or not lower <= int(array) <= upper
         ):
             raise ValueError(f"{name} must lie in [{lower}, {upper}]")
+
+    def integer_array_at_least(name: str, value: Any, lower: int) -> None:
+        array = np.asarray(value)
+        if not np.issubdtype(array.dtype, np.integer) or np.any(array < lower):
+            raise ValueError(f"{name} must be at least {lower}")
 
     integer_scalar("possession.team", restored.possession.team, -1, 1)
     integer_scalar("possession.previous_team", restored.possession.previous_team, -1, 1)
@@ -473,26 +741,92 @@ def _validate_normalized_global_view_host(
     integer_scalar("restart.team", restored.restart.team, -1, 1)
     integer_scalar("restart.taker", restored.restart.taker, -1, player_count - 1)
     integer_scalar("offside.direct_exempt_team", view.offside.direct_exempt_team, -1, 1)
+    integer_scalar("gk_backpass_team", restored.gk_backpass_team, -1, 1)
+    integer_scalar("penalty_completion_team", restored.penalty_completion_team, -1, 1)
+    contact = restored.possession.last_contact
+    for name, value, lower, upper in (
+        ("actor", contact.actor, -1, player_count - 1),
+        ("mechanism", contact.mechanism, 0, MECHANISM_COUNT - 1),
+        ("intent", contact.intent, 0, INTENT_COUNT - 1),
+        ("outcome", contact.outcome, 0, OUTCOME_COUNT - 1),
+        ("restart_kind", contact.restart_kind, RK_NONE, RESTART_COUNT - 1),
+        ("law11_effect", contact.law11_effect, 0, LAW11_EFFECT_COUNT - 1),
+        ("intent_source", contact.intent_source, 0, INTENT_SOURCE_COUNT - 1),
+    ):
+        integer_scalar(f"possession.last_contact.{name}", value, lower, upper)
+    release = restored.restart_release
+    for name, value, lower, upper in (
+        ("kind", release.kind, RK_NONE, RESTART_COUNT - 1),
+        ("team", release.team, -1, 1),
+        ("taker", release.taker, -1, player_count - 1),
+        ("release_mechanism", release.release_mechanism, 0, MECHANISM_COUNT - 1),
+    ):
+        integer_scalar(f"restart_release.{name}", value, lower, upper)
+    player_id = np.asarray(restored.players.player_id)
+    if np.any(player_id < 0) or np.unique(player_id).size != player_count:
+        raise ValueError(
+            "players.player_id must contain unique non-negative identities"
+        )
+    yellow_cards = np.asarray(restored.players.yellow_cards)
+    if np.any((yellow_cards < 0) | (yellow_cards > 2)):
+        raise ValueError("players.yellow_cards must lie in [0, 2]")
+    for name, value, lower in (
+        ("control_tick", restored.control_tick, 0),
+        (
+            "players.challenge_recovery_substeps",
+            restored.players.challenge_recovery_substeps,
+            0,
+        ),
+        ("players.contact_lock_substeps", restored.players.contact_lock_substeps, 0),
+        (
+            "players.aerial_recovery_substeps",
+            restored.players.aerial_recovery_substeps,
+            0,
+        ),
+        (
+            "players.possession_loss_lock_substeps",
+            restored.players.possession_loss_lock_substeps,
+            0,
+        ),
+        ("possession.control_ticks", restored.possession.control_ticks, 0),
+        ("restart.substeps_remaining", restored.restart.substeps_remaining, 0),
+        ("restart.opened_control_tick", restored.restart.opened_control_tick, -1),
+        ("dead_ball_control_ticks", restored.dead_ball_control_ticks, 0),
+        (
+            "first_half_live_extension_ticks",
+            restored.first_half_live_extension_ticks,
+            0,
+        ),
+    ):
+        integer_array_at_least(name, value, lower)
+    if bool(np.asarray(restored.first_half_wall_end_tick >= 0)) != bool(
+        np.asarray(view.state.first_half_wall_end_known)
+    ):
+        raise ValueError(
+            "first_half_wall_end_tick must match first_half_wall_end_known"
+        )
     for name, value in (
         ("players.on_pitch", restored.players.on_pitch),
         ("players.sent_off", restored.players.sent_off),
         ("players.is_goalkeeper", restored.players.is_goalkeeper),
         ("offside.flagged", view.offside.flagged),
     ):
-        if not np.issubdtype(np.asarray(jax.device_get(value)).dtype, np.bool_):
+        if not np.issubdtype(np.asarray(value).dtype, np.bool_):
             raise TypeError(f"{name} must have boolean dtype")
 
-    canonical_clock = normalize_global_state(restored, context).clock
+    canonical_clock = jax.device_get(
+        normalize_global_state(device_restored, context).clock
+    )
     for name in view.state.clock._fields:
-        supplied = np.asarray(jax.device_get(getattr(view.state.clock, name)))
-        canonical = np.asarray(jax.device_get(getattr(canonical_clock, name)))
+        supplied = np.asarray(getattr(view.state.clock, name))
+        canonical = np.asarray(getattr(canonical_clock, name))
         if np.issubdtype(supplied.dtype, np.floating):
             matches = np.allclose(supplied, canonical, rtol=0.0, atol=1.0e-6)
         else:
             matches = np.array_equal(supplied, canonical)
         if not matches:
             raise ValueError(f"global clock field {name} is inconsistent with state")
-    return restored
+    return device_restored
 
 
 @jax.tree_util.register_static
@@ -605,7 +939,10 @@ class FootballWorld:
             sampling_key=(
                 None
                 if key is None or not self.roster_sampling.enabled
-                else jax.random.fold_in(key, _ACTIVE_ROSTER_SAMPLING_STREAM)
+                else jax.random.fold_in(
+                    validate_prng_key(key, name="key"),
+                    _ACTIVE_ROSTER_SAMPLING_STREAM,
+                )
             ),
         )
         active = np.asarray(initial.state.players.active, dtype=bool)
@@ -677,6 +1014,7 @@ class FootballWorld:
     ) -> StepResult:
         """Advance one fixed-duration control frame without materializing views."""
 
+        validate_prng_key(key, name="key")
         episode = step_episode(
             rollout.state,
             rollout.offside,
@@ -758,6 +1096,7 @@ class FootballWorld:
                 f"rank, got {action.intent.shape} and {action.move.shape}"
             )
         if action_rank == 2:
+            validate_prng_key(key, name="key")
             return self._step_with_events_single(rollout, setup, action, key)
         if action_rank != 3:
             raise ValueError(
@@ -780,6 +1119,7 @@ class FootballWorld:
             setup_axis = 0
         else:
             raise ValueError("setup must be shared [N, 2] or batched [B, N, 2]")
+        validate_prng_key(key, name="key", batch_size=batch_size)
         if setup_axis is None:
             return jax.lax.map(
                 lambda item: self._step_with_events_single(
@@ -790,6 +1130,38 @@ class FootballWorld:
         return jax.lax.map(
             lambda item: self._step_with_events_single(*item),
             (rollout, setup, action, key),
+        )
+
+    def step_with_action_receipt(
+        self,
+        rollout: Rollout,
+        setup: MatchSetup,
+        action: IntentAction,
+        key: jax.Array,
+    ) -> StepWithActionReceiptResult:
+        """Advance and retain compact submitted/effective action credit.
+
+        The transition is identical to :meth:`step_with_events`, but the
+        returned PyTree omits the physics-substep event tree. JIT callers
+        therefore retain only action trace and receipt leaves.
+        """
+
+        result = self.step_with_events(rollout, setup, action, key)
+        return StepWithActionReceiptResult(
+            rollout=result.rollout,
+            outcome=result.outcome,
+            contact_attempted=result.contact_attempted,
+            kick_applied=result.kick_applied,
+            restart_opened=result.restart_opened,
+            event_budget_exhausted=result.event_budget_exhausted,
+            contest_override_valid=result.contest_override_valid,
+            terminated=result.terminated,
+            truncated=result.truncated,
+            done=result.done,
+            terminal_frozen=result.terminal_frozen,
+            halftime_reset=result.halftime_reset,
+            action_trace=result.action_trace,
+            action_receipt=result.action_receipt,
         )
 
     def _step_with_events_single(
@@ -1098,6 +1470,13 @@ class FootballWorld:
         Refresh cached roster metadata exactly when ``applied`` is true.
         """
 
+        if not isinstance(request, SubstitutionRequest):
+            raise TypeError("request must be SubstitutionRequest")
+        request = _validate_substitution_layout(
+            rollout.state,
+            rollout.offside,
+            request,
+        )
         fulltime_tick, _ = self.match.clock_ticks(self.timebase)
         bounded_request = request._replace(
             enabled=(
@@ -1184,7 +1563,10 @@ class FootballWorld:
             sampling_key=(
                 None
                 if key is None or not self.roster_sampling.enabled
-                else jax.random.fold_in(key, _BENCH_ROSTER_SAMPLING_STREAM)
+                else jax.random.fold_in(
+                    validate_prng_key(key, name="key"),
+                    _BENCH_ROSTER_SAMPLING_STREAM,
+                )
             ),
         )
 

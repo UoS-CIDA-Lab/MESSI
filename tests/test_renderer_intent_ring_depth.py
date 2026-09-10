@@ -1,8 +1,8 @@
 """Focused host-rendering contract for flat, player-occluded intent rings.
 
-SoccerWorld projects its ground rings from z=0 and paints them before player
-bodies. FootballWorld inherits that sound spatial ordering while retaining its
-own requested-intent semantics and configured reach radii.
+FootballWorld projects ground rings from z=0 and paints them before player
+bodies so occlusion, requested-intent semantics, and configured reach radii
+remain visually consistent.
 """
 
 import numpy as np

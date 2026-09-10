@@ -253,7 +253,14 @@ def make_match_setup(
             raise ValueError(
                 f"second_half_positions must be finite with shape {expected}"
             )
-    opening_team = int(np.asarray(initial_state.kickoff_team))
+    opening_team_value = np.asarray(jax.device_get(initial_state.kickoff_team))
+    if opening_team_value.shape != ():
+        raise ValueError("initial kickoff_team must be scalar")
+    if not np.issubdtype(opening_team_value.dtype, np.integer) or np.issubdtype(
+        opening_team_value.dtype, np.bool_
+    ):
+        raise TypeError("initial kickoff_team must be a non-boolean integer")
+    opening_team = int(opening_team_value)
     if opening_team not in (TEAM_0, TEAM_1):
         raise ValueError("initial kickoff_team must identify one team")
     return MatchSetup(

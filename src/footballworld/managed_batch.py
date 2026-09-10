@@ -18,6 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from footballworld.batching import batch_rollout
+from footballworld.core.randomness import validate_prng_key
 from footballworld.environment.api import (
     FootballWorld,
     ManagerState,
@@ -115,35 +116,34 @@ def _validate_batch_tree(name: str, value: Any, batch_size: int) -> None:
 
 
 def _validate_keys(keys: jax.Array, batch_size: int) -> None:
-    try:
-        data = jax.random.key_data(keys)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("match_keys must be a batch of JAX PRNG keys") from exc
-    if data.shape != (batch_size, 2):
-        raise ValueError(f"match_keys must contain exactly {batch_size} keys")
+    validate_prng_key(keys, name="match_keys", batch_size=batch_size)
 
 
 def _horizons(value: int | np.ndarray | jax.Array, batch_size: int) -> np.ndarray:
+    maximum = np.iinfo(np.int32).max
     if isinstance(value, Integral) and not isinstance(value, (bool, np.bool_)):
-        if int(value) < 0:
+        integer = int(value)
+        if integer < 0:
             raise ValueError("num_steps must be non-negative")
-        result = np.full(batch_size, int(value), dtype=np.int64)
+        if integer > maximum:
+            raise ValueError("num_steps exceeds the supported int32 step budget")
+        result = np.full(batch_size, integer, dtype=np.int64)
     else:
         raw = np.asarray(jax.device_get(value))
         if not np.issubdtype(raw.dtype, np.integer) or np.issubdtype(
             raw.dtype, np.bool_
         ):
             raise TypeError("num_steps array must use a non-boolean integer dtype")
+        if raw.shape not in ((), (batch_size,)):
+            raise ValueError(f"num_steps must be scalar or have shape [{batch_size}]")
+        if np.any(raw < 0):
+            raise ValueError("num_steps must be non-negative")
+        if np.any(raw > maximum):
+            raise ValueError("num_steps exceeds the supported int32 step budget")
         if raw.shape == ():
             result = np.full(batch_size, int(raw), dtype=np.int64)
-        elif raw.shape == (batch_size,):
-            result = raw.astype(np.int64, copy=True)
         else:
-            raise ValueError(f"num_steps must be scalar or have shape [{batch_size}]")
-        if np.any(result < 0):
-            raise ValueError("num_steps must be non-negative")
-    if np.any(result > np.iinfo(np.int32).max):
-        raise ValueError("num_steps exceeds the supported int32 step budget")
+            result = raw.astype(np.int64, copy=True)
     return result
 
 
@@ -455,6 +455,12 @@ def make_managed_batch_runner(
 
     if not isinstance(env, FootballWorld):
         raise TypeError("env must be FootballWorld")
+    if not isinstance(chunk_steps, int) or isinstance(chunk_steps, bool):
+        raise TypeError("chunk_steps must be an integer")
+    if chunk_steps < 1:
+        raise ValueError("chunk_steps must be positive")
+    if chunk_steps > np.iinfo(np.int32).max:
+        raise ValueError("chunk_steps exceeds the supported int32 step budget")
     selected_player = player_policy
     if selected_player is None:
         if not env.policies.rule_based_player:
@@ -464,11 +470,6 @@ def make_managed_batch_runner(
         selected_player = make_rule_based_policy(env)
     validate_player_policy(selected_player)
     using_rule_player = isinstance(selected_player, RuleBasedPolicy)
-    if not isinstance(chunk_steps, int) or isinstance(chunk_steps, bool):
-        raise TypeError("chunk_steps must be an integer")
-    if chunk_steps < 1:
-        raise ValueError("chunk_steps must be positive")
-
     selected_manager = manager_policy
     manager_default = env.policies.rule_based_match_manager
     taker_default = env.policies.rule_based_set_piece_taker

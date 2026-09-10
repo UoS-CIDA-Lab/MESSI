@@ -16,10 +16,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
+import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
+from itertools import combinations
 from pathlib import Path
 
 import jax
@@ -37,7 +41,11 @@ from footballworld import (
     initialize_policy_state,
     make_managed_runner,
 )
-from footballworld.analysis import MatchDataset, write_match_report
+from footballworld.analysis import (
+    MatchDataset,
+    write_match_report,
+    write_tactical_matrix_report,
+)
 from footballworld.policies import (
     RulePolicyConfig,
     TacticalPlan,
@@ -53,6 +61,7 @@ from footballworld.rendering import (
 from footballworld.rendering.integrity import publication_authority
 
 DEFAULT_CANDIDATE_COUNT = 20
+DEFAULT_MATRIX_WORKERS = 2
 MIN_CANDIDATE_COUNT = 18
 MAX_CANDIDATE_COUNT = 23
 RANDOM_TACTICAL_PLAN = "random"
@@ -376,6 +385,45 @@ def _parser() -> argparse.ArgumentParser:
         help="new output directory; existing paths are rejected",
     )
     parser.add_argument(
+        "--plan-matrix",
+        action="store_true",
+        help=(
+            "run every unordered tactical-plan pairing in parallel; by default "
+            "each pairing is played in both team-slot orientations"
+        ),
+    )
+    parser.add_argument(
+        "--matrix-workers",
+        type=_positive_integer,
+        default=DEFAULT_MATRIX_WORKERS,
+        help=(
+            "maximum concurrent match subprocesses for --plan-matrix "
+            f"(default {DEFAULT_MATRIX_WORKERS})"
+        ),
+    )
+    parser.add_argument(
+        "--matrix-legs",
+        type=int,
+        choices=(1, 2),
+        default=2,
+        help="one orientation per pairing or both team-slot orientations",
+    )
+    parser.add_argument(
+        "--matrix-include-self-play",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "run each tactical plan against itself once (default enabled); with "
+            "two legs this produces the complete 25-cell ordered plan matrix"
+        ),
+    )
+    parser.add_argument(
+        "--matrix-platform",
+        choices=("cpu", "gpu"),
+        default="cpu",
+        help="JAX platform for matrix child processes (default cpu)",
+    )
+    parser.add_argument(
         "--maximum-steps",
         type=_positive_integer,
         default=None,
@@ -568,8 +616,188 @@ def _generate_match_reports(
     return records
 
 
+_MATRIX_VALUE_OPTIONS = frozenset(
+    {
+        "--output",
+        "--team-0-plan",
+        "--team-1-plan",
+        "--matrix-workers",
+        "--matrix-legs",
+        "--matrix-platform",
+    }
+)
+_MATRIX_FLAG_OPTIONS = frozenset(
+    {"--plan-matrix", "--matrix-include-self-play", "--no-matrix-include-self-play"}
+)
+
+
+def _matrix_child_arguments(argv: Sequence[str]) -> list[str]:
+    """Remove parent-only and per-matchup options from matrix child argv."""
+
+    retained: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        option = token.split("=", 1)[0]
+        if option in _MATRIX_FLAG_OPTIONS:
+            index += 1
+            continue
+        if option in _MATRIX_VALUE_OPTIONS:
+            index += 1 if "=" in token else 2
+            continue
+        retained.append(token)
+        index += 1
+    return retained
+
+
+def _matrix_matchups(
+    legs: int, *, include_self_play: bool = True
+) -> tuple[tuple[TacticalPlan, TacticalPlan, int], ...]:
+    """Return stable distinct-plan pairings and optional self-play cells."""
+
+    matchups: list[tuple[TacticalPlan, TacticalPlan, int]] = []
+    for first, second in combinations(tuple(TacticalPlan), 2):
+        matchups.append((first, second, 1))
+        if legs == 2:
+            matchups.append((second, first, 2))
+    if include_self_play:
+        matchups.extend((plan, plan, 1) for plan in TacticalPlan)
+    return tuple(matchups)
+
+
+def _write_matrix_summary(output: Path, payload: Mapping[str, object]) -> Path:
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / "matrix-summary.json"
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=output, prefix=".matrix-summary-", delete=False
+    ) as stream:
+        temporary = Path(stream.name)
+        json.dump(payload, stream, ensure_ascii=False, indent=2, allow_nan=False)
+        stream.write("\n")
+    try:
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def _run_plan_matrix(args: argparse.Namespace, argv: Sequence[str]) -> int:
+    """Run isolated tactical pairings concurrently and retain every report/log."""
+
+    output = args.output.resolve()
+    if output.exists():
+        raise FileExistsError(f"matrix output already exists: {output}")
+    output.mkdir(parents=True)
+    base_arguments = _matrix_child_arguments(argv)
+    if "--match-report" not in base_arguments:
+        base_arguments.append("--match-report")
+    if (
+        args.maximum_steps is not None or args.allow_dirty or args.report_only
+    ) and "--allow-diagnostic-report" not in base_arguments:
+        base_arguments.append("--allow-diagnostic-report")
+
+    matchups = _matrix_matchups(
+        args.matrix_legs, include_self_play=args.matrix_include_self_play
+    )
+    jobs: list[tuple[TacticalPlan, TacticalPlan, int, Path, list[str]]] = []
+    for team_0, team_1, leg in matchups:
+        pairing = "__".join(sorted((team_0.value, team_1.value)))
+        child_output = output / pairing / f"leg-{leg}"
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            *base_arguments,
+            "--team-0-plan",
+            team_0.value,
+            "--team-1-plan",
+            team_1.value,
+            "--output",
+            str(child_output),
+        ]
+        jobs.append((team_0, team_1, leg, child_output, command))
+
+    child_environment = os.environ.copy()
+    child_environment["JAX_PLATFORMS"] = args.matrix_platform
+
+    def execute(job):
+        team_0, team_1, leg, child_output, command = job
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=child_environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        child_output.mkdir(parents=True, exist_ok=True)
+        (child_output / "matrix-child.stdout.log").write_text(
+            completed.stdout, encoding="utf-8"
+        )
+        (child_output / "matrix-child.stderr.log").write_text(
+            completed.stderr, encoding="utf-8"
+        )
+        return {
+            "team_0_plan": team_0.value,
+            "team_1_plan": team_1.value,
+            "leg": leg,
+            "output": str(child_output),
+            "returncode": completed.returncode,
+            "report_status": str(child_output / "match-report-status.json"),
+        }
+
+    records: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=args.matrix_workers) as executor:
+        futures = {executor.submit(execute, job): job for job in jobs}
+        for future in as_completed(futures):
+            records.append(future.result())
+    records.sort(
+        key=lambda row: (
+            str(row["team_0_plan"]),
+            str(row["team_1_plan"]),
+            int(row["leg"]),
+        )
+    )
+    failures = [record for record in records if record["returncode"] != 0]
+    summary = {
+        "schema": "footballworld.tactical-plan-matrix/1",
+        "status": "complete" if not failures else "failed",
+        "seed": args.seed,
+        "platform": args.matrix_platform,
+        "workers": args.matrix_workers,
+        "legs": args.matrix_legs,
+        "include_self_play": args.matrix_include_self_play,
+        "pair_count": len(tuple(combinations(tuple(TacticalPlan), 2))),
+        "match_count": len(records),
+        "failure_count": len(failures),
+        "matches": records,
+    }
+    target = _write_matrix_summary(output, summary)
+    if not failures:
+        try:
+            multi_html, multi_json = write_tactical_matrix_report(target)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            summary["status"] = "failed"
+            summary["aggregation_error_type"] = type(error).__name__
+            summary["aggregation_error"] = str(error)
+            target = _write_matrix_summary(output, summary)
+            print(
+                json.dumps(
+                    {**summary, "summary": str(target)}, ensure_ascii=False, indent=2
+                )
+            )
+            return 2
+        summary["multi_report"] = {
+            "html": str(multi_html),
+            "json": str(multi_json),
+        }
+        target = _write_matrix_summary(output, summary)
+    print(json.dumps({**summary, "summary": str(target)}, ensure_ascii=False, indent=2))
+    return 0 if not failures else 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = _parser().parse_args(raw_argv)
     if args.report_only and args.verify_video:
         raise ValueError("--report-only cannot be combined with --verify-video")
     if args.report_only:
@@ -577,6 +805,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.allow_diagnostic_report = True
     if args.allow_diagnostic_report and not args.match_report:
         raise ValueError("--allow-diagnostic-report requires --match-report")
+    if args.plan_matrix:
+        return _run_plan_matrix(args, raw_argv)
     git_start = _git_snapshot()
     if git_start["dirty"] and not args.allow_dirty:
         raise RuntimeError(

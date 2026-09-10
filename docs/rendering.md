@@ -24,10 +24,10 @@ fingerprint of the canonical `RulePolicyConfig`, so the effective policy input
 can be audited without treating a requested `random` label as the realized
 configuration.
 
-FootballWorld inherits SoccerWorld's sound side-specific selection and seeded,
-independent random resolution because those properties make comparisons
+FootballWorld uses side-specific selection and seeded, independent random
+resolution because those properties make comparisons
 reproducible and prevent one side's request from determining the other's.
-FootballWorld rejects SoccerWorld's continuous style-vector mechanism for this
+FootballWorld rejects the continuous style-vector mechanism for this
 surface: its rule policy defines five named, mechanism-specific tactical plans,
 so the CLI selects among those explicit plans rather than interpolating an
 unidentified vector whose values would not map to FootballWorld's tactical
@@ -141,9 +141,8 @@ render rate must be an integer multiple of the control rate and the resulting
 samples per control frame must divide the physics decimation. With the default
 80 Hz physics and 10 Hz control clocks, the exact rates are 10, 20, 40, and
 80 fps. In particular, 30 or 60 fps fails closed instead of labelling the
-non-uniform 25/37.5/37.5 ms endpoint gaps as a constant-rate video. SoccerWorld
-soundly supports arbitrary rates for its explicitly approximate nearest-sample
-resampling path; FootballWorld rejects that behavior here because this API
+non-uniform 25/37.5/37.5 ms endpoint gaps as a constant-rate video. The explicitly approximate nearest-sample resampling path supports arbitrary
+rates; the exact-event path rejects them because this API
 promises an exact event time axis.
 The memory-resident `render_mp4` helper is likewise not a full-match entry
 point: it accepts an already materialized trajectory and does not provide
@@ -202,10 +201,8 @@ Report-only capture preserves one outer render group per retained control frame,
 but each inner group is intentionally empty because no visual sample is built.
 After a manager transaction, the host control frame is still replaced for
 tracking/event identity; the renderer endpoint is replaced only when the final
-inner group actually contains a video sample. SoccerWorld's sound treatment of
-disabled capture widths and empty resampling outputs as valid empty products is
-inherited. SoccerWorld has no managed streaming report-only path, so
-FootballWorld rejects the video-only assumption that every non-empty outer
+inner group actually contains a video sample. Disabled capture widths and empty resampling outputs are valid empty
+products. The managed streaming report-only path rejects the video-only assumption that every non-empty outer
 control group contains a renderer sample. This check remains host-only and does
 not alter capture shapes, JAX graphs, or video behavior.
 
@@ -233,10 +230,8 @@ team-coloured spherical marker; no separate head, torso, shoulder, or leg icon
 is drawn. The aerial recovery countdown drives a bounded sine arc, so the
 marker visibly rises and returns after a high-ball contact without requiring
 historical frames. Its ground-anchored recovery ring and shrinking shadow
-reinforce the jump without changing the player's physical position. The two
-stamina bars inherit SoccerWorld's sound full-capacity dark rails, which keep
-partly depleted bars legible against either grass stripe. FootballWorld rejects
-SoccerWorld's stamina-dependent red gradient because red already identifies the
+reinforce the jump without changing the player's physical position. The two stamina bars use full-capacity dark rails, which keep
+partly depleted bars legible against either grass stripe. FootballWorld avoids a stamina-dependent red gradient because red already identifies the
 home side and foul cues, and changing every player's colour every frame adds
 host work without adding state information. Brighter fixed green/cyan fills
 retain the existing long/short identity, while wider depth-scaled rails and
@@ -296,9 +291,9 @@ squared marker area is a presentation choice independent of the collision body.
 Intent rings read only `ActionTrace.requested_intent` for an executed action,
 do not claim that contact occurred, and are not extended into later frames.
 
-The host-only design retains SoccerWorld's sound use of persistent, turf-
-projected artists and its back-to-front painter order in which ground rings are
-drawn before player bodies. FootballWorld deliberately rejects SoccerWorld's
+The host-only design uses persistent, turf-projected artists and a
+back-to-front painter order in which ground rings are
+drawn before player bodies. FootballWorld deliberately avoids the
 impulse-sized transient ring: requested intent and realized contact are separate
 facts here, so the persistent per-frame intent envelope keeps its configured
 reach radius and action palette. It also rejects a single fixed display radius
@@ -538,10 +533,8 @@ full-trajectory host materialization, and post-hoc event reconstruction remain
 excluded so every segment is independently renderable from exact causal host
 frames.
 
-SoccerWorld's renderer established the sound host-side pattern of persistent
-artists, blitting, and batched collection drawing. FootballWorld retains those
-advantages and keeps all presentation work outside the JAX step. It does not
-inherit SoccerWorld's larger pose/path and historical-effect graph: those
+The renderer uses persistent artists, blitting, and batched collection
+drawing and keeps all presentation work outside the JAX step. It excludes a larger pose/path and historical-effect graph: those
 features would increase per-frame host work and memory without changing the
 authoritative FootballWorld state shown by the current presentation contract.
 
@@ -565,8 +558,8 @@ an uncompressed frame comparison also had zero changed pixels. These are
 host-specific performance receipts, not portable frame-rate guarantees or
 football constants.
 
-The follow-up 2026-09-09 font-path experiment kept SoccerWorld's sound
-host-only persistent-artist design and removed only repeated resolution of an
+The follow-up 2026-09-09 font-path experiment preserved the host-only
+persistent-artist design and removed only repeated resolution of an
 unchanged Matplotlib `FontProperties` object. The cache is scoped to one Agg
 renderer and retains font loading, sizing, hinting, and rasterization; missing
 private backend hooks fail closed to Matplotlib's original method. Across 225

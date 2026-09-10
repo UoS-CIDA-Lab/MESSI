@@ -5,12 +5,9 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from footballworld.core.action import IntentAction
+from footballworld.core.action import IntentAction, _canonicalize_intent
 from footballworld.core.constants import ACTION_MAX, ACTION_MIN, SAFE_NORM_EPS
-from footballworld.core.contact import (
-    ACTION_INTENT_COUNT,
-    INTENT_SOURCE_POLICY,
-)
+from footballworld.core.contact import INTENT_SOURCE_POLICY
 from footballworld.core.state import State
 
 
@@ -186,12 +183,12 @@ def trace_action_receipt(
 
     if not isinstance(action, IntentAction):
         raise TypeError("action must be IntentAction")
-    submitted_intent = jnp.asarray(action.intent)
+    submitted_intent, canonical_effective, invalid_intent = _canonicalize_intent(
+        action.intent
+    )
     submitted_continuous = action.as_continuous_array()
     if _effective_intent is None:
-        effective_intent = IntentAction.from_array(
-            submitted_intent, submitted_continuous
-        ).intent
+        effective_intent = canonical_effective
     else:
         effective_intent = jnp.asarray(_effective_intent, dtype=jnp.int32)
         if effective_intent.shape != submitted_intent.shape:
@@ -199,7 +196,6 @@ def trace_action_receipt(
                 "_effective_intent must match action.intent shape, got "
                 f"{effective_intent.shape} and {submitted_intent.shape}"
             )
-    invalid_intent = (submitted_intent < 0) | (submitted_intent >= ACTION_INTENT_COUNT)
     nonfinite = ~jnp.all(jnp.isfinite(submitted_continuous), axis=-1)
     clipped = jnp.any(
         jnp.isfinite(submitted_continuous)
@@ -247,9 +243,7 @@ def trace_action(
 
     if not isinstance(action, IntentAction):
         raise TypeError("action must be IntentAction")
-    submitted_intent = jnp.asarray(action.intent)
-    if not jnp.issubdtype(submitted_intent.dtype, jnp.integer):
-        raise TypeError("action.intent must have an integer dtype")
+    submitted_intent, _, _ = _canonicalize_intent(action.intent)
     return ActionTrace(
         requested_intent=submitted_intent.astype(jnp.int32),
         intent_source=jnp.full_like(

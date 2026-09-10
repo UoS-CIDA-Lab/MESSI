@@ -49,9 +49,8 @@ host work from enlarging the training executable.
 
 CI runs the small committed `tests/test_release_contract_smoke.py` module for
 the public default-timebase, exact-render-grid, and half-time configuration
-contracts. It inherits the sound SoccerWorld practice of making release-facing
-semantic contracts executable. FootballWorld does not copy the full
-SoccerWorld golden, scenario, and soak inventory into the public distribution:
+contracts. It makes release-facing semantic contracts executable. The public
+distribution does not ship the full golden, scenario, and soak inventory:
 deeper adversarial and calibration checks remain in the ignored
 `.validation_tests/` workspace. Both `tests/` and `.validation_tests/` are
 explicitly pruned from wheel and sdist, and CI inspects both archives for that

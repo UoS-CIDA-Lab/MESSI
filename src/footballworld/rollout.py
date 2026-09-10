@@ -19,6 +19,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from footballworld.core.action import IntentAction
 from footballworld.core.constants import (
@@ -29,7 +30,10 @@ from footballworld.core.constants import (
     TEAM_0,
     TEAM_1,
 )
-from footballworld.core.randomness import frame_random_key
+from footballworld.core.randomness import (
+    _frame_random_key_unchecked,
+    validate_prng_key,
+)
 from footballworld.dynamics.action import trace_action, trace_action_receipt
 from footballworld.environment.api import (
     FootballWorld,
@@ -171,11 +175,13 @@ def _validate_factory_inputs(
 
     if not isinstance(env, FootballWorld):
         raise TypeError("env must be FootballWorld")
-    validate_player_policy(policy)
     if not isinstance(num_steps, int) or isinstance(num_steps, bool):
         raise TypeError("num_steps must be an integer")
     if num_steps < 0:
         raise ValueError("num_steps must be non-negative")
+    if num_steps > np.iinfo(np.int32).max:
+        raise ValueError("num_steps exceeds the supported int32 scan horizon")
+    validate_player_policy(policy)
 
 
 def _validate_scalar_inputs(
@@ -208,26 +214,32 @@ def _validate_scalar_inputs(
         if getattr(roster, field).shape != (player_count,):
             raise ValueError(f"roster.{field} must have shape [N]")
 
-    try:
-        key_data = jax.random.key_data(key)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("key must be one JAX PRNG key") from exc
-    if key_data.shape != (2,):
-        raise ValueError("key must be one unbatched JAX PRNG key")
+    validate_prng_key(key, name="key")
 
 
 def _runtime_step_budget(step_budget: jax.Array, num_steps: int) -> jax.Array:
     """Validate a scalar budget and fail closed for invalid traced values."""
 
+    if not isinstance(step_budget, jax.core.Tracer):
+        source = np.asarray(jax.device_get(step_budget))
+        if source.shape != ():
+            raise ValueError("step_budget must be scalar")
+        if not np.issubdtype(source.dtype, np.integer) or np.issubdtype(
+            source.dtype, np.bool_
+        ):
+            raise TypeError("step_budget must have a non-boolean integer dtype")
+        budget_value = int(source)
+        if not 0 <= budget_value <= num_steps:
+            raise ValueError(f"step_budget must lie in [0, {num_steps}]")
+        return jnp.int32(budget_value)
+
     budget = jnp.asarray(step_budget)
     if budget.shape != ():
         raise ValueError("step_budget must be scalar")
-    if not jnp.issubdtype(budget.dtype, jnp.integer):
-        raise TypeError("step_budget must have an integer dtype")
-    if not isinstance(budget, jax.core.Tracer):
-        budget_value = int(budget)
-        if not 0 <= budget_value <= num_steps:
-            raise ValueError(f"step_budget must lie in [0, {num_steps}]")
+    if not jnp.issubdtype(budget.dtype, jnp.integer) or jnp.issubdtype(
+        budget.dtype, jnp.bool_
+    ):
+        raise TypeError("step_budget must have a non-boolean integer dtype")
     valid = (budget >= 0) & (budget <= num_steps)
     return jnp.where(valid, budget, jnp.int32(0)).astype(jnp.int32)
 
@@ -450,7 +462,7 @@ def apply_management_tactics(
 def _transition_key(match_key: jax.Array, rollout: Rollout) -> jax.Array:
     """Derive a chunk-invariant frame key from the absolute control tick."""
 
-    return frame_random_key(match_key, rollout.state.control_tick)
+    return _frame_random_key_unchecked(match_key, rollout.state.control_tick)
 
 
 def _terminal_status(
@@ -965,12 +977,7 @@ def make_management_decision(
             raise TypeError("management must be ManagerState")
         if not isinstance(policy_state, RuleManagerState):
             raise TypeError("policy_state must be RuleManagerState")
-        try:
-            key_data = jax.random.key_data(match_key)
-        except (TypeError, ValueError) as exc:
-            raise TypeError("match_key must be one JAX PRNG key") from exc
-        if key_data.shape != (2,):
-            raise ValueError("match_key must be one unbatched JAX PRNG key")
+        validate_prng_key(match_key, name="match_key")
 
         observations = env.observe_managers(rollout, squad, management)
         proposal: ManagerPolicyStep = manager.step(

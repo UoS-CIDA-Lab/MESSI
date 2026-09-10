@@ -338,6 +338,54 @@ S.oninput=draw;B.onclick=()=>{{if(timer){{clearInterval(timer);timer=null;B.text
 </script>"""
 
 
+_SPATIAL_RED = (255, 54, 95)
+_SPATIAL_BLUE = (39, 135, 255)
+_SPATIAL_BALANCE_STEPS = 16
+
+
+def _spatial_balance_bucket(team_0_share: float, team_1_share: float) -> int:
+    """Quantize a cell's normalized team-density balance for stable SVG IDs."""
+
+    total = team_0_share + team_1_share
+    if total <= 0.0:
+        return 0
+    return min(
+        _SPATIAL_BALANCE_STEPS,
+        max(
+            0,
+            math.floor(_SPATIAL_BALANCE_STEPS * team_1_share / total + 0.5),
+        ),
+    )
+
+
+def _spatial_balance_color(bucket: int) -> str:
+    """Return a bright red-purple-blue interpolation for one balance bucket."""
+
+    blue_weight = bucket / _SPATIAL_BALANCE_STEPS
+    rgb = tuple(
+        round(red + blue_weight * (blue - red))
+        for red, blue in zip(_SPATIAL_RED, _SPATIAL_BLUE, strict=True)
+    )
+    return "#" + "".join(f"{channel:02x}" for channel in rgb)
+
+
+def _spatial_balance_gradients() -> str:
+    """Return bounded gradients shared by all single-pass occupancy cells."""
+
+    gradients = []
+    for bucket in range(_SPATIAL_BALANCE_STEPS + 1):
+        color = _spatial_balance_color(bucket)
+        gradients.append(
+            f'<radialGradient id="spatial-balance-{bucket}">'
+            f'<stop offset="0%" stop-color="{color}" stop-opacity=".98"/>'
+            f'<stop offset="42%" stop-color="{color}" stop-opacity=".78"/>'
+            f'<stop offset="72%" stop-color="{color}" stop-opacity=".28"/>'
+            f'<stop offset="100%" stop-color="{color}" stop-opacity="0"/>'
+            "</radialGradient>"
+        )
+    return "".join(gradients)
+
+
 def _space_occupancy_snapshot(occupancy: dict[str, Any], cut: int) -> tuple[str, str]:
     """Return a visible SVG snapshot and status without requiring JavaScript."""
 
@@ -382,11 +430,10 @@ def _space_occupancy_snapshot(occupancy: dict[str, Any], cut: int) -> tuple[str,
         ]
         for team in (0, 1)
     ]
-    peaks = [max(team_shares, default=0.0) for team_shares in shares]
+    combined = [shares[0][cell] + shares[1][cell] for cell in range(nx * ny)]
+    combined_peak = max(combined, default=0.0)
     attack = [0.0, 0.0]
-    red: list[str] = []
-    blue: list[str] = []
-    hits: list[str] = []
+    fields: list[str] = []
     radius = 1.72 * max(660.0 / nx, 427.4 / ny)
     for yi in range(ny):
         for xi in range(nx):
@@ -405,21 +452,15 @@ def _space_occupancy_snapshot(occupancy: dict[str, Any], cut: int) -> tuple[str,
             label = html.escape(
                 f"Team occupancy | T0 {100.0 * p0:.2f}% | T1 {100.0 * p1:.2f}%"
             )
-            for team, share, bucket, gradient in (
-                (0, p0, red, "spatial-red-field"),
-                (1, p1, blue, "spatial-blue-field"),
-            ):
-                if share <= 0.0:
-                    continue
-                opacity = 0.35 + 0.65 * math.sqrt(share / max(peaks[team], 1e-12))
-                bucket.append(
-                    f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{radius:.2f}" '
-                    f'fill="url(#{gradient})" opacity="{opacity:.3f}">'
-                    f"<title>{label}</title></circle>"
-                )
-            hits.append(
-                f'<circle cx="{cx:.2f}" cy="{cy:.2f}" '
-                f'r="{max(7.0, radius * 0.35):.2f}" fill="transparent">'
+            balance_bucket = _spatial_balance_bucket(p0, p1)
+            opacity = 0.12 + 0.88 * math.sqrt(
+                combined[cell] / max(combined_peak, 1e-12)
+            )
+            fields.append(
+                f'<circle class="spatial-density-cell" cx="{cx:.2f}" '
+                f'cy="{cy:.2f}" r="{radius:.2f}" '
+                f'fill="url(#spatial-balance-{balance_bucket})" '
+                f'opacity="{opacity:.3f}">'
                 f"<title>{label}</title></circle>"
             )
 
@@ -430,15 +471,7 @@ def _space_occupancy_snapshot(occupancy: dict[str, Any], cut: int) -> tuple[str,
         f"T0 {100.0 * attack[0] / totals[0] if totals[0] else 0.0:.1f}% · "
         f"T1 {100.0 * attack[1] / totals[1] if totals[1] else 0.0:.1f}%"
     )
-    markup = (
-        '<g class="spatial-team spatial-team-0">'
-        + "".join(red)
-        + '</g><g class="spatial-team spatial-team-1">'
-        + "".join(blue)
-        + "</g><g>"
-        + "".join(hits)
-        + "</g>"
-    )
+    markup = '<g class="spatial-density-fields">' + "".join(fields) + "</g>"
     return markup, status
 
 
@@ -472,14 +505,14 @@ def _space_occupancy_chart(report: dict[str, Any]) -> str:
     return f"""<figure class="viz spatial-player">
 <figcaption><strong>Team spatial occupancy over time</strong><span class="spatial-status">{initial_status}</span></figcaption>
 <div class="network-controls"><button type="button" class="network-play spatial-play">Play</button><input class="network-time spatial-time" type="range" min="0" max="{maximum}" value="{maximum}" step="1" aria-label="Team occupancy cumulative match time"></div>
-<div class="network-hover">Cumulative live-ball player density from kickoff; bright red and blue fields show each team's normalized occupancy. Purple overlap means both teams occupied the same area; this is not modeled territory control.</div>
+<div class="network-hover">Cumulative live-ball player density from kickoff through the selected time. Cell hue compares each team's normalized density (red through balanced purple to blue); opacity shows their combined density. This is not modeled territory control.</div>
 <svg viewBox="0 0 720 500" role="img" aria-label="Interactive smoothed cumulative team spatial occupancy from kickoff">
-<defs><radialGradient id="spatial-red-field"><stop offset="0%" stop-color="#ff365f" stop-opacity=".98"/><stop offset="42%" stop-color="#ff365f" stop-opacity=".78"/><stop offset="72%" stop-color="#ff365f" stop-opacity=".28"/><stop offset="100%" stop-color="#ff365f" stop-opacity="0"/></radialGradient><radialGradient id="spatial-blue-field"><stop offset="0%" stop-color="#2787ff" stop-opacity=".98"/><stop offset="42%" stop-color="#2787ff" stop-opacity=".78"/><stop offset="72%" stop-color="#2787ff" stop-opacity=".28"/><stop offset="100%" stop-color="#2787ff" stop-opacity="0"/></radialGradient><clipPath id="spatial-pitch-clip"><rect x="30" y="38" width="660" height="427.4" rx="3"/></clipPath></defs>
+<defs>{_spatial_balance_gradients()}<clipPath id="spatial-pitch-clip"><rect x="30" y="38" width="660" height="427.4" rx="3"/></clipPath></defs>
 <rect x="30" y="38" width="660" height="427.4" rx="3" fill="#0b1628"/>
 <g class="spatial-cells" clip-path="url(#spatial-pitch-clip)">{initial_cells}</g>
 <g class="pitch-lines"><rect x="30" y="38" width="660" height="427.4"/><line x1="360" y1="38" x2="360" y2="465.4"/><circle cx="360" cy="251.7" r="57.5"/><rect x="30" y="125.3" width="103.7" height="253.6"/><rect x="586.3" y="125.3" width="103.7" height="253.6"/></g>
 <text x="30" y="487" class="axis-label">Team 1 attacks &lt;-</text><text x="690" y="487" text-anchor="end" class="axis-label">-&gt; Team 0 attacks</text>
-<g class="legend"><circle cx="276" cy="18" r="6" fill="#ff365f"/><text x="290" y="22">Team 0 density edge</text><circle cx="422" cy="18" r="6" fill="#2787ff"/><text x="436" y="22">Team 1 density edge</text></g>
+<g class="legend"><circle cx="210" cy="18" r="6" fill="#ff365f"/><text x="224" y="22">Team 0 edge</text><circle cx="344" cy="18" r="6" fill="{_spatial_balance_color(8)}"/><text x="358" y="22">balanced</text><circle cx="454" cy="18" r="6" fill="#2787ff"/><text x="468" y="22">Team 1 edge</text></g>
 </svg><noscript><p class="empty">Enable JavaScript to move the cumulative time bar.</p></noscript></figure>
 <script type="application/json" id="space-occupancy-data">{payload}</script>
 <script>
@@ -487,7 +520,7 @@ def _space_occupancy_chart(report: dict[str, Any]) -> str:
 d.rows.forEach(r=>{{const a=byWindow.get(+r[0])||[];a.push(r);byWindow.set(+r[0],a)}});
 d.windows.forEach(w=>{{(byWindow.get(+w.index)||[]).forEach(r=>{{const tm=+r[1],xi=+r[2],yi=+r[3],v=+r[4];if((tm===0||tm===1)&&xi>=0&&xi<nx&&yi>=0&&yi<ny&&Number.isFinite(v)&&v>0)running[2*(yi*nx+xi)+tm]+=v}});prefix.push(running.slice())}});
 const clock=s=>{{s=Math.max(0,Math.round(+s));return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")}};
-const draw=()=>{{const cut=+S.value,w=d.windows[cut],cells=prefix[cut],tot=[0,0],attack=[0,0],peak=[0,0];for(let yi=0;yi<ny;yi++)for(let xi=0;xi<nx;xi++){{const k=2*(yi*nx+xi),center=(+d.x_edges_m[xi]+ +d.x_edges_m[xi+1])/2;tot[0]+=cells[k];tot[1]+=cells[k+1];if(center>0)attack[0]+=cells[k];if(center<0)attack[1]+=cells[k+1]}}for(let yi=0;yi<ny;yi++)for(let xi=0;xi<nx;xi++){{const k=2*(yi*nx+xi);peak[0]=Math.max(peak[0],tot[0]?cells[k]/tot[0]:0);peak[1]=Math.max(peak[1],tot[1]?cells[k+1]/tot[1]:0)}}let red="",blue="",hits="",radius=1.72*Math.max(660/nx,427.4/ny);for(let yi=0;yi<ny;yi++)for(let xi=0;xi<nx;xi++){{const k=2*(yi*nx+xi),p0=tot[0]?cells[k]/tot[0]:0,p1=tot[1]?cells[k+1]/tot[1]:0;if(!(p0>0||p1>0))continue;const cx=30+(xi+.5)/nx*660,cy=38+(ny-yi-.5)/ny*427.4,label="Team occupancy | T0 "+(100*p0).toFixed(2)+"% | T1 "+(100*p1).toFixed(2)+"%";if(p0>0){{const a=.35+.65*Math.sqrt(p0/Math.max(peak[0],1e-12));red+='<circle cx="'+cx.toFixed(2)+'" cy="'+cy.toFixed(2)+'" r="'+radius.toFixed(2)+'" fill="url(#spatial-red-field)" opacity="'+a.toFixed(3)+'"><title>'+label+'</title></circle>'}}if(p1>0){{const a=.35+.65*Math.sqrt(p1/Math.max(peak[1],1e-12));blue+='<circle cx="'+cx.toFixed(2)+'" cy="'+cy.toFixed(2)+'" r="'+radius.toFixed(2)+'" fill="url(#spatial-blue-field)" opacity="'+a.toFixed(3)+'"><title>'+label+'</title></circle>'}}hits+='<circle cx="'+cx.toFixed(2)+'" cy="'+cy.toFixed(2)+'" r="'+Math.max(7,radius*.35).toFixed(2)+'" fill="transparent"><title>'+label+'</title></circle>'}}G.innerHTML='<g class="spatial-team spatial-team-0">'+red+'</g><g class="spatial-team spatial-team-1">'+blue+'</g><g>'+hits+'</g>';T.textContent="Kickoff–"+clock(w.end_clock_s)+" | cumulative attacking-half occupancy: T0 "+(tot[0]?100*attack[0]/tot[0]:0).toFixed(1)+"% · T1 "+(tot[1]?100*attack[1]/tot[1]:0).toFixed(1)+"%"}};
+const draw=()=>{{const cut=+S.value,w=d.windows[cut],cells=prefix[cut],tot=[0,0],attack=[0,0],combined=new Float64Array(nx*ny);for(let yi=0;yi<ny;yi++)for(let xi=0;xi<nx;xi++){{const k=2*(yi*nx+xi),center=(+d.x_edges_m[xi]+ +d.x_edges_m[xi+1])/2;tot[0]+=cells[k];tot[1]+=cells[k+1];if(center>0)attack[0]+=cells[k];if(center<0)attack[1]+=cells[k+1]}}let combinedPeak=0;for(let cell=0;cell<nx*ny;cell++){{const k=2*cell,p0=tot[0]?cells[k]/tot[0]:0,p1=tot[1]?cells[k+1]/tot[1]:0;combined[cell]=p0+p1;combinedPeak=Math.max(combinedPeak,combined[cell])}}let fields="",radius=1.72*Math.max(660/nx,427.4/ny);for(let yi=0;yi<ny;yi++)for(let xi=0;xi<nx;xi++){{const cell=yi*nx+xi,k=2*cell,p0=tot[0]?cells[k]/tot[0]:0,p1=tot[1]?cells[k+1]/tot[1]:0;if(!(p0>0||p1>0))continue;const cx=30+(xi+.5)/nx*660,cy=38+(ny-yi-.5)/ny*427.4,label="Team occupancy | T0 "+(100*p0).toFixed(2)+"% | T1 "+(100*p1).toFixed(2)+"%",balance=Math.max(0,Math.min(16,Math.round(16*p1/(p0+p1)))),a=.12+.88*Math.sqrt(combined[cell]/Math.max(combinedPeak,1e-12));fields+='<circle class="spatial-density-cell" cx="'+cx.toFixed(2)+'" cy="'+cy.toFixed(2)+'" r="'+radius.toFixed(2)+'" fill="url(#spatial-balance-'+balance+')" opacity="'+a.toFixed(3)+'"><title>'+label+'</title></circle>'}}G.innerHTML='<g class="spatial-density-fields">'+fields+'</g>';T.textContent="Kickoff–"+clock(w.end_clock_s)+" | cumulative attacking-half occupancy: T0 "+(tot[0]?100*attack[0]/tot[0]:0).toFixed(1)+"% · T1 "+(tot[1]?100*attack[1]/tot[1]:0).toFixed(1)+"%"}};
 S.oninput=draw;B.onclick=()=>{{if(timer){{clearInterval(timer);timer=null;B.textContent="Play";return}}if(+S.value>=+S.max)S.value=0;B.textContent="Pause";timer=setInterval(()=>{{S.value=Math.min(+S.max,+S.value+1);draw();if(+S.value>=+S.max){{clearInterval(timer);timer=null;B.textContent="Play"}}}},220)}};draw()}})();
 </script>"""
 

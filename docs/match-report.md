@@ -46,6 +46,45 @@ The report then labels itself as diagnostic and all metrics cover only the
 captured interval. `--skip-hash-verification` is available for exploratory
 work, but records a data-quality warning in both products.
 
+## Multi-match tactical matrix report
+
+A completed tactical matrix can be aggregated from its already verified
+single-match reports without reopening the tracking arrays:
+
+    PYTHONPATH=src python -m footballworld.analysis.multi_cli \
+      output/policy-matrix/matrix-summary.json
+
+The footballworld-matrix-report installed command is equivalent. It writes
+multi-report/report.json and multi-report/report.html; the HTML links to every
+single-match report and adds policy aggregates, a team-slot diagnostic, and
+league standings. A successful matrix render invokes this writer automatically.
+
+League standings use only distinct-policy fixtures. A win is three points and
+a draw is one; ties are broken by goal difference, goals scored, then stable
+policy name. Self-play stays in the matrix as a symmetry and team-slot
+diagnostic but is excluded from points because one policy cannot gain a
+comparative ranking advantage by playing itself. These are explicit tournament
+reporting rules, not measured football coefficients.
+
+The aggregator fails closed on missing artifacts, duplicate ordered cells,
+partial matches, bounded rollouts, exhausted event budgets, unstable capture
+source, or unverified single-match report hashes. An intentionally incomplete
+ordered cell set remains usable only as a visibly incomplete diagnostic: both
+JSON quality and the HTML cell count expose the omission. A full-duration report
+produced from a dirty worktree likewise remains diagnostic rather than being
+promoted to authoritative.
+
+### FootballWorld matrix design
+
+FootballWorld runs controlled matrix cells in fresh processes, retains
+per-cell evidence, and performs multi-report and policy-league aggregation only
+on immutable single-match outputs. JSON and HTML are built in one staging
+directory and become visible through one directory rename, so readers cannot
+observe a mixed report generation. Rankings, standings, report links, and
+aggregation state stay outside the JAX transition:
+they do not affect physics and would enlarge the rollout graph for presentation
+work.
+
 ## Input ownership
 
 - Tracking owns continuous source state: clock, ball and player kinematics,
@@ -125,13 +164,16 @@ latest contact. No intermediate position is inferred.
   live-ball intervals to approximately 4 m by 4 m cells.
   The sparse receipt stores incremental 30-second buckets, while the report
   prefix-sums them so every selected time shows occupancy accumulated from
-  kickoff through that time. Both teams share the frame in which Team 0 attacks
-  positive x. Bright red and blue radial fields show each team's own
-  match-to-date normalized density; overlap is purple rather than being
-  subtracted away. The final cumulative frame is server-rendered into the SVG,
-  so script-blocking viewers still show the data. JavaScript progressively
-  updates the same layer when available. It is descriptive occupancy, not
-  inferred territorial control, possession probability, or dominance.
+  kickoff through that time; the 30-second values are storage increments, never
+  a rolling display window. Both teams share the frame in which Team 0 attacks
+  positive x. Each occupied cell is rendered exactly once: its hue compares the
+  teams' separately normalized match-to-date densities on a bright
+  red-purple-blue scale, while its opacity follows their combined density.
+  This prevents a later blue layer from hiding valid Team 0 occupancy. The final
+  cumulative frame is server-rendered into the SVG, so script-blocking viewers
+  still show the data. JavaScript progressively updates the same layer when
+  available. It is descriptive occupancy, not inferred territorial control,
+  possession probability, or dominance.
 - Realized pass-map rows begin only at exact deliberate open-play PASS contacts
   whose kick was applied. Their solid endpoint is the next contact by a
   different actor before a boundary; it remains a receipt proxy. The dashed
@@ -179,32 +221,28 @@ latest contact. No intermediate position is inferred.
   live attacking sequence. The chart compares each category's share of all
   realized shots with its share of goals and exposes conversion in hover text.
 
-## SoccerWorld inheritance review
+## FootballWorld report design
 
-SoccerWorld keeps coefficient and action diagnostics host-side and uses fixed
-histogram edges with explicit counts and provenance. FootballWorld inherits
-that bounded, reproducible aggregation pattern. It also inherits SoccerWorld's
-causal shot-flight advantages: a goal is checked before the next controlled
+FootballWorld keeps coefficient and action diagnostics host-side, uses fixed
+histogram edges with explicit counts and provenance, and preserves causal
+shot-flight semantics: a goal is checked before the next controlled
 touch, passive deflections do not masquerade as receptions, opposing
 deflections resolve non-goals as blocks, and only goal or saved outcomes count
-as shots on target. FootballWorld replaces SoccerWorld's render-time heuristic
-touch labels with exact FootballWorld contact, boundary, woodwork, and Law 11
-receipts, because those facts are already preserved by the published replay.
+as shots on target. FootballWorld uses exact contact, boundary, woodwork, and Law 11 receipts
+instead of render-time touch heuristics because those facts are already
+preserved by the published replay.
 
-SoccerWorld does not provide a published-match pass map, two-dimensional
-ball/team-occupancy report, or a validated buildup/regain/counterattack shot
-context taxonomy, so there is no corresponding runtime behavior to port. The
-earlier SoccerWorld contact-event design note mentions spatial heatmaps as a
-future analysis, but it is not treated as a measured contract. FootballWorld's
-pre-shot categories are therefore visibly labelled report heuristics rather
-than SoccerWorld inheritance or DFL-measured football constants.
+Published-match pass maps, two-dimensional ball/team occupancy, and the
+buildup/regain/counterattack shot-context taxonomy are host-side analysis
+features. Pre-shot categories are visibly labelled report heuristics rather
+than measured football constants.
 
 FootballWorld therefore derives both views only from verified replay sidecars.
 It rejects adding density, pass outcomes, or visualization state to the JAX
 transition, tracking schema, event schema, or metadata. This keeps the source
 facts lean and makes every displayed cell and path reproducible in post-process.
 
-This UI revision retains SoccerWorld's sound host-rendering separation,
+This UI revision keeps host rendering separate from simulation,
 source-owned clocks, dependency-free artifact discipline, and explicit empty
 states: all smoothing, prefix sums, and interactions remain in the standalone
 HTML and cannot enlarge a JAX graph or alter a match. It rejects three existing

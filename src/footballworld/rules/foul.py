@@ -33,7 +33,7 @@ from footballworld.core.constants import (
     YELLOW_CARD_SEND_OFF_COUNT,
 )
 from footballworld.core.contact import INTENT_CHALLENGE, MECHANISM_NONE, OUTCOME_FOUL
-from footballworld.core.randomness import RandomEvent, event_random_key
+from footballworld.core.randomness import RandomEvent, _event_random_key_unchecked
 from footballworld.core.state import RestartReleaseProvenance, State
 from footballworld.dynamics.contest import challenge_card_probability
 from footballworld.dynamics.separation import PlayerImpactFacts
@@ -726,9 +726,9 @@ def sample_body_foul_facts(
     probability = jnp.clip(
         baseline_probability * config.rare_case_coverage_multiplier, 0.0, 1.0
     )
-    occurrence_key = event_random_key(key, RandomEvent.BODY_FOUL)
-    card_key = event_random_key(key, RandomEvent.BODY_CARD)
-    colour_key = event_random_key(key, RandomEvent.BODY_CARD_COLOUR)
+    occurrence_key = _event_random_key_unchecked(key, RandomEvent.BODY_FOUL)
+    card_key = _event_random_key_unchecked(key, RandomEvent.BODY_CARD)
+    colour_key = _event_random_key_unchecked(key, RandomEvent.BODY_CARD_COLOUR)
     occurred = eligible & (
         jax.random.uniform(occurrence_key, dtype=contact_xy.dtype) < probability
     )

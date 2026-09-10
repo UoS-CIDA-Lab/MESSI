@@ -17,20 +17,8 @@
 `policy_config_fingerprint`는 dataclass 전체를 canonical JSON으로 직렬화하므로
 새 public config 필드도 자동으로 정책 식별자에 포함된다.
 
-## 필수 SoccerWorld 기준 확인
+## FootballWorld 정책 원리
 
-구현 전에 `/data/SoccerWorld`의 다음 실제 자료를 확인했다.
-
-| 확인 자료 | 유지한 장점 | 그대로 이식하지 않은 부분과 이유 |
-|---|---|---|
-| `src/soccerworld/_engine/rule_policy/guide.md` | 슛·패스·드리블·클리어를 하나의 bounded common currency에서 비교하고, 수치 지표와 경기 양상을 함께 평가한다. | 문서의 DFL 집계는 유용한 비교 기준이지만 일부 builder/동일 계약 재현 근거가 완결되지 않았다. 다른 관측·행동 계약의 계수를 측정 상수로 가져오지 않았다. |
-| `src/soccerworld/_engine/rule_policy/policy.py` | 패스는 물리적 lane과 수신 경쟁을 함께 통과해야 하며, formation-relative role, 상황별 release hazard, 맥락적 빠른 릴레이를 사용한다. | SoccerWorld의 carrier cadence·계수·일반 패스에 더하는 릴레이 release 구조를 줄 단위로 복사하지 않았다. FootballWorld는 0.4초 cadence의 연쇄 패스를 막는 bounded 수신 창을 유지한다. 또한 물리 `control_ticks`는 공이 발에서 잠시 떨어질 때 합법적으로 초기화되므로 개인 전술 운반 시간으로 재사용하지 않고, public contact provenance로 별도 causal carry age를 유지한다. |
-| `src/soccerworld/_engine/manager.py` 및 `src/soccerworld/_engine/formation.py` | static callable과 dynamic parameter PyTree를 분리하고, 감독 결정과 formation 의미를 저빈도 경계에 둔다. | bench·formation·host validation을 lean player step 안으로 옮기지 않았다. FootballWorld의 고정형 관리 경계를 유지했다. |
-| `tests/unit/policies/test_rule_policy_tactics.py`, `test_rule_policy_formation_roles.py`, `test_rule_policy_dribble_recontact.py` | 역할이 절대 좌표가 아니라 formation에 상대적이어야 하고, loose touch가 정책 기억을 임의로 지우면 안 된다는 의미 계약을 유지했다. | FootballWorld의 public-observation 행 구조와 다른 fixture 수치를 복사하지 않았다. |
-| `tests/unit/control/test_manager.py`, `tests/contracts/public_api/test_roster_configuration.py`, `experiments/phase_s/tests/test_ability_profiles.py` | 외부 작성 roster/ability는 그대로 보존하고, 무작위 profile은 명시 key와 bounded prior로 재현하며, 관리 policy는 외부 callable로 교체할 수 있어야 한다. | 다른 엔진의 roster 모양이나 비공개 상태를 FootballWorld transition에 추가하지 않았다. |
-| `docs/performance/rule-policy-exact-gate-2026-08-29.md`, `docs/reproducibility/coefficient-provenance.md`, `docs/reproducibility/baseline-20260829.md`, `docs/reproducibility/release-audit-20260829.md` | cold compile, warm runtime, graph 크기, 경기 의미 지표를 구분해 기록한다. | 대응 A/B가 없는 상태에서 산술 감소만으로 성능 향상 또는 StableHLO 퇴행 부재를 주장하지 않는다. |
-
-### 계승한 정책 원리
 
 1. 패스 후보의 합법성과 completion은 전술 선호보다 먼저 보존한다.
 2. SHOT/PASS/DRIBBLE/CLEAR는 같은 bounded utility 공간에서 확률적으로 선택한다.
@@ -325,16 +313,15 @@ PASS 수신자, 도착점, ETA를 즉시 저장하고, 다음 관측의 공개�
 공 상대 위치로 먼저 이동해 다시 정렬한다. 재접촉 간격을 완전히 없애는
 중간안은 3.1--3.5초에 매 프레임 CONTROL을 만들어 폐기했다.
 
-### SoccerWorld 상속 및 변경 경계
+### FootballWorld 설계 경계
 
 - 유지: 공개된 상대 운동으로 재접촉을 재허용하고 캐리어가 공 위치를
   회수하는 원칙은 오버런을 막으므로 sound하다. 패스 비행 중 한 명의
   trajectory receiver를 유지하는 원칙도 프레임별 수신자 교체를 막는다.
-- 변경: SoccerWorld의 전역적인 공 직접 호밍은 FootballWorld의 전술 이동을
-  지우므로, 최종 터치 방향과 공이 불정렬인 캐리어에게만 제한한다.
-- 거부: SoccerWorld의 절대 공속 2.5 m/s 드리블 gate는 FootballWorld의
-  player-relative CONTROL 의미와 직접 호환되지 않으며, 측정 상수로 이전할
-  근거도 없으므로 복사하지 않는다.
+- 변경: 전역적인 공 직접 호밍은 전술 이동을 지우므로, 최종 터치 방향과
+  공이 불정렬인 캐리어에게만 제한한다.
+- 거부: 절대 공속 2.5 m/s 드리블 gate는 player-relative CONTROL 의미와
+  직접 호환되지 않으며, 측정 상수로 채택할 근거도 없다.
 - 유지: FootballWorld의 가산형 공 충격과 현재 공속을 보상하는 패스 솔버는
   두 실제 PASS에서 목표 이동점과 궤적 방향이 일치했으므로 변경하지 않는다.
 
@@ -398,7 +385,7 @@ SHA-256은
 `PASS/RELEASE/kick_applied`를 모두 증명할 때만 활성화한다. CONTROL은 기존
 stale PASS 계획도 즉시 지운다.
 
-SoccerWorld의 골키퍼는 상대와의 인터셉트 거리만 비교하고, 자기 골 방향
+FootballWorld의 골키퍼는 상대와의 인터셉트 거리만 비교하고, 자기 골 방향
 속도가 있거나 물리 소유가 없으면 동료 회수자와 무관하게 스위프한다. 한
 명의 goalkeeper과 한 명의 outfield receiver를 분리한다는 구조는 유지하지만,
 이 상대 전용 경쟁과 단순 위협 gate는 동료 세 명 군집을 실제로 만들었으므로
@@ -411,8 +398,8 @@ CONTROL lineage 중에는 골문으로 실제 투영되는 `heading`만 위협�
 첫 수정 뒤 별도의 장기 2인 중첩도 확인됐다. 4-2-3-1의 -12 m 공격형
 미드필드선과 -5 m 스트라이커선이 모두 forward로 분류돼 같은 offside
 shoulder 목표를 받았고, 5.5--6.8초 두 선수 간 거리가 0.488--0.450 m로
-유지됐다. SoccerWorld에서 계승한 슬롯 비의존·앵커 상대 역할 분류는
-sound하지만, 세 번째 이후의 모든 깊이선을 forward로 clip하는 동작은
+유지됐다. 슬롯 비의존·앵커 상대 역할 분류는 sound하지만, 세 번째 이후의
+모든 깊이선을 forward로 clip하는 동작은
 4개 이상 outfield line에서 정확하지 않다. 최후방과 최전방 outfield line만
 defender와 forward로 두고 모든 interior line을 midfielder로 분류했다.
 포메이션 이름이나 슬롯 번호 특례는 추가하지 않았다.
@@ -457,7 +444,7 @@ id 1010)을 지정해 패스했지만, 11번은 release-time 종착점
 것이다. 상태 ETA는 감소했지만 예측 비행시간 전체가 지나기 전에는 더 이른
 접촉점을 사용하지 못했다.
 
-SoccerWorld가 live pass에서 공의 현재 궤적을 매 프레임 다시 계산해
+FootballWorld가 live pass에서 공의 현재 궤적을 매 프레임 다시 계산해
 `receive_runner`를 실제 접촉점으로 보내는 원칙은 타당하므로 상속했다. 다만
 FootballWorld는 제출된 PASS의 명시적 intended receiver receipt가 있으므로,
 매 프레임 가장 가까운 팀원으로 수신자 identity까지 바꾸는 동작은 거부했다.
@@ -502,8 +489,217 @@ README MP4는 같은 byte이며 960x540, 10 fps GIF SHA-256은
 
 seed 3 전체 경기의 54:01.2--54:01.3에서 Team 0의 기존 claimant slot 10, 새로 선택된 slot 9, Team 1 압박자 slot 19가 공 0.35 m 안에 동시에 들어왔다. 세 역할은 달랐지만 같은 팀 claimant가 0.1초 사이 바뀐 것은 전술적 인계가 아니었다. 공은 반지름 위 5.7 mm, 수직속도 0.202 m/s인 미세 바운스여서 CONTROL 가능한 `ground_ball`이면서 supported-ground forecast 대상은 아니었다. 이 분기에서 과거 claimant hysteresis가 사라지고 raw nearest player가 slot 9를 불러들였다.
 
-SoccerWorld에서 유지한 sound contract는 관측된 공에 팀별 primary claimant 하나만 배정하는 것이다. 그러나 SoccerWorld에는 FootballWorld의 supported-ground forecast와 저고도 미세 바운스 분기가 없으므로 그 nearest fallback은 그대로 상속할 수 없다. FootballWorld는 기존 claimant가 공개 candidate이고 환경의 실제 `carry_radius_m + ball.radius` 접촉 범위 안에 있을 때 그 identity를 유지한다. 이 반경은 새 정책 계수나 측정 축구 상수가 아니라 환경의 기존 물리 도달 envelope다. 목표점은 계속 관측 공 중심이므로 trajectory attack과 swept-contact authority는 바뀌지 않는다.
+유지한 sound contract는 관측된 공에 팀별 primary claimant 하나만 배정하는 것이다. 그러나 supported-ground forecast 밖의 저고도 미세 바운스에서 raw-nearest fallback은 기존 claimant의 안정성을 깨뜨렸다. FootballWorld는 기존 claimant가 공개 candidate이고 환경의 실제 `carry_radius_m + ball.radius` 접촉 범위 안에 있을 때 그 identity를 유지한다. 이 반경은 새 정책 계수나 측정 축구 상수가 아니라 환경의 기존 물리 도달 envelope다. 목표점은 계속 관측 공 중심이므로 trajectory attack과 swept-contact authority는 바뀌지 않는다.
 
 실제 상대 좌표, 속도, 체력과 5.7 mm 바운스를 고정한 회귀는 수정 전 Team 0 claimant가 10에서 9로 바뀌며 실패했고 수정 후 10을 유지했다. 또한 claimant가 이 물리 반경 안에 있을 때 같은 팀 비담당 선수가 반경 안으로 들어오면 공 반대 방향으로 공간을 비운다. 양 팀은 observer-local 후보 집합에서 각자 한 명을 선택하므로 상대 압박자는 그대로 경합한다. 관련 pass-plan/CONTROL 테스트 5개는 68.85초에 통과했고 별도 JIT 검증에서도 action과 recurrent state shape는 각각 `(22, 2)`, `(22,)`로 유지됐다.
 
 같은 seed 3 전체 경기 report-only 비교에서 수정 전 loose-ball 29,271프레임 중 공 0.6 m 안에 같은 팀 두 명과 상대 한 명이 동시에 있던 프레임은 5개였고, 54:01.1--54:01.4에는 4프레임 연속이었다. 수정 후 loose-ball 29,233프레임에서는 해당 3인 군집이 0개였다. 같은 팀 두 명이 공 0.6 m 안에 있던 프레임은 16개에서 11개로 줄었으며 수정 후에는 모두 연속되지 않는 단일 프레임이었다. 전체 57,424프레임은 regulation complete로 종료됐고 `event_budget_exhausted_count`는 0이었다. 이는 물리 이벤트 한도를 늘리지 않고 정책 간격 조절로 실패를 제거한 결과다. 같은 CPU batch-1 recurrent policy step을 31회 warm 조건으로 측정한 배포 guard는 StableHLO text 1,324,671 byte, compiler temporary 121,888 byte, cost-analysis FLOP 1,890,072, one-shot compile 5.399초, warm median 3.157 ms였다. 순차 단일-host 측정이므로 속도 개선률을 인과 주장하지 않는다. 최종 authoritative 렌더 receipt는 clean revision 검증 뒤 기록한다.
+
+
+## Tactical width, multi-presser roles, and kickoff variation (2026-09-10)
+
+This phase retains FootballWorld's useful structural contracts: formation-relative
+roles, ranked primary/secondary pressure with a distinct cover player, seeded
+restart decisions, and conventional behind-ball poses for ordinary foot
+restarts. It rejects three behaviours that do not fit the current contracts. A dense
+externally calibrated positional field would require different observations and
+coefficient evidence, so FootballWorld keeps its bounded formation-relative ball
+follow. A circular-player behind-ball kickoff pose is rejected for kickoff only
+because FootballWorld's oriented solid torso makes that pose one-directional.
+Finally, an exact kickoff receiver slot is not a football law
+or stable policy semantic, so it is not retained as a regression oracle.
+
+Attacking width now keeps at most one stable public wide-role player on each
+side at or beyond the formation-scaled lane. It does not pin players to the
+touchline and does not select an arbitrary positive-side runner for a central
+ball. Settled pressure is profile-specific: salida lavolpiana and catenaccio use
+one direct presser, juego de posicion uses two, zona mista retains one presser plus its
+marker-oriented hybrid cover, and gegenpress may use three in the defending half but is capped at two high upfield. The next
+ranked player remains cover. The existing immediate counterpress window remains
+one primary presser plus outlet cover rather than becoming a swarm. Supporting
+pressers use a 0.30 s visible-ball lead and a 3.0 m goal-side gap. Both are
+explicit DESIGN_PRIOR values, not measured football constants.
+
+Kickoff takers now stand laterally at exact ball-plus-capsule clearance and face
+the ball. The side is derived from y-reflection-equivariant public state; a
+perfectly symmetric state keeps the previously validated forward-side fallback
+because no non-zero deterministic side can preserve reflection equivariance.
+The policy path accepts tangent trajectories while still rejecting directions
+that head back through the taker's capsule. It makes a seed-keyed choice between
+a stochastic teammate receiver and a receiver-free territorial aerial kick.
+The default territorial probability 0.18 and target distance 30.0 m are explicit
+DESIGN_PRIOR controls and are not presented as measured professional kickoff
+rates.
+
+The environment itself does not reduce kick power by body-relative angle.
+Foot-release speed remains normalized power times the existing 34.76 m/s cap,
+and restart direction projection applies only to penalty kicks and throw-ins,
+not kickoffs. An adversarial test executes otherwise identical maximum-power
+face-on and 90-degree side-on kickoff actions and requires equal post-step ball
+speed. Backward-through-body trajectories are excluded by contact geometry, not
+by a hidden power coefficient.
+
+The seed-29 opening still selects roster slot 6 under the short-kick branch.
+That change is intentional: the stable semantic is a seeded eligible receiver,
+not one historical formation slot. The regression follows the selected player
+ID and requires that player to acquire actual environment possession by control
+tick 40; passive contact alone is explicitly insufficient. In the final trace
+the player first contacts the loose ball before later controlling it, so the
+earlier tick-25 loose-ball observation was an intermediate state, not a failed
+pass. A separate mirrored opening requires the same receiver identity, equal
+power and launch, equal x direction, and negated y direction.
+
+FootballWorld preserves its reproducibility boundary: non-partitionable
+Threefry is required for seed receipts. The opening candidate
+builder now validates a supplied sampling key before its first `fold_in`, and
+the policy-driven match creator replaces its shape-only check with the same
+shared validator. RBG, unsafe-RBG, and partitionable Threefry therefore fail
+closed before they can alter candidate abilities or lineup selection. This is
+host-only validation and adds nothing to the lean transition graph.
+
+All rule-policy random floating draws now specify causal `float32` output;
+categorical logits and the one x64-sensitive chaser index are likewise made
+explicit. This rejects JAX's process-global default dtype as an unrecorded source
+of policy variation. An independent-process validation compares x64 off/on for
+the same Threefry seed and requires exact equality of sampled opening ability
+leaves, registration, starters, placement, formation, first-frame intents, and
+kickoff receiver IDs.
+
+The renderer supports isolated parallel policy matrices. Five tactical plans
+produce ten unordered distinct-plan pairings; the default two-leg mode reverses
+team slots for twenty matches and adds five self-play controls for the complete
+25-cell ordered space. `--matrix-workers` bounds concurrent child processes.
+Every child retains logs and its own match report, and the parent fails closed
+if any child fails. The following historical run explicitly used a one-leg,
+distinct-plan-only diagnostic: the final source-stable seed-29,
+100-control-frame, one-leg CPU matrix completed all ten pairings and all ten
+child reports with zero failures at
+`output/rule-policy-pair-matrix-final-v2-20260910/matrix-summary.json`
+(SHA-256
+`74b54ed20cc4f493e52d23be71ee1f8cd31f1f7ffffa7442fbfdaa7a1ec13baf`).
+It is a cross-style execution diagnostic, not evidence of tactical superiority
+or full-match rate calibration.
+
+Final focused CPU checks passed: ten kickoff/render-legibility tests, three
+open-field marker tests, 21 public randomness-contract tests, one x64
+independent-process selection test, and three managed-opening regressions. The
+full public suite passed 119/119 on the final source in 171.83 s; the three
+managed-opening regressions and expanded x64 probe also passed. Ruff and
+`git diff --check` were clean. This session's default JAX runtime could not collect its requested GPU smoke
+because it attempted the ROCm backend and lacked `GpuAllocatorConfig`; this is
+a runtime-package limitation, not a policy failure. Independently, the bug-audit
+session's latest notice reports that its focused marker/seed-29 set passed 3/3
+on both CPU and free GPU 1.
+
+## Rule-policy rollout efficiency pass (2026-09-10)
+
+This pass preserves FootballWorld's use of squared distance for nearest-player
+ranking. That behavior is sound because every affected value is consumed only
+by an `argmin`/`argmax` order or by comparison with the square of the same
+non-negative physical radius. FootballWorld applies it to the two observer-by-
+player pressure/claimant matrices and to the fixed three-channel box-marker
+assignment. It also reuses the already computed pass distance, predicted
+opponent positions, and goal-threat rank instead of spelling the same
+intermediate twice. Fixed shapes, observer-local information, tie order,
+environment contact authority, and every policy coefficient are unchanged.
+
+A causal `lax.cond` around the rare box assignment was tested
+and rejected. On this FootballWorld graph it did not reproduce a warm-runtime
+gain, while StableHLO grew by 1,156 characters and 22 lines, estimated FLOP by
+308, and compiler temporary memory by 128 bytes. Leaving the small fixed loop
+dense is therefore the better current compilation/memory tradeoff; the rejected
+branch is not left dormant in production source.
+
+For one actual 22-player policy step, a fresh-process structural comparison
+against an exact temporary source baseline changed StableHLO from 1,343,410 to
+1,343,836 characters (+0.032%), kept estimated FLOP at 1,916,002 and compiler
+temporary memory at 119,968 bytes, and reduced transcendental operations from
+38,784 to 36,364 (-2,420, -6.24%). The complete output-tree SHA-256 remained
+`c7fb5251ec82736bab5d424c000c4e01c9977eef89197db2c1aabb23f96a54e5`.
+Three alternating fresh processes per variant measured policy-step median
+2.629 ms for the baseline and 2.349 ms for the candidate. This is a directional
+microbenchmark, not a claimed production speedup.
+
+A separate two-process-per-variant, nine-repeat 256-step rollout comparison
+also produced one identical final-tree SHA-256,
+`84a4195d052c451ea62c5216f26eb51c99866a2c00df158b477a2ebab94f1f07`.
+Its median was 429.326 ms for the baseline and 433.173 ms for the candidate;
+the opposite 0.90% sign is treated as host noise/environment dominance, so no
+end-to-end speedup or slowdown is attributed. Compile medians were 17.464 s and
+17.394 s respectively.
+
+Final semantic validation passed 172/172 CPU tests in 403.90 s. A source-stable
+seed-29 matrix then completed all ten unordered tactical-plan pairings and all
+ten child reports with zero failures. Its summary is
+`output/rule-policy-efficiency-matrix-v2-20260910/matrix-summary.json`
+(SHA-256
+`363e52da76adbc19e065f54ccc7c4571c105909491d221b4cff4b25dd68dfa08`).
+These are implementation-efficiency diagnostics and do not introduce or
+relabel any coefficient as a measured football constant.
+
+## 2026-09-10 movement-aware service and off-ball activation
+
+The 25-cell seed-29 diagnostic matrix showed that static team width was not
+being converted into enough box entries. Ordinary passes also moved backward
+in the opposition half too often. This change keeps fixed-shape candidate
+arrays, physical lane/completion checks, prospective offside checks, stamina
+limits, and the existing moving-receiver arrival calculation.
+
+The policy now exposes arrival lead weight/time/distance in
+`RulePolicyConfig`, increases ordinary off-ball cruise and urgent forward-run
+power, treats the episode-stable designated forward as urgent, increases the
+bounded receiver preference and shape displacement for coordinated attacks,
+and opens cross consideration from a moderately less extreme wide position.
+A score-only backward-pass cost gains extra weight beyond midfield but fades to
+zero under full pressure, so it cannot remove the only safe outlet. No pass,
+cross, or run gains eligibility from these values.
+
+All new and changed coefficients are FootballWorld DESIGN_PRIOR values, not
+measured football constants. They must be evaluated from paired, slot-reversed
+report-only matches before calibration. The implementation adds three scalar
+configuration leaves and scalar/vector arithmetic on the already-materialized
+carrier row; it adds no player-pair tensor, dynamic loop, host callback, or
+render/report work to the policy step.
+
+Focused validation receipts:
+
+- 38 public policy/pass/matrix/render tests passed with
+  `PYTHONPATH=src JAX_PLATFORMS=cpu`.
+- 7 adversarial kickoff/mirror/power/receiver/open-field tests passed.
+- The roster-refresh validation now supplies the required `(P,) int32`
+  `carrier_age` fixture and verifies that a changed identity resets it; the
+  focused test passed.
+- Ruff passed on the changed policy and focused test files.
+
+## 2026-09-11 integration blocker resolution
+
+The currently approved repository contract treats FootballWorld's own tested
+implementation and evidence as authoritative; that contract change is retained
+by explicit user approval. Existing fixed-shape transition semantics, physical
+kick power, mirrored kickoff geometry, match verification, distinct-fixture
+league scoring, and host-only report aggregation remain unchanged.
+
+Four correctness boundaries changed. The default two-leg plan matrix now
+includes the five self-play controls and therefore emits all 25 ordered cells.
+An explicit 20-cell opt-out remains available, but its JSON quality is false and
+its HTML shows the observed/expected cell count. Multi-report JSON and HTML are
+completed in a sibling staging directory and published with one directory
+rename; an existing generation is never overwritten. The kickoff lateral stance
+now derives handedness from the permutation-invariant cubic lateral moment of
+the restart team rather than roster storage indices, while retaining y-mirror
+equivariance and the symmetric fallback. Finally, opening registration maxima
+are range-checked in the host builder before int32 conversion, preventing
+`2**32 + n` from aliasing to `n`.
+
+The report and opening changes are host-only. The kickoff change replaces one
+fixed-size weighted reduction with one fixed-size cubic reduction and adds no
+pairwise tensor, callback, dynamic shape, or data-dependent Python branch to the
+JAX step. These changes introduce no football coefficient and make no measured
+football claim. Focused CPU validation passed 31 tests covering default and
+opt-out matrix construction, complete/incomplete report labels, immutable
+report publication, opening narrowing, kickoff roster permutation and mirror
+equivariance, seed-29 reception, and restart execution. Ruff and
+`git diff --check` also passed before the broad integration suite.
+The broad integration suite then passed 241/241 CPU tests in 417.58 s with
+`PYTHONPATH=src:. JAX_PLATFORMS=cpu`; the repository-root path component is
+required only for the separate `research` namespace.

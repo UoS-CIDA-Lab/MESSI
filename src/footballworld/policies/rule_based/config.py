@@ -35,7 +35,7 @@ class RulePolicyConfig:
     # They remain a transfer prior until a role-stratified tracking receipt is
     # available; stamina coefficients are not retuned to hide policy activity.
     approach_power: float = 0.90
-    support_power: float = 0.55
+    support_power: float = 0.62
     pressure_power: float = 1.00
     carrier_power: float = 0.62
     goalkeeper_power: float = 0.65
@@ -44,16 +44,16 @@ class RulePolicyConfig:
     offball_walk_power: float = 0.04
     # The current policy has fewer separately accelerated support/marking roles,
     # so its ordinary cruise value is an independent transfer prior.
-    offball_cruise_power: float = 0.12
-    offball_surge_cap: float = 0.22
+    offball_cruise_power: float = 0.15
+    offball_surge_cap: float = 0.28
     # Four-seed role distance divided into the seven-match DFL target.
     # Goalkeepers use their dedicated movement branch and retain scale 1.0.
     offball_cb_power_scale: float = 1.05
     offball_fb_power_scale: float = 1.06
     offball_cm_power_scale: float = 1.12
     offball_wm_power_scale: float = 1.14
-    offball_cf_power_scale: float = 0.89
-    offball_wf_power_scale: float = 0.94
+    offball_cf_power_scale: float = 0.98
+    offball_wf_power_scale: float = 1.02
 
     # Spatial decision scales in metres.
     approach_slow_radius_m: float = 3.0
@@ -65,6 +65,9 @@ class RulePolicyConfig:
     # Readable tactical scoring.
     pass_lateral_penalty: float = 0.20
     backward_pass_penalty: float = 0.18
+    # Additional score-only aversion to backward recycling after entering the
+    # opposition half. It fades under pressure and never changes eligibility.
+    advanced_backward_pass_penalty_gain: float = 0.12
     # Independent completion-conditioned reward for positive signed progress.
     # DFL-v2 intent calibration candidate: seven provider matches and a
     # four-seed FootballWorld validation; this is not a universal constant.
@@ -74,10 +77,16 @@ class RulePolicyConfig:
     macro_choice_temperature: float = 0.30
     shot_portion_temperature: float = 0.18
     shot_value_gain: float = 0.72
-    cross_value_gain: float = 1.55
+    cross_value_gain: float = 1.75
+    # Arrival-point targeting controls are policy design priors. They expose
+    # the existing FootballWorld-compatible moving-receiver mechanism without
+    # claiming a measured pass-speed or player-forecast constant.
+    pass_receiver_velocity_weight: float = 0.90
+    pass_receiver_lead_time_cap_s: float = 1.15
+    pass_receiver_lead_distance_cap_m: float = 8.0
     # Bounded continuation and event-cadence choices. These are explicit
     # policy design priors, not measured football constants. The distance
-    # envelope is inherited from SoccerWorld's physically checked second-leg
+    # envelope is defined by FootballWorld's physically checked second-leg
     # graph; FootballWorld evaluates it only for the one visible carrier row.
     continuation_value_gain: float = 0.16
     continuation_min_distance_m: float = 5.0
@@ -87,13 +96,13 @@ class RulePolicyConfig:
     service_opportunity_completion_floor: float = 0.58
     # Possession-episode attack patterns are seeded coordination priors.  They
     # never change candidate legality and are not tracking-data fits.
-    attack_pattern_receiver_gain: float = 0.14
-    attack_pattern_shape_shift_m: float = 3.0
+    attack_pattern_receiver_gain: float = 0.20
+    attack_pattern_shape_shift_m: float = 3.8
     # One episode-stable forward occupies a pattern-specific pocket and gets a
     # matching completion-conditioned receiver preference. Kept separate from
     # the older multi-role pattern priors for controlled calibration/ablation.
-    forward_pocket_shift_m: float = 3.0
-    forward_pocket_receiver_gain: float = 0.14
+    forward_pocket_shift_m: float = 4.2
+    forward_pocket_receiver_gain: float = 0.22
     progressive_carry_min_commit_s: float = 0.8
     solo_carry_soft_limit_s: float = 2.2
     solo_carry_value_decay: float = 0.55
@@ -104,8 +113,12 @@ class RulePolicyConfig:
     turnover_shot_value_scale: float = 0.35
     kickoff_path_window_s: float = 3.0
     kickoff_path_lateral_shift_m: float = 2.4
+    # Seeded opening variation. These are DESIGN_PRIOR controls, not an
+    # empirical professional-football kickoff frequency or distance fit.
+    kickoff_territorial_probability: float = 0.18
+    kickoff_territorial_distance_m: float = 30.0
     immediate_return_penalty: float = 0.16
-    # SoccerWorld measures early relays on a different policy/environment
+    # FootballWorld measures early relays on a different policy/environment
     # contract. Its rounded 0.31 incidence is only a seeded transfer prior;
     # FootballWorld also requires pressure, body alignment, completion, and a
     # safe second leg before the draw can permit an early pass.
@@ -132,10 +145,9 @@ class RulePolicyConfig:
     offside_timing_error_margin_m: float = 1.00
 
     # Predicted runner marking is a tactical target generator. The 0.25 s lead
-    # and 1.6 m goal-side gap inherit SoccerWorld design priors, not DFL fits.
-    # FootballWorld's narrower 3 m runner/ball activation margins are its own
-    # conservative design prior: it rejects SoccerWorld's 5 m/14 m early box
-    # collapse. The environment remains authoritative for physical contests.
+    # and 1.6 m goal-side gap are FootballWorld design priors, not DFL fits.
+    # The narrower 3 m runner/ball activation margins are a conservative design
+    # prior that avoids premature box collapse. The environment remains authoritative for physical contests.
     box_mark_lead_s: float = 0.25
     box_mark_runner_margin_m: float = 3.0
     box_mark_ball_margin_m: float = 3.0
@@ -175,7 +187,7 @@ class RulePolicyConfig:
     shoot_curl_spin: float = 0.42
     shoot_curl_aim_compensation: float = 0.35
     cross_start_fraction: float = 0.05
-    cross_wide_fraction: float = 0.55
+    cross_wide_fraction: float = 0.50
     cross_target_central_fraction: float = 0.50
     cross_side_spin: float = 0.18
     cross_back_spin: float = 0.35
@@ -238,7 +250,9 @@ class RulePolicyConfig:
             "offside_timing_error_margin_m",
             "attack_pattern_shape_shift_m",
             "forward_pocket_shift_m",
+            "pass_receiver_lead_distance_cap_m",
             "kickoff_path_lateral_shift_m",
+            "kickoff_territorial_distance_m",
             "continuation_min_distance_m",
             "continuation_max_distance_m",
             "continuation_backward_tolerance_m",
@@ -261,6 +275,8 @@ class RulePolicyConfig:
             "offball_surge_span_radii",
             "progressive_carry_min_commit_s",
             "continuation_support_lead_cap_s",
+            "pass_receiver_lead_time_cap_s",
+            "pass_receiver_velocity_weight",
             "box_mark_lead_s",
             "quick_relay_window_s",
             "quick_relay_context_logit_limit",
@@ -281,7 +297,9 @@ class RulePolicyConfig:
         )
         unit_names = (
             "immediate_return_penalty",
+            "kickoff_territorial_probability",
             "backward_pass_penalty",
+            "advanced_backward_pass_penalty_gain",
             "progressive_pass_value_gain",
             "solo_carry_value_decay",
             "dribble_shape_drift_penalty",

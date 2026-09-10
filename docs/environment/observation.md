@@ -140,9 +140,9 @@ contract. Flattening preserves float, integer, and boolean blocks separately,
 and unflattening validates dtype, size, leading axes, structure, and contract
 identity.
 
-## SoccerWorld baseline and FootballWorld decision
+## FootballWorld observation design
 
-FootballWorld inherits two sound SoccerWorld behaviors:
+FootballWorld guarantees two core behaviors:
 
 - observation assembly is a pure function of state; and
 - omitting observation work is a performance choice that does not change the
@@ -152,9 +152,8 @@ It also retains fixed shapes and the no-runtime-clipping normalization rule.
 Those properties support reproducible JAX compilation and prevent a model-view
 choice from changing match physics.
 
-FootballWorld rejects SoccerWorld's authoritative dense float vector and its
-inclusion of bench attributes in every player observation. It also does not copy
-SoccerWorld's `role_pos` cumulative mean into authoritative physics state: that
+FootballWorld rejects the authoritative dense float vector and its
+inclusion of bench attributes in every player observation. It also keeps the `role_pos` cumulative mean out of authoritative physics state: that
 value mixes a tactical-epoch activity summary with an assignment and needs an
 extra sample count to remain Markov. The replacement separates current tactical
 assignment (`formation_anchor`, `formation_role`, epoch and change tick),

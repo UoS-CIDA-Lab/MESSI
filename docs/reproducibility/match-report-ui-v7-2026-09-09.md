@@ -16,25 +16,9 @@ tracking-derived attack-sequence start followed by same-attack exact actions.
 The cumulative `live_seconds` arrays remain available for explicit consumer
 migration.
 
-## Mandatory SoccerWorld reference inspection
+## FootballWorld design rationale
 
-SoccerWorld has no match-report generation feature. The following files were
-inspected only for its host-side rendering, artifact-receipt, source-clock, and
-fail-closed conventions; they are not a SoccerWorld report implementation:
-
-- `/data/SoccerWorld/src/soccerworld/demo/reporting.py`
-- `/data/SoccerWorld/src/soccerworld/demo/artifact_receipts.py`
-- `/data/SoccerWorld/src/soccerworld/data/capture.py`
-- `/data/SoccerWorld/src/soccerworld/demo/rollout.py`
-- `/data/SoccerWorld/tests/unit/demo/test_showcase.py`
-- `/data/SoccerWorld/tests/unit/demo/test_artifact_receipts.py`
-- `/data/SoccerWorld/tests/unit/rendering/test_render_contract.py`
-- `/data/SoccerWorld/tests/contracts/public_api/test_native_command_capture.py`
-- `/data/SoccerWorld/docs/architecture/commands-and-capture.md`
-- `/data/SoccerWorld/docs/architecture/render-showcase.md`
-- `/data/SoccerWorld/docs/reproducibility/baseline-20260829.md`
-
-Inherited because it is sound: rendering and diagnostics remain host-only;
+The design keeps rendering and diagnostics host-only; rendering and diagnostics remain host-only;
 fixed-grid aggregation is bounded and reproducible; source clocks and receipts
 remain authoritative; missing data fails closed; and the HTML stays
 dependency-free. Disabled capture products and empty resampling results also
@@ -55,9 +39,8 @@ node is unavailable. Sparse 30-second density buckets remain prefix-summed in
 HTML. No display value is presented as a measured football constant or DFL
 coefficient.
 
-SoccerWorld has no managed streaming report-only render-group path. FootballWorld
-keeps its useful fixed outer group/control-frame shape but rejects the video-only
-assumption that a non-empty outer group has a final visual sample. The manager
+The managed streaming report-only path keeps a fixed outer
+group/control-frame shape and rejects the video-only assumption that a non-empty outer group has a final visual sample. The manager
 boundary now replaces that endpoint only for a non-empty inner video group;
 sidecar host-frame replacement is unchanged.
 
@@ -133,17 +116,33 @@ constant; longer paths retain actual samples at a deterministic coarser stride.
 Shot symbols are emitted in a lower SVG layer and all focus/hover routes in the
 final overlay layer.
 
-The mandatory SoccerWorld sources listed above were rechecked. Because
-SoccerWorld has no report generator, no occupancy or shot-report behavior is
-claimed as inherited. FootballWorld only retains the referenced host-only,
+The match-report implementation keeps analysis host-only and preserves
 source-clock, artifact-receipt, and fail-closed engineering conventions. The
-entire match-report presentation and metrics surface is FootballWorld-specific.
+entire presentation and metrics surface is FootballWorld-specific.
 None of these changes touches JAX physics, rules, policy, or rollout
 compilation.
 
-On the final seed-29 replay, the regenerated report uses
-`footballworld.match-report/9` and `footballworld.match-metrics/10`.
-It contains 455 red and 450 blue server-rendered density blobs. Actual tracking
+## Single-cell occupancy color correction (2026-09-10)
+
+The incremental 30-second receipts and their prefix sum are retained: every
+slider position remains cumulative from kickoff through the selected endpoint,
+not a rolling 30-second view. The earlier server and browser renderers drew all
+red radial fields before all blue fields, so shared cells could appear blue even
+when Team 0 had substantial normalized occupancy. That presentation is rejected
+because SVG paint order encoded no football fact.
+
+Each occupied cell is now emitted once. Its red-purple-blue hue is the ratio of
+the two teams' separately normalized cell densities, and opacity is the square
+root-scaled sum of those densities relative to the densest combined cell. The
+17 hue buckets are a bounded display quantization, not a measured football
+constant. The occupancy renderer remains host-side and preserves source-clock and
+reproducible-artifact separation. No policy, physics, replay or
+JAX transition is changed by this correction.
+
+On the final seed-29 replay, the earlier regenerated report uses
+`footballworld.match-report/9` and `footballworld.match-metrics/10`. Its former
+455-red/450-blue two-layer blob count is superseded by the single-cell renderer;
+a new generated report must count unique occupied cells instead. Actual tracking
 paths are present for 27/27 shots and contain 1,086 source points in total.
 Twenty-four paths use the continuous live attacking sequence; the three direct
 free-kick shots at 46:25, 72:52, and 75:38 each use 150 actual 10 Hz samples

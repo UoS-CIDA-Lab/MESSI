@@ -58,6 +58,18 @@ to `MOVE`. `INTENT_TACKLE` is an event-schema alias for `CHALLENGE`, and
 `INTENT_CATCH` is a reserved realized goalkeeper-event value outside the six
 selectable actions.
 
+The categorical wire type is signed `int32`. Host integers are checked before
+conversion so a wide signed or unsigned value cannot wrap into one of the six
+legal codes. A representable but invalid submitted code remains visible in
+action telemetry; an integer outside the `int32` representation is recorded as
+the explicit `-1` sentinel. Both cases execute as `MOVE`. Traced integer arrays
+apply the same fail-closed rule without adding host callbacks to the physics
+step, while boolean and floating-point intent arrays are rejected.
+
+Externally supplied integers are validated before JAX narrowing. The explicit
+categorical intent boundary rejects silent modular aliasing because malformed
+input must not become a valid contact command.
+
 ## The six intents
 
 | Intent | Includes | Does not guarantee |

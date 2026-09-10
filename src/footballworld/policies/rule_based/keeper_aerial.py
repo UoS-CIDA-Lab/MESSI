@@ -688,9 +688,8 @@ def goalkeeper_cover_decision(
     )
 
     claimable_compatibility = ball_speed < _GK_CATCH_COMPATIBILITY_SPEED_MPS
-    # Retain the useful goalkeeper/outfielder role split inherited from
-    # SoccerWorld, but reject its broad toward-goal-or-not-physically-possessed
-    # rule. That rule makes the goalkeeper and a teammate converge on a
+    # Keep a goalkeeper/outfielder role split, but reject the broad
+    # toward-goal-or-not-physically-possessed rule. That rule makes the goalkeeper and a teammate converge on a
     # settling CONTROL touch. Public causal lineage rejects that false threat
     # without hiding a real goal-mouth trajectory or an unpossessed back-pass.
     threat = heading | (~own_team_controlled)
@@ -861,13 +860,13 @@ def select_goalkeeper_distribution_target(
         short_rank = jnp.where(
             short_candidate,
             jnp.log(jnp.maximum(short_completion, 1.0e-4)) / safe_temperature
-            + jax.random.gumbel(short_key, short_score.shape),
+            + jax.random.gumbel(short_key, short_score.shape, dtype=jnp.float32),
             -jnp.inf,
         )
         long_rank = jnp.where(
             long_candidate,
             jnp.log(jnp.maximum(long_arrival, 1.0e-4)) / safe_temperature
-            + jax.random.gumbel(long_key, long_score.shape),
+            + jax.random.gumbel(long_key, long_score.shape, dtype=jnp.float32),
             -jnp.inf,
         )
     short_slot = jnp.argmax(short_rank, axis=-1).astype(jnp.int32)

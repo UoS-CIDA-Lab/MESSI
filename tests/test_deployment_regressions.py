@@ -27,6 +27,8 @@ from footballworld.analysis.report import (
     _shot_context_chart,
     _shot_map_chart,
     _space_occupancy_chart,
+    _space_occupancy_snapshot,
+    _spatial_balance_bucket,
     _workload_charts,
     render_html,
 )
@@ -626,6 +628,17 @@ def test_shot_outcomes_distinguish_save_block_and_censoring():
     )
 
 
+def test_spatial_balance_bucket_matches_javascript_half_up_boundaries():
+    # Positive half-bucket positions must use JavaScript Math.round semantics.
+    # Python's built-in round would instead choose an even bucket at .5.
+    assert _spatial_balance_bucket(31.0, 1.0) == 1
+    assert _spatial_balance_bucket(23.0, 9.0) == 5
+    assert _spatial_balance_bucket(9.0, 23.0) == 12
+    assert _spatial_balance_bucket(1.0, 31.0) == 16
+    assert _spatial_balance_bucket(1.0, 0.0) == 0
+    assert _spatial_balance_bucket(0.0, 1.0) == 16
+
+
 def test_report_renders_time_occupancy_and_all_shot_symbols():
     report = {
         "visualizations": {
@@ -650,6 +663,7 @@ def test_report_renders_time_occupancy_and_all_shot_symbols():
                     [0, 0, 1, 1, 11.0],
                     [0, 1, 0, 0, 10.0],
                     [1, 0, 0, 1, 7.0],
+                    [1, 1, 0, 1, 7.0],
                 ],
             },
             "ball_density_2d": {
@@ -748,6 +762,8 @@ def test_report_renders_time_occupancy_and_all_shot_symbols():
         }
     }
 
+    occupancy_data = report["visualizations"]["team_space_occupancy"]
+    initial_occupancy, _ = _space_occupancy_snapshot(occupancy_data, 1)
     occupancy = _space_occupancy_chart(report)
     density = _ball_density_chart(report)
     shots = _shot_map_chart(report, 0)
@@ -759,15 +775,18 @@ def test_report_renders_time_occupancy_and_all_shot_symbols():
     assert "cumulative attacking-half occupancy" in occupancy
     assert 'type="range"' in occupancy
     assert "not modeled territory control" in occupancy
-    assert 'radialGradient id="spatial-red-field"' in occupancy
-    assert 'radialGradient id="spatial-blue-field"' in occupancy
+    assert 'radialGradient id="spatial-balance-0"' in occupancy
+    assert 'radialGradient id="spatial-balance-8"' in occupancy
+    assert 'radialGradient id="spatial-balance-16"' in occupancy
     assert 'fill="#0b1628"' in occupancy
     assert "#ff365f" in occupancy and "#2787ff" in occupancy
-    assert "spatial-team-0" in occupancy and "spatial-team-1" in occupancy
+    assert "red through balanced purple to blue" in occupancy
+    assert "opacity shows their combined density" in occupancy
     assert 'value="1"' in occupancy
-    assert 'fill="url(#spatial-red-field)"' in occupancy
-    assert 'fill="url(#spatial-blue-field)"' in occupancy
-    assert "Purple overlap means both teams occupied the same area" in occupancy
+    assert initial_occupancy.count('class="spatial-density-cell"') == 3
+    assert 'fill="url(#spatial-balance-8)"' in initial_occupancy
+    assert "spatial-team-0" not in occupancy
+    assert "spatial-team-1" not in occupancy
     assert "mix-blend-mode" not in occupancy
 
     assert "Ball-position density over time" in density

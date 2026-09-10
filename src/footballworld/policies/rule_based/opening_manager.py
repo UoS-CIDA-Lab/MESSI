@@ -158,7 +158,7 @@ def _choose_formation(
                 selected_base_key, value
             )
         )(signatures)
-        noise = jax.vmap(jax.random.gumbel)(keys)
+        noise = jax.vmap(lambda key: jax.random.gumbel(key, dtype=jnp.float32))(keys)
         positive = (probability > 0.0) & jnp.isfinite(probability)
         score = jnp.where(
             positive, jnp.log(jnp.maximum(probability, 1e-12)) + noise, -jnp.inf
@@ -270,7 +270,9 @@ class RuleBasedOpeningManagerPolicy:
                         )
                     )
                 )(observations.players.player_id[team])
-                noise = jax.vmap(jax.random.gumbel)(keys)
+                noise = jax.vmap(lambda key: jax.random.gumbel(key, dtype=jnp.float32))(
+                    keys
+                )
                 score = (
                     role_score
                     - self.config.position_fit_weight * distance
@@ -298,7 +300,9 @@ class RuleBasedOpeningManagerPolicy:
                     jnp.uint32(0x52454749),
                 )
             )(observations.players.player_id[team])
-            registration_noise = jax.vmap(jax.random.gumbel)(registration_keys)
+            registration_noise = jax.vmap(
+                lambda key: jax.random.gumbel(key, dtype=jnp.float32)
+            )(registration_keys)
             registration_score = (
                 jnp.sum(ability[team] * _REGISTRATION_ABILITY_WEIGHT, axis=-1)
                 + self.config.registration_noise_scale * registration_noise

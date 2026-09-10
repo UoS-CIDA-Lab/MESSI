@@ -480,11 +480,11 @@ class RuleBasedManager:
             )
             halftime_draw = jax.random.bernoulli(
                 jax.random.fold_in(decision_key, jnp.uint32(0)),
-                self.config.halftime_substitution_probability,
+                jnp.float32(self.config.halftime_substitution_probability),
             )
             sampled_window_size = 1 + jax.random.categorical(
                 jax.random.fold_in(decision_key, jnp.uint32(1)),
-                jnp.log(_WINDOW_SIZE_PROBABILITY),
+                jnp.log(_WINDOW_SIZE_PROBABILITY).astype(jnp.float32),
             ).astype(jnp.int32)
             desired_count = jnp.where(halftime & halftime_draw, 1, sampled_window_size)
             routine_window = (
@@ -679,7 +679,9 @@ class RuleBasedManager:
                     )
                 )
             )(observations.formation_candidate_signature[team])
-            noise = jax.vmap(jax.random.gumbel)(layout_keys)
+            noise = jax.vmap(lambda key: jax.random.gumbel(key, dtype=jnp.float32))(
+                layout_keys
+            )
             score = base_score + self.config.formation_noise_scale * noise
             current = observations.formation_index[team]
             current_valid = (current >= 0) & (current < score.shape[0])

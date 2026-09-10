@@ -1,6 +1,7 @@
 """Host-side construction of the minimal immutable rollout state."""
 
 from collections.abc import Sequence
+from numbers import Integral
 from typing import NamedTuple
 
 import jax
@@ -9,7 +10,7 @@ import numpy as np
 
 from footballworld.config.body_contact import BodyContact
 from footballworld.config.geometry import Ball
-from footballworld.config.roster import Player
+from footballworld.config.roster import Player, PlayerProfile
 from footballworld.config.roster_sampling import RosterSampling
 from footballworld.core.constants import (
     NO_PLAYER,
@@ -57,7 +58,30 @@ def _validate_rosters(
 ) -> None:
     if not team_0 or not team_1:
         raise ValueError("both teams must contain at least one player")
+    players = team_0 + team_1
+    if any(type(player) is not Player for player in players):
+        raise TypeError("team rosters must contain exactly Player entries")
+    if any(type(player.profile) is not PlayerProfile for player in players):
+        raise TypeError("starter profiles must be exactly PlayerProfile")
+
+    player_ids = [player.profile.player_id for player in players]
+    if any(
+        not isinstance(player_id, Integral) or isinstance(player_id, (bool, np.bool_))
+        for player_id in player_ids
+    ):
+        raise TypeError("starter player_id values must be non-boolean integers")
+    if any(
+        not 0 <= int(player_id) <= np.iinfo(np.int32).max for player_id in player_ids
+    ):
+        raise ValueError(
+            "starter player_id values must lie in the int32 identity domain"
+        )
+    if len(set(map(int, player_ids))) != len(player_ids):
+        raise ValueError("player_id values must be unique across both teams")
+
     for name, roster in (("team_0", team_0), ("team_1", team_1)):
+        if any(type(player.profile.is_goalkeeper) is not bool for player in roster):
+            raise TypeError(f"{name} is_goalkeeper values must be bool")
         if sum(player.profile.is_goalkeeper for player in roster) > 1:
             raise ValueError(f"{name} may contain at most one goalkeeper")
 
@@ -91,7 +115,7 @@ def _pack_rosters(
         raise ValueError("roster positions and physical values must be finite")
     max_speed, stature, reach_height, ball_control, endurance = physical.T
     physically_valid = (
-        (max_speed >= 0.0)
+        (max_speed > 0.0)
         & (stature > 2.0 * body.head_radius_m)
         & (reach_height >= stature)
         & (ball_control >= 0.0)
@@ -113,8 +137,6 @@ def _pack_rosters(
     player_id = np.asarray(
         [player.profile.player_id for player in players], dtype=np.int32
     )
-    if np.unique(player_id).size != player_id.size:
-        raise ValueError("player_id values must be unique across both teams")
     is_goalkeeper = np.asarray(
         [player.profile.is_goalkeeper for player in players], dtype=np.bool_
     )
@@ -139,6 +161,11 @@ def initialize_state(
     positions for Law 8 or snap the selected taker to the centre mark.
     """
 
+    if not isinstance(kickoff_team, Integral) or isinstance(
+        kickoff_team, (bool, np.bool_)
+    ):
+        raise TypeError("kickoff_team must be a non-boolean integer")
+    kickoff_team = int(kickoff_team)
     if kickoff_team not in (TEAM_0, TEAM_1):
         raise ValueError("kickoff_team must be TEAM_0 or TEAM_1")
     team_0 = tuple(team_0)

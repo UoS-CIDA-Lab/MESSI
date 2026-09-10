@@ -6,18 +6,14 @@
 
 이 변경은 축구 계수, 접촉 판정식, 이벤트 우선순위, 최대 이벤트 수를 바꾸지 않는다.
 
-## SoccerWorld 비교
+## 설계 근거
 
-필수 기준으로 /data/SoccerWorld/src/soccerworld/_engine/ball.py의 _ball_step_after_body와 /data/SoccerWorld/docs/performance/contest-no-candidate-2026-08-30.md를 확인했다.
-
-계승한 장점은 다음과 같다.
-
-- scalar lax.cond로 후보가 없는 큰 계산을 건너뛴다.
+- scalar `lax.cond`로 후보가 없는 큰 계산을 건너뛴다.
 - 후보가 있는 branch는 기존 exact 구현을 단일 진실 원천으로 유지한다.
 - 같은 backend에서 전체 PyTree digest를 비교한다.
 - warm 실행, cold compile, 임시 버퍼와 실행 코드 크기를 따로 보고한다.
-
-그대로 이식하지 않은 부분은 SoccerWorld가 몸통 접촉 뒤 공/골 프레임 적분을 순차 적용하고, FootballWorld의 다중 chronological event loop와 같은 구조가 없기 때문이다. SoccerWorld의 물리식을 복사하지 않았다.
+- FootballWorld의 다중 chronological event loop와 event ordering을 그대로
+  보존하며 다른 물리식을 도입하지 않는다.
 
 ## 구현
 

@@ -17,6 +17,7 @@ from typing import Any
 import jax
 import numpy as np
 
+from footballworld.core.randomness import validate_prng_key
 from footballworld.runtime import environment_fingerprint
 
 RENDER_COMPLETION_SCHEMA = "footballworld.render-completion/2"
@@ -212,6 +213,7 @@ def replay_provenance(
 ) -> dict[str, Any]:
     """Return automatic replay provenance without entering a JAX executable."""
 
+    validate_prng_key(match_key, name="match_key")
     key_data = np.asarray(jax.device_get(jax.random.key_data(match_key)))
     return {
         "environment": environment_fingerprint(env),

@@ -6,6 +6,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from footballworld.config.body_contact import BodyContact
 from footballworld.config.geometry import Stadium
@@ -97,7 +98,7 @@ def _validate_layout(
     state: State,
     offside_state: OffsideState,
     request: SubstitutionRequest,
-) -> None:
+) -> SubstitutionRequest:
     player_count = state.players.position.shape[0]
     if player_count <= 0:
         raise ValueError("substitution requires at least one roster slot")
@@ -108,7 +109,13 @@ def _validate_layout(
         if jnp.shape(value) != ():
             raise ValueError(f"request {name} must be scalar")
     for name in ("enabled", "incoming_is_goalkeeper"):
-        if jnp.asarray(fields[name]).dtype != jnp.bool_:
+        value = fields[name]
+        if not isinstance(value, (jax.Array, jax.core.Tracer)):
+            host = np.asarray(value)
+            if not np.issubdtype(host.dtype, np.bool_):
+                raise TypeError(f"request {name} must have bool dtype")
+            fields[name] = jnp.bool_(bool(host))
+        elif jnp.asarray(value).dtype != jnp.bool_:
             raise TypeError(f"request {name} must have bool dtype")
     for name in (
         "team",
@@ -116,7 +123,21 @@ def _validate_layout(
         "incoming_player_id",
         "incoming_yellow_cards",
     ):
-        if jnp.asarray(fields[name]).dtype != jnp.int32:
+        value = fields[name]
+        if not isinstance(value, (jax.Array, jax.core.Tracer)):
+            host = np.asarray(value)
+            if not np.issubdtype(host.dtype, np.integer) or np.issubdtype(
+                host.dtype, np.bool_
+            ):
+                raise TypeError(f"request {name} must have int32 dtype")
+            integer = int(host)
+            info = np.iinfo(np.int32)
+            if not info.min <= integer <= info.max:
+                raise ValueError(
+                    f"request {name} is not representable as int32: {integer}"
+                )
+            fields[name] = jnp.int32(integer)
+        elif jnp.asarray(value).dtype != jnp.int32:
             raise TypeError(f"request {name} must have int32 dtype")
     for name in (
         "incoming_max_speed",
@@ -125,8 +146,21 @@ def _validate_layout(
         "incoming_ball_control",
         "incoming_endurance_factor",
     ):
-        if jnp.asarray(fields[name]).dtype != jnp.float32:
+        value = fields[name]
+        if not isinstance(value, (jax.Array, jax.core.Tracer)):
+            host = np.asarray(value)
+            if not np.issubdtype(host.dtype, np.floating):
+                raise TypeError(f"request {name} must have float32 dtype")
+            with np.errstate(over="ignore", invalid="ignore"):
+                narrowed = host.astype(np.float32)
+            if bool(np.isfinite(host)) and not bool(np.isfinite(narrowed)):
+                raise ValueError(
+                    f"request {name} is not representable as finite float32"
+                )
+            fields[name] = jnp.float32(narrowed)
+        elif jnp.asarray(value).dtype != jnp.float32:
             raise TypeError(f"request {name} must have float32 dtype")
+    return SubstitutionRequest(**fields)
 
 
 def _management_stoppage_open(
@@ -227,7 +261,7 @@ def _apply_substitution(
 ) -> _SubstitutionKernelResult:
     """Apply one facade-validated rare event or return an exact no-op."""
 
-    _validate_layout(state, offside_state, request)
+    request = _validate_layout(state, offside_state, request)
     players = state.players
     player_count = players.position.shape[0]
     outgoing = request.outgoing_index

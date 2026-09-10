@@ -38,7 +38,7 @@ from footballworld.core.contact import (
     OUTCOME_RELEASE,
     OUTCOME_TACKLE_WON,
 )
-from footballworld.core.randomness import RandomEvent, event_random_key
+from footballworld.core.randomness import RandomEvent, _event_random_key_unchecked
 from footballworld.core.state import State
 
 SAMPLE_CONTEST = -2
@@ -324,17 +324,22 @@ def _challenge_outcome(
     *,
     config: Contest,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    foul_key = event_random_key(key, RandomEvent.CONTEST_FOUL)
-    success_key = event_random_key(key, RandomEvent.CONTEST_SUCCESS)
-    deflect_key = event_random_key(key, RandomEvent.CONTEST_DEFLECTION)
-    card_key = event_random_key(key, RandomEvent.CONTEST_CARD)
-    color_key = event_random_key(key, RandomEvent.CONTEST_CARD_COLOUR)
+    foul_key = _event_random_key_unchecked(key, RandomEvent.CONTEST_FOUL)
+    success_key = _event_random_key_unchecked(key, RandomEvent.CONTEST_SUCCESS)
+    deflect_key = _event_random_key_unchecked(key, RandomEvent.CONTEST_DEFLECTION)
+    card_key = _event_random_key_unchecked(key, RandomEvent.CONTEST_CARD)
+    color_key = _event_random_key_unchecked(key, RandomEvent.CONTEST_CARD_COLOUR)
     foul = (
         jax.random.uniform(foul_key, dtype=jnp.asarray(foul_probability).dtype)
         < foul_probability
     )
-    success = jax.random.uniform(success_key) < success_probability
-    deflection = jax.random.uniform(deflect_key) < config.tackle_deflection_probability
+    success_dtype = jnp.asarray(success_probability).dtype
+    card_dtype = jnp.asarray(card_probability).dtype
+    success = jax.random.uniform(success_key, dtype=success_dtype) < success_probability
+    deflection = (
+        jax.random.uniform(deflect_key, dtype=success_dtype)
+        < config.tackle_deflection_probability
+    )
     sampled = jnp.where(
         foul,
         OUTCOME_FOUL,
@@ -354,9 +359,10 @@ def _challenge_outcome(
     outcome = jnp.where(requested & compatible, forced_outcome, sampled).astype(
         jnp.int32
     )
-    carded = jax.random.uniform(card_key) < card_probability
+    carded = jax.random.uniform(card_key, dtype=card_dtype) < card_probability
     direct_red = carded & (
-        jax.random.uniform(color_key) < config.direct_red_given_card_probability
+        jax.random.uniform(color_key, dtype=card_dtype)
+        < config.direct_red_given_card_probability
     )
     discipline = jnp.where(
         outcome == OUTCOME_FOUL,
@@ -614,8 +620,8 @@ def resolve_contest(
 
     def resolve_active(_: None) -> ContestResult:
         score = _contest_score(state, distance_xy, config=config)
-        winner_key = event_random_key(key, RandomEvent.CONTEST_WINNER)
-        outcome_key = event_random_key(key, RandomEvent.CONTEST_OUTCOME)
+        winner_key = _event_random_key_unchecked(key, RandomEvent.CONTEST_WINNER)
+        outcome_key = _event_random_key_unchecked(key, RandomEvent.CONTEST_OUTCOME)
         actor, selected, winner_override_valid = _sample_actor(
             score / config.temperature,
             candidate,

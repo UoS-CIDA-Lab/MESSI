@@ -251,8 +251,7 @@ def _detect_active_contact_requested(
     torso_top = body.torso_top_height(players.height)
     minus_infinity = jnp.full(player_count, -jnp.inf, dtype=dtype)
     # Foot, chest, and head partition the same horizontal swept cylinder.
-    # Reuse its quadratic roots; only their vertical slabs differ. SoccerWorld
-    # has no corresponding chronological reach-volume implementation to retain.
+    # Reuse the quadratic roots; only the vertical slabs differ.
     ordinary_horizontal = _active_horizontal_interval(
         state,
         ball_path_delta,

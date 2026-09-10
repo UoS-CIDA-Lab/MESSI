@@ -1,13 +1,12 @@
 """Focused contracts for receiver-plan handoff and CONTROL power units.
 
-SoccerWorld keeps one deterministic trajectory runner for an observed pass and
-tests that its action and trace agree.  FootballWorld extends that sound
-single-runner principle with causal, observer-row policy state: the receiver
+FootballWorld uses one deterministic trajectory runner for an observed pass and
+tests that its action and trace agree. Causal observer-row policy state ensures the receiver
 selected by a submitted PASS must be installed before the next observation can
 fall back to the generic loose-ball interceptor.
 
-SoccerWorld's absolute fast-ball dribble gate is intentionally not copied here.
-FootballWorld's CONTROL request is player-relative and has its own public speed
+CONTROL is not governed by an absolute fast-ball dribble gate. The
+FootballWorld CONTROL request is player-relative and has its own public speed
 scale, so this file instead protects the normalized CONTROL-unit contract.
 Neither policy coefficient is asserted to be a measured football constant.
 """
@@ -483,6 +482,65 @@ def test_settling_control_is_not_a_pass_runner_or_goalkeeper_sweep():
     assert int(np.asarray(parried_result.state.loose_chaser[actor])) == actor
     assert int(np.asarray(parried_result.action.intent[goalkeeper])) == INTENT_MOVE
     assert float(np.asarray(parried_move[goalkeeper, 0])) < 0.0
+
+
+def test_controlled_possessor_gets_physical_space_without_retasking_others():
+    """Only a nearby same-team outfielder clears the control envelope."""
+
+    env = FootballWorld()
+    reset, actor, receiver = _controlled_open_play(env)
+    state = reset.rollout.state
+    team = int(np.asarray(state.players.team_id[actor]))
+    team_mask = np.asarray(state.players.team_id) == team
+    nearby = int(
+        np.flatnonzero(
+            team_mask
+            & (~np.asarray(state.players.is_goalkeeper, dtype=bool))
+            & (np.arange(team_mask.size) != actor)
+            & (np.arange(team_mask.size) != receiver)
+        )[0]
+    )
+    opponent = int(
+        np.flatnonzero(
+            (~team_mask) & (~np.asarray(state.players.is_goalkeeper, dtype=bool))
+        )[0]
+    )
+    positions = np.array(state.players.position, copy=True)
+    positions[actor] = (0.0, 0.0)
+    positions[nearby] = (0.0, 0.25)
+    positions[opponent] = (0.0, -0.25)
+    positions[receiver] = (-12.0, 0.0)
+    controlled = state._replace(
+        players=state.players._replace(
+            position=jnp.asarray(positions, dtype=jnp.float32),
+            velocity=jnp.zeros_like(state.players.velocity),
+        ),
+        ball=state.ball._replace(
+            position=jnp.asarray((0.0, 0.0, env.ball.radius), dtype=jnp.float32),
+            velocity=jnp.zeros(3, dtype=jnp.float32),
+        ),
+    )
+    rollout = reset.rollout._replace(state=controlled)
+    roster = env.roster_metadata_si(rollout)
+    policy = make_rule_based_policy(env)
+    policy_state = initialize_policy_state(env, policy, rollout, roster)
+    result = policy.step(
+        env.observe_all_si(rollout), roster, policy_state, jax.random.key(6109)
+    )
+    move = np.asarray(result.action.decode().move.direction)
+    ball_xy = np.asarray(controlled.ball.position[:2])
+
+    # The teammate inside the existing physical envelope moves away. An
+    # opponent at the same radius still pressures toward the ball, and the
+    # outside support target continues toward shape instead of being repelled.
+    assert float(np.dot(move[nearby], ball_xy - positions[nearby])) < 0.0
+    opponent_away = positions[opponent] - ball_xy
+    opponent_away = opponent_away / np.linalg.norm(opponent_away)
+    assert not np.allclose(move[opponent], opponent_away, rtol=0.0, atol=1e-5)
+    assert np.linalg.norm(positions[receiver] - ball_xy) > (
+        env.reach.carry_radius_m + env.ball.radius
+    )
+    assert float(np.dot(move[receiver], positions[receiver] - ball_xy)) < 0.0
 
 
 def test_loose_chaser_inside_control_reach_is_not_replaced_by_second_teammate():
