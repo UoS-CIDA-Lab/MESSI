@@ -14,13 +14,15 @@ import numpy as np
 from footballworld.analysis.dataset import MatchDataset
 
 REPORT_SCHEMA = "footballworld.match-report/9"
-METRICS_VERSION = "footballworld.match-metrics/10"
+METRICS_VERSION = "footballworld.match-metrics/11"
 INTENT_PASS = 2
 INTENT_SHOT = 3
 INTENT_CLEAR = 4
 INTENT_CHALLENGE = 5
 INTENT_CONTROL = 1
 RESTART_NONE = 0
+RESTART_FREE_KICK = 5
+RESTART_PENALTY = 6
 RESTART_NAMES = {
     1: "kickoff",
     2: "throw_in",
@@ -49,6 +51,8 @@ SHOT_ROUTE_MAX_PRIOR_NODES = 7
 SHOT_ROUTE_MAX_TRACK_PATH_POINTS = 2048
 SHOT_ROUTE_FALLBACK_LOOKBACK_S = 15.0
 SHOT_CONTEXT_CATEGORIES = (
+    ("penalty_kick", "Penalty kick"),
+    ("free_kick", "Free kick"),
     ("restart_attack", "Restart attack"),
     ("counterattack", "Counterattack"),
     ("quick_after_regain", "Quick after regain"),
@@ -1107,7 +1111,11 @@ def _classify_shot_context(
     if sample is not None:
         progress_m = float(shot["position_m"][0]) - float(sample["start_x_m"])
 
-    if restart_kind != RESTART_NONE or (
+    if restart_kind == RESTART_PENALTY:
+        category = "penalty_kick"
+    elif restart_kind == RESTART_FREE_KICK:
+        category = "free_kick"
+    elif restart_kind != RESTART_NONE or (
         origin == "restart"
         and elapsed_s is not None
         and elapsed_s <= SHOT_CONTEXT_RESTART_MAX_S

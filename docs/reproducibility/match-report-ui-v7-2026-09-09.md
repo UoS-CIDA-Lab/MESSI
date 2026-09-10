@@ -152,3 +152,28 @@ continuous physical trajectory because dead-ball placement may be present.
 The old Regain-only event display falls from 20/27 shots to 2/27 after retaining
 26 exact CONTROL-contact nodes. Static inspection confirms that the Team 1
 symbol layer precedes its route-overlay layer.
+
+## Metrics 11 shot-route age and set-piece contexts (2026-09-11)
+
+The underlying realized-shot sources, attack-normalized tracking positions,
+shot resolution, and mutually exclusive context accounting are retained. The
+HTML now renders each hover route as chronological SVG segments: opacity rises
+linearly from 0.2 on the oldest segment to 1.0 at the shot. This is a display
+encoding of recorded sample order, not a football coefficient; segment shadows
+fade on the same ordering so they cannot visually restore an old path to full
+strength. It remains host-only and adds no replay or JAX transition state.
+
+Metrics schema 11 splits direct penalties and direct free kicks ahead of the
+generic restart-attack category. A shot whose exact applied contact records
+restart kind 6 is `penalty_kick`; kind 5 is `free_kick`. Other direct restarts
+and shots within the existing 10-second restart sequence window remain
+`restart_attack`. This preserves causal source authority and avoids inferring a
+set piece from shot position. The category expansion introduces no empirical
+threshold.
+
+Focused validation passed 58/58 tests. Reanalysis of the authoritative seed-29
+`juego_de_posicion` versus `gegenpress` 90-minute replay produced 19 shots, 434
+chronological route segments, 19 oldest/newest fade endpoints, one direct
+free-kick shot, four other restart attacks, 13 quick-after-regain shots, and one
+counterattack. The chart emitted all eight exclusive categories, including the
+zero-count penalty row.

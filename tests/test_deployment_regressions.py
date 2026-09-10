@@ -799,6 +799,9 @@ def test_report_renders_time_occupancy_and_all_shot_symbols():
     assert "opponent block" in shots
     assert "shot-route-track-shadow" in shots
     assert "shot-route-track" in shots
+    assert "data-route-age='0.000' opacity='0.200'" in shots
+    assert "data-route-age='1.000' opacity='1.000'" in shots
+    assert shots.index("data-route-age='0.000'") < shots.index("data-route-age='1.000'")
     assert "shot-route-node shot-event-sequence_start" in shots
     assert "shot-route-node shot-event-pass" in shots
     assert "shot-route-node shot-event-challenge" in shots
@@ -1050,11 +1053,26 @@ def test_pre_shot_context_heuristic_has_declared_exclusive_priority():
     restart = _classify_shot_context(
         {"restart_kind": 4, "position_m": [35.0, 0.0]}, None
     )
+    free_kick = _classify_shot_context(
+        {"restart_kind": 5, "position_m": [35.0, 0.0]}, None
+    )
+    penalty = _classify_shot_context(
+        {"restart_kind": 6, "position_m": [35.0, 0.0]}, None
+    )
 
     assert counter["category"] == "counterattack"
     assert quick["category"] == "quick_after_regain"
     assert sustained["category"] == "sustained_buildup"
     assert restart["category"] == "restart_attack"
+    assert free_kick == {
+        "category": "free_kick",
+        "label": "Free kick",
+        "sequence_origin": "unavailable",
+        "seconds_since_sequence_start": None,
+        "forward_progress_m": None,
+    }
+    assert penalty["category"] == "penalty_kick"
+    assert penalty["label"] == "Penalty kick"
 
 
 def test_renderer_reuses_projection_depth_and_fixed_collection_paths():

@@ -108,7 +108,7 @@ an intent receipt, not proof that the kick occurred or the pass was completed.
 ## Metric contract
 
 `report.json` uses `footballworld.match-report/9` and
-`footballworld.match-metrics/10`; every receipt names a metric ID, version,
+`footballworld.match-metrics/11`; every receipt names a metric ID, version,
 unit, definition, and quality class.
 
 The schema bump is intentional: realized-shot rows now separate the actual
@@ -200,7 +200,9 @@ latest contact. No intermediate position is inferred.
   of actual tracking position history without inventing a sequence start. The
   fallback may include dead-ball placement and therefore is not labelled a
   continuous physical trajectory; it does not attach earlier-phase event
-  nodes. It retains actual samples up to
+  nodes. The hover route is split into chronological SVG segments whose opacity
+  increases from 0.2 at the oldest segment to 1.0 at the shot, preserving the
+  temporal direction even when a path loops. It retains actual samples up to
   a 2,048-point safety bound; longer paths are deterministically thinned
   without interpolation. The overlay draws at most seven prior positioned
   nodes: the sequence start, when known, plus the latest six exact deliberate
@@ -213,8 +215,9 @@ latest contact. No intermediate position is inferred.
   omitted. This replaces the old hover table, which hid the spatial development
   and direction the report is meant to explain.
 - Pre-shot context is a deterministic report heuristic, not a measured football
-  constant. Categories are mutually exclusive in this priority: restart attack
-  (direct or within 10 s of the restart sequence), counterattack (opponent
+  constant. Categories are mutually exclusive in this priority: direct penalty
+  kick, direct free kick, other restart attack (direct or within 10 s of the
+  restart sequence), counterattack (opponent
   regain, at most 12 s, at least 20 m forward progress), quick after regain (at
   most 5 s), sustained buildup (at least 12 s), other open-play buildup, then
   unclassified. Loose-ball frames do not terminate the last controlling team's

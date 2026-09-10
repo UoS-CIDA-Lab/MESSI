@@ -11,9 +11,11 @@ this repository.
    `PYTHONPATH=src:.`; a collection-only `ModuleNotFoundError: research` is an
    invocation error, not a product regression.
 2. Select the JAX platform explicitly for reproducible CPU validation:
-   `JAX_PLATFORMS=cpu PYTHONPATH=src ...`. Do not assume that an enumerated GPU
-   is usable by the active JAX build; verify the backend before promising GPU
-   execution, and do not silently fall back when a GPU result is required.
+   `JAX_PLATFORMS=cpu PYTHONPATH=src ...`. On NVIDIA hosts use the explicit
+   `JAX_PLATFORMS=cuda` backend; the generic `gpu` alias may probe an installed
+   ROCm backend first. Do not assume that an enumerated GPU is usable by the
+   active JAX build; verify the backend before promising GPU execution, and do
+   not silently fall back when a GPU result is required.
 3. Treat the worktree as shared and potentially dirty. Inspect `git status`
    before editing, preserve unrelated user or agent changes, and never use a
    destructive reset or checkout to clean the tree. Re-read overlapping files

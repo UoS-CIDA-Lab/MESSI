@@ -419,9 +419,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--matrix-platform",
-        choices=("cpu", "gpu"),
+        choices=("cpu", "cuda", "gpu"),
         default="cpu",
-        help="JAX platform for matrix child processes (default cpu)",
+        help=(
+            "JAX platform for matrix child processes; gpu is a compatibility "
+            "alias for NVIDIA cuda (default cpu)"
+        ),
     )
     parser.add_argument(
         "--maximum-steps",
@@ -717,7 +720,8 @@ def _run_plan_matrix(args: argparse.Namespace, argv: Sequence[str]) -> int:
         jobs.append((team_0, team_1, leg, child_output, command))
 
     child_environment = os.environ.copy()
-    child_environment["JAX_PLATFORMS"] = args.matrix_platform
+    matrix_platform = "cuda" if args.matrix_platform == "gpu" else args.matrix_platform
+    child_environment["JAX_PLATFORMS"] = matrix_platform
 
     def execute(job):
         team_0, team_1, leg, child_output, command = job
@@ -762,7 +766,8 @@ def _run_plan_matrix(args: argparse.Namespace, argv: Sequence[str]) -> int:
         "schema": "footballworld.tactical-plan-matrix/1",
         "status": "complete" if not failures else "failed",
         "seed": args.seed,
-        "platform": args.matrix_platform,
+        "platform": matrix_platform,
+        "requested_platform": args.matrix_platform,
         "workers": args.matrix_workers,
         "legs": args.matrix_legs,
         "include_self_play": args.matrix_include_self_play,

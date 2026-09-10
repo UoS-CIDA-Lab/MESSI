@@ -571,6 +571,35 @@ def _shot_map_chart(report: dict[str, Any], team: int) -> str:
             pitch_y + pitch_height - (float(raw[1]) - float(y_edges[0])) * scale_y,
         )
 
+    def faded_route_segments(
+        route_points: list[tuple[float, float]],
+        *,
+        segment_class: str,
+        shadow_class: str,
+    ) -> str:
+        segments = list(pairwise(route_points))
+        pieces: list[str] = []
+        for index, (start, end) in enumerate(segments):
+            age = 1.0 if len(segments) == 1 else index / (len(segments) - 1)
+            opacity = 0.2 + 0.8 * age
+            shadow_opacity = 0.12 + 0.58 * age
+            arrow = (
+                f" marker-end='url(#{route_arrow})'"
+                if index == len(segments) - 1
+                else ""
+            )
+            coordinates = (
+                f"x1='{start[0]:.2f}' y1='{start[1]:.2f}' "
+                f"x2='{end[0]:.2f}' y2='{end[1]:.2f}'"
+            )
+            pieces.append(
+                f"<line class='{shadow_class}' {coordinates} "
+                f"opacity='{shadow_opacity:.3f}'/>"
+                f"<line class='{segment_class}' {coordinates} "
+                f"data-route-age='{age:.3f}' opacity='{opacity:.3f}'{arrow}/>"
+            )
+        return "".join(pieces)
+
     def positioned(event: Any) -> bool:
         if not isinstance(event, dict):
             return False
@@ -683,23 +712,35 @@ def _shot_map_chart(report: dict[str, Any], team: int) -> str:
                 tracking_points.append(point(raw_tracking_position))
         if tracking_points:
             tracking_points.append((x, y))
-            path_points = " ".join(
-                f"{path_x:.2f},{path_y:.2f}" for path_x, path_y in tracking_points
+            track_class = "shot-route-track"
+            if row.get("tracking_path_basis") == "bounded_tracking_lookback":
+                track_class += " shot-route-lookback"
+            route_title = (
+                "Actual tracking position history; may include dead-ball placement."
+                if row.get("tracking_path_basis") == "bounded_tracking_lookback"
+                else "Actual continuous live-ball tracking path."
             )
             history_pieces.append(
-                f"<polyline class='shot-route-track-shadow' points='{path_points}'/>"
-                f"<polyline class='shot-route-track{' shot-route-lookback' if row.get('tracking_path_basis') == 'bounded_tracking_lookback' else ''}' points='{path_points}' stroke='{team_color}' marker-end='url(#{route_arrow})'><title>{'Actual tracking position history; may include dead-ball placement.' if row.get('tracking_path_basis') == 'bounded_tracking_lookback' else 'Actual continuous live-ball tracking path.'}</title></polyline>"
+                f"<g stroke='{team_color}'><title>{route_title}</title>"
+                + faded_route_segments(
+                    tracking_points,
+                    segment_class=track_class,
+                    shadow_class="shot-route-track-shadow",
+                )
+                + "</g>"
             )
         if history:
             if not tracking_points:
                 route_points = [
                     (node_x, node_y) for _, node_x, node_y in route_nodes
                 ] + [(x, y)]
-                for start, end in pairwise(route_points):
-                    history_pieces.append(
-                        f"<line class='shot-route-shadow' x1='{start[0]:.2f}' y1='{start[1]:.2f}' x2='{end[0]:.2f}' y2='{end[1]:.2f}'/>"
-                        f"<line class='shot-route-segment' x1='{start[0]:.2f}' y1='{start[1]:.2f}' x2='{end[0]:.2f}' y2='{end[1]:.2f}' marker-end='url(#{route_arrow})'/>"
+                history_pieces.append(
+                    faded_route_segments(
+                        route_points,
+                        segment_class="shot-route-segment",
+                        shadow_class="shot-route-shadow",
                     )
+                )
             for event_index, (event, node_x, node_y) in enumerate(route_nodes):
                 event_type = str(event.get("type", "event"))
                 badge, color = event_badges.get(event_type, ("E", "#c3cad8"))
@@ -812,7 +853,7 @@ def _shot_context_chart(report: dict[str, Any]) -> str:
         f"<svg viewBox='0 0 {width:.0f} {height:.0f}' role='img' aria-label='Shares of shots and goals by pre-shot attacking context'>"
         + "".join(pieces)
         + "<g class='legend'><rect x='450' y='10' width='13' height='8' fill='#236746'/><text x='470' y='18'>share of shots</text><rect x='555' y='10' width='13' height='8' fill='#c08a20'/><text x='575' y='18'>share of goals</text></g></svg>"
-        + "<div class='network-hover'>Priority: restart attack → counterattack → quick after regain → sustained buildup → other open play → unclassified. Hover bars for counts and conversion.</div></figure>"
+        + "<div class='network-hover'>Priority: penalty kick → free kick → restart attack → counterattack → quick after regain → sustained buildup → other open play → unclassified. Hover bars for counts and conversion.</div></figure>"
     )
 
 

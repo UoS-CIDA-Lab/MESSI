@@ -211,6 +211,54 @@ def test_demo_matrix_runs_each_pair_in_an_isolated_child_and_writes_summary(
     assert all("--allow-diagnostic-report" in call[0] for call in commands)
 
 
+def test_demo_matrix_normalizes_legacy_gpu_platform_to_cuda(tmp_path, monkeypatch):
+    output = tmp_path / "matrix"
+    argv = [
+        "--output",
+        str(output),
+        "--plan-matrix",
+        "--matrix-platform",
+        "gpu",
+        "--matrix-legs",
+        "1",
+        "--no-matrix-include-self-play",
+        "--maximum-steps",
+        "1",
+        "--report-only",
+    ]
+    args = render_full_match._parser().parse_args(argv)
+    environments = []
+
+    def completed(command, **kwargs):
+        environments.append(kwargs["env"])
+        return render_full_match.subprocess.CompletedProcess(command, 1, "", "")
+
+    monkeypatch.setattr(render_full_match.subprocess, "run", completed)
+
+    assert render_full_match._run_plan_matrix(args, argv) == 2
+    summary = render_full_match.json.loads(
+        (output / "matrix-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["requested_platform"] == "gpu"
+    assert summary["platform"] == "cuda"
+    assert environments
+    assert all(environment["JAX_PLATFORMS"] == "cuda" for environment in environments)
+
+
+def test_demo_parser_accepts_explicit_cuda_matrix_platform(tmp_path):
+    args = render_full_match._parser().parse_args(
+        [
+            "--output",
+            str(tmp_path / "matrix"),
+            "--plan-matrix",
+            "--matrix-platform",
+            "cuda",
+        ]
+    )
+
+    assert args.matrix_platform == "cuda"
+
+
 def test_opening_rejects_registration_maximum_before_int32_narrowing():
     env = FootballWorld()
     team_0 = render_full_match._team_candidates(0, 20)
