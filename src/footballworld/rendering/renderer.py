@@ -87,6 +87,8 @@ GK_COLORS = ("#ffad33", "#35d0ba")
 TEAM_LABELS = ("HOME", "AWAY")
 TEAM_COLOR_ARRAY = np.asarray(TEAM_COLORS, dtype=object)
 GK_COLOR_ARRAY = np.asarray(GK_COLORS, dtype=object)
+SCOREBOARD_SCORE_Y = 0.965
+SCOREBOARD_CLOCK_Y = 0.915
 
 _MARKER_POLYGON_SIDES = 32
 _FOV_FAN_INNER_M = 2.00
@@ -1518,7 +1520,7 @@ class ReplayRenderer:
         )
         team0 = ax.text(
             0.395,
-            0.953,
+            SCOREBOARD_SCORE_Y,
             TEAM_LABELS[0],
             transform=ax.transAxes,
             ha="center",
@@ -1530,7 +1532,7 @@ class ReplayRenderer:
         )
         team1 = ax.text(
             0.605,
-            0.953,
+            SCOREBOARD_SCORE_Y,
             TEAM_LABELS[1],
             transform=ax.transAxes,
             ha="center",
@@ -1543,7 +1545,7 @@ class ReplayRenderer:
         del team0, team1
         score_text = ax.text(
             0.5,
-            0.953,
+            SCOREBOARD_SCORE_Y,
             "0 : 0",
             transform=ax.transAxes,
             ha="center",
@@ -1555,7 +1557,7 @@ class ReplayRenderer:
         )
         clock_text = ax.text(
             0.5,
-            0.921,
+            SCOREBOARD_CLOCK_Y,
             "00:00",
             transform=ax.transAxes,
             ha="center",

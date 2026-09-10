@@ -578,6 +578,21 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--matrix-equal-roster-abilities",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "hold both default demo candidate pools to identical fixed ability "
+            "profiles in matrix children (default enabled); disable to retain "
+            "independent identity-keyed episode sampling"
+        ),
+    )
+    parser.add_argument(
+        "--equal-roster-abilities",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--maximum-steps",
         type=_positive_integer,
         default=None,
@@ -781,7 +796,13 @@ _MATRIX_VALUE_OPTIONS = frozenset(
     }
 )
 _MATRIX_FLAG_OPTIONS = frozenset(
-    {"--plan-matrix", "--matrix-include-self-play", "--no-matrix-include-self-play"}
+    {
+        "--plan-matrix",
+        "--matrix-include-self-play",
+        "--no-matrix-include-self-play",
+        "--matrix-equal-roster-abilities",
+        "--no-matrix-equal-roster-abilities",
+    }
 )
 
 
@@ -849,6 +870,8 @@ def _run_plan_matrix(args: argparse.Namespace, argv: Sequence[str]) -> int:
         args.maximum_steps is not None or args.allow_dirty or args.report_only
     ) and "--allow-diagnostic-report" not in base_arguments:
         base_arguments.append("--allow-diagnostic-report")
+    if args.matrix_equal_roster_abilities:
+        base_arguments.append("--equal-roster-abilities")
 
     matchups = _matrix_matchups(
         args.matrix_legs, include_self_play=args.matrix_include_self_play
@@ -922,6 +945,7 @@ def _run_plan_matrix(args: argparse.Namespace, argv: Sequence[str]) -> int:
         "workers": args.matrix_workers,
         "legs": args.matrix_legs,
         "include_self_play": args.matrix_include_self_play,
+        "equal_roster_abilities": args.matrix_equal_roster_abilities,
         "pair_count": len(tuple(combinations(tuple(TacticalPlan), 2))),
         "match_count": len(records),
         "failure_count": len(failures),
@@ -1079,9 +1103,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             "formation_probabilities": equal_prior,
         }
+        if args.equal_roster_abilities:
+            fixed_abilities = tuple(False for _ in range(args.candidate_count))
+            opening_arguments["sample_abilities"] = (
+                fixed_abilities,
+                fixed_abilities,
+            )
         formation_names = (FORMATION_NAMES, FORMATION_NAMES)
         exact_lineup = (False, False)
     else:
+        if args.equal_roster_abilities:
+            raise ValueError(
+                "--equal-roster-abilities is an evaluation control for the "
+                "default demo rosters and cannot override a match fixture"
+            )
         opening_arguments, formation_names = _fixture_opening_arguments(loaded_fixture)
         exact_lineup = tuple(
             team.starting_player_ids is not None

@@ -76,7 +76,13 @@ class RulePolicyConfig:
     receiver_choice_temperature: float = 0.20
     macro_choice_temperature: float = 0.30
     shot_portion_temperature: float = 0.18
-    shot_value_gain: float = 0.72
+    # Macro-action calibration priors. The pass scale changes only the
+    # PASS-vs-SHOT/DRIBBLE choice after legal receiver/service ranking; it
+    # does not make unsafe passes eligible or alter completion physics.
+    # The defaults are conservative tuning responses to the seed-29 matrix's
+    # high pass cadence and low shot cadence, not measured football constants.
+    pass_macro_value_scale: float = 0.80
+    shot_value_gain: float = 0.92
     cross_value_gain: float = 1.75
     # Arrival-point targeting controls are policy design priors. They expose
     # the existing FootballWorld-compatible moving-receiver mechanism without
@@ -301,6 +307,7 @@ class RulePolicyConfig:
             "backward_pass_penalty",
             "advanced_backward_pass_penalty_gain",
             "progressive_pass_value_gain",
+            "pass_macro_value_scale",
             "solo_carry_value_decay",
             "dribble_shape_drift_penalty",
             "turnover_shot_value_scale",

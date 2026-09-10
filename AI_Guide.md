@@ -32,7 +32,11 @@ this repository.
    tactical matrix reuses its parent `--seed` unless explicitly overridden.
    Reversing team 0/team 1 changes the assigned roster, initial direction, and
    restart slot; it is useful counterbalancing but is not an exact coordinate
-   mirror or a new random seed.
+   mirror or a new random seed. The default plan matrix fixes both demo teams
+   to equal candidate ability bundles so identity-keyed sampling is not
+   mistaken for a tactical effect; use
+   `--no-matrix-equal-roster-abilities` only when independent episode sampling
+   is itself part of the experiment.
 7. `--matrix-workers N` launches up to N isolated match subprocesses. It is
    process concurrency, not a `vmap`/JAX batch of N environments. Size it from
    measured per-child memory, compilation pressure, CPU capacity, and output

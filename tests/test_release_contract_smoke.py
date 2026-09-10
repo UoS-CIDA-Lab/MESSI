@@ -12,7 +12,11 @@ from footballworld.core.timebase import DEFAULT_TIMEBASE, _exact_render_grid
 from footballworld.environment.episode import MatchConfig
 from footballworld.rendering.capture import _event_render_grid
 from footballworld.rendering.integrity import publication_authority
-from footballworld.rendering.renderer import ReplayRenderer
+from footballworld.rendering.renderer import (
+    SCOREBOARD_CLOCK_Y,
+    SCOREBOARD_SCORE_Y,
+    ReplayRenderer,
+)
 
 
 def test_bounded_capture_is_never_authoritative() -> None:
@@ -79,6 +83,10 @@ def test_halftime_validation_matches_renderer_contract() -> None:
         fulltime_seconds=5400.0,
     )
     assert renderer.halftime_seconds == renderer.fulltime_seconds == 5400.0
+
+
+def test_540p_scoreboard_reserves_distinct_score_and_clock_rows() -> None:
+    assert (SCOREBOARD_SCORE_Y - SCOREBOARD_CLOCK_Y) * 540 >= 24.0
 
     with pytest.raises(ValueError, match="greater than halftime_seconds"):
         MatchConfig(

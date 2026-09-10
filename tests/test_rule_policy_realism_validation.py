@@ -243,6 +243,44 @@ def test_turnover_settle_suppresses_only_fresh_low_quality_shots(monkeypatch):
     assert int(clear_chance.kind) == POSSESSION_SHOT
 
 
+def test_pass_macro_scale_changes_only_macro_action_competition(monkeypatch):
+    """A safe receiver remains available when another macro action wins."""
+
+    import footballworld.policies.rule_based.possession as possession_module
+
+    _fixed_ranking_metrics(monkeypatch)
+    monkeypatch.setattr(
+        possession_module, "plan_shot", _fixed_shot(value=0.35, quality=0.35)
+    )
+    context = _carrier_context(teammate_available=True)
+    kwargs = _possession_kwargs(teammate_available=True)
+    common = {
+        "solo_carry_value_decay": 0.0,
+        "progressive_pass_value_gain": 0.0,
+        "attack_pattern_receiver_gain": 0.0,
+        "forward_pocket_receiver_gain": 0.0,
+        "continuation_value_gain": 0.0,
+    }
+
+    pass_favoured = decide_possession(
+        context,
+        jnp.zeros((4,), dtype=jnp.bool_),
+        jnp.zeros((4,), dtype=jnp.bool_),
+        replace(RulePolicyConfig(), pass_macro_value_scale=1.0, **common),
+        **kwargs,
+    )
+    shot_favoured = decide_possession(
+        context,
+        jnp.zeros((4,), dtype=jnp.bool_),
+        jnp.zeros((4,), dtype=jnp.bool_),
+        replace(RulePolicyConfig(), pass_macro_value_scale=0.10, **common),
+        **kwargs,
+    )
+
+    assert int(pass_favoured.kind) == POSSESSION_PASS
+    assert int(shot_favoured.kind) != POSSESSION_PASS
+    assert int(shot_favoured.target) == 1
+
 def test_receiver_does_not_inherit_team_episode_carry_urgency(monkeypatch):
     """An observed previous teammate makes old team-episode age inert."""
 

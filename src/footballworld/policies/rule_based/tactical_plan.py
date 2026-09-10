@@ -68,9 +68,9 @@ class TacticalProfile:
 _TACTICAL_PROFILES = MappingProxyType(
     {
         TacticalPlan.SALIDA_LAVOLPIANA: TacticalProfile(
-            progressive_pass_gain=0.08,
+            progressive_pass_gain=0.14,
             wide_pass_gain=0.07,
-            attack_depth_scale=1.04,
+            attack_depth_scale=1.08,
             attack_width_scale=1.10,
             defend_depth_scale=0.88,
             defend_width_scale=0.90,

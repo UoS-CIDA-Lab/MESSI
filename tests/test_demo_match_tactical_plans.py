@@ -259,6 +259,35 @@ def test_demo_matrix_defaults_to_cpu_bounded_parallel_two_leg_runs(tmp_path):
     assert args.matrix_workers == 2
     assert args.matrix_legs == 2
     assert args.matrix_include_self_play
+    assert args.matrix_equal_roster_abilities
+
+
+def test_equal_roster_control_removes_identity_keyed_ability_noise():
+    candidate_count = 20
+    fixed = tuple(False for _ in range(candidate_count))
+    inputs = build_opening_policy_inputs(
+        FootballWorld(),
+        render_full_match._team_candidates(0, candidate_count),
+        render_full_match._team_candidates(1, candidate_count),
+        render_full_match.FORMATION_CATALOG,
+        render_full_match.FORMATION_CATALOG,
+        max_registered_players=(candidate_count, candidate_count),
+        sample_abilities=(fixed, fixed),
+        key=jax.random.key(29),
+    )
+
+    players = inputs.observation.players
+    for field in (
+        "is_goalkeeper",
+        "preferred_position",
+        "max_speed",
+        "height",
+        "reach_height",
+        "ball_control",
+        "endurance_factor",
+    ):
+        values = np.asarray(getattr(players, field))
+        np.testing.assert_array_equal(values[0], values[1])
 
 
 def test_demo_matrix_enumerates_all_unordered_pairs_and_slot_reversals():
@@ -356,6 +385,39 @@ def test_demo_matrix_runs_each_pair_in_an_isolated_child_and_writes_summary(
     assert all("--plan-matrix" not in call[0] for call in commands)
     assert all("--match-report" in call[0] for call in commands)
     assert all("--allow-diagnostic-report" in call[0] for call in commands)
+    assert all("--equal-roster-abilities" in call[0] for call in commands)
+    assert summary["equal_roster_abilities"] is True
+
+
+def test_demo_matrix_can_restore_independent_roster_sampling(tmp_path, monkeypatch):
+    output = tmp_path / "matrix"
+    argv = [
+        "--output",
+        str(output),
+        "--plan-matrix",
+        "--no-matrix-equal-roster-abilities",
+        "--matrix-legs",
+        "1",
+        "--no-matrix-include-self-play",
+        "--maximum-steps",
+        "1",
+        "--report-only",
+    ]
+    args = render_full_match._parser().parse_args(argv)
+    commands = []
+
+    def completed(command, **kwargs):
+        commands.append(command)
+        return render_full_match.subprocess.CompletedProcess(command, 1, "", "")
+
+    monkeypatch.setattr(render_full_match.subprocess, "run", completed)
+
+    assert render_full_match._run_plan_matrix(args, argv) == 2
+    summary = render_full_match.json.loads(
+        (output / "matrix-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["equal_roster_abilities"] is False
+    assert all("--equal-roster-abilities" not in command for command in commands)
 
 
 def test_demo_matrix_normalizes_legacy_gpu_platform_to_cuda(tmp_path, monkeypatch):

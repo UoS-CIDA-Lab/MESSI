@@ -1068,6 +1068,10 @@ def decide_possession(
         0.0,
         1.0,
     )
+    # Receiver and service selection above retain their completion-aware
+    # ordering. Scale only the macro utility so abundant safe outlets do not
+    # suppress every viable shot or carry in settled possession.
+    best_pass_value = best_pass_value * jnp.float32(config.pass_macro_value_scale)
     dribble_key = (
         None
         if decision_key is None

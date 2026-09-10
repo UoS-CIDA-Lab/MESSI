@@ -703,3 +703,31 @@ equivariance, seed-29 reception, and restart execution. Ruff and
 The broad integration suite then passed 241/241 CPU tests in 417.58 s with
 `PYTHONPATH=src:. JAX_PLATFORMS=cpu`; the repository-root path component is
 required only for the separate `research` namespace.
+
+## 2026-09-11 seed-29 action-mix and matrix-control revision
+
+The completed 25-cell seed-29 report exposed two confounders: independently
+sampled identity-keyed abilities could be read as a team-slot/tactical effect,
+and abundant safe outlets dominated the macro action distribution. The matrix
+now defaults to identical fixed demo-candidate ability bundles for both teams.
+This control changes neither explicit match fixtures nor player physics, and
+`--no-matrix-equal-roster-abilities` retains the former independent-sampling
+experiment. Formation and lineup selection remain tactical-policy decisions.
+
+Pass legality, completion estimates, receiver ranking, cross ranking, offside
+checks, and the fixed-shape service arrays are retained. A new scalar
+`pass_macro_value_scale` acts only after service ranking, at the existing
+PASS/SHOT/DRIBBLE/CLEAR categorical choice. `shot_value_gain` changes from
+0.72 to 0.92. Salida Lavolpiana's progressive-pass profile changes from 0.08
+to 0.14 and its attack-depth scale from 1.04 to 1.08, preserving its pivot
+drop, width, fullback, and defensive profile. These values are DESIGN_PRIOR
+tuning responses, not measured football constants.
+
+A fixed-ability seed-29, 1,200-second diagnostic between Salida Lavolpiana and
+Juego de Posicion produced 188 and 198 pass attempts, 90.4% and 91.9%
+completion, two Salida shots, ten combined cross-control signatures, and a
+1-0 score. This partial match establishes only direction and event integrity;
+the complete 25-cell matrix is still required for policy-quality calibration.
+The renderer separately moves score/team text to normalized y=0.965 and the
+clock to y=0.915, a 27-pixel baseline separation at 540p, without changing the
+replay time axis or event semantics.
