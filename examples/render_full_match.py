@@ -82,7 +82,21 @@ LOCAL_DFL_POLICY_REFERENCE = (
     ROOT / "calib/policy/artifacts/dfl-report-guideline-v1.json"
 )
 
-FORMATION_NAMES = ("4-3-3", "4-2-3-1", "3-2-5-possession")
+FORMATION_NAMES = (
+    "4-3-3",
+    "4-2-3-1",
+    "3-2-5-possession",
+    "4-1-4-1",
+    "3-4-2-1",
+    "5-3-2",
+    "4-4-2-asymmetric",
+)
+# The 3-2-5 entry remains addressable by explicit fixtures, but represents an
+# in-possession target shape rather than a default starting formation.
+STARTING_FORMATION_PRIOR = np.asarray(
+    (1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0), dtype=np.float32
+)
+STARTING_FORMATION_PRIOR /= np.sum(STARTING_FORMATION_PRIOR)
 FORMATION_CATALOG = np.asarray(
     (
         (
@@ -123,6 +137,58 @@ FORMATION_CATALOG = np.asarray(
             (-10.0, 0.0),
             (-10.0, 13.5),
             (-10.0, 27.0),
+        ),
+        (
+            (-50.0, 0.0),
+            (-35.0, -24.0),
+            (-35.0, -8.0),
+            (-35.0, 8.0),
+            (-35.0, 24.0),
+            (-25.0, 0.0),
+            (-15.0, -24.0),
+            (-15.0, -8.0),
+            (-15.0, 8.0),
+            (-15.0, 24.0),
+            (-5.0, 0.0),
+        ),
+        (
+            (-50.0, 0.0),
+            (-37.0, -18.0),
+            (-37.0, 0.0),
+            (-37.0, 18.0),
+            (-23.0, -26.0),
+            (-23.0, -9.0),
+            (-23.0, 9.0),
+            (-23.0, 26.0),
+            (-12.0, -10.0),
+            (-12.0, 10.0),
+            (-5.0, 0.0),
+        ),
+        (
+            (-50.0, 0.0),
+            (-38.0, -26.0),
+            (-38.0, -13.0),
+            (-38.0, 0.0),
+            (-38.0, 13.0),
+            (-38.0, 26.0),
+            (-22.0, -16.0),
+            (-22.0, 0.0),
+            (-22.0, 16.0),
+            (-7.0, -9.0),
+            (-7.0, 9.0),
+        ),
+        (
+            (-50.0, 0.0),
+            (-36.0, -24.0),
+            (-36.0, -8.0),
+            (-36.0, 8.0),
+            (-36.0, 24.0),
+            (-18.0, -26.0),
+            (-18.0, -8.0),
+            (-18.0, 8.0),
+            (-18.0, 20.0),
+            (-7.0, -10.0),
+            (-7.0, 10.0),
         ),
     ),
     dtype=np.float32,
@@ -314,7 +380,7 @@ def _fixture_opening_arguments(
         if exact_formation[team_index]:
             probabilities[team_index, 0] = 1.0
         else:
-            probabilities[team_index] = 1.0 / layout_count
+            probabilities[team_index] = STARTING_FORMATION_PRIOR
 
         id_to_index = {
             player.player_id: index for index, player in enumerate(team.players)
@@ -1089,9 +1155,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if loaded_fixture is None:
         team_0 = _team_candidates(0, args.candidate_count)
         team_1 = _team_candidates(1, args.candidate_count)
-        equal_prior = np.full(
-            len(FORMATION_NAMES), 1.0 / len(FORMATION_NAMES), dtype=np.float32
-        )
         opening_arguments: dict[str, object] = {
             "team_0_candidates": team_0,
             "team_1_candidates": team_1,
@@ -1101,7 +1164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.candidate_count,
                 args.candidate_count,
             ),
-            "formation_probabilities": equal_prior,
+            "formation_probabilities": STARTING_FORMATION_PRIOR,
         }
         if args.equal_roster_abilities:
             fixed_abilities = tuple(False for _ in range(args.candidate_count))

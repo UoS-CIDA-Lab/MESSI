@@ -760,3 +760,47 @@ abilities and equal formation priors over 100 seeds, the modal selections were
 (68%/73%), and 4-3-3 for Zona Mista (95%/91%), where each pair is team 0/team
 1. Alternatives remained reachable for every plan; these frequencies describe
 the current demo catalog and are not measured real-football rates.
+
+## 2026-09-11 starting-formation catalog and structural fit
+
+Explicit fixture formations, including authored coordinates, remain exact and
+bypass automatic selection. Ability-aware tactical-plan selection still runs
+before formation selection, and the formation categorical still combines the
+caller's prior, role-weighted XI fit, structural tactical fit, and keyed Gumbel
+variation. These retained behaviors make an omitted setup depend on the
+available squad while preserving reproducible sampling and exact user input.
+
+The demo starting catalog expands from 4-3-3, 4-2-3-1, and 3-2-5 to also
+include 4-1-4-1, 3-4-2-1, 5-3-2, and asymmetric 4-4-2. Automatic selection
+assigns zero prior probability to 3-2-5 because it is modeled as an
+in-possession target shape, not a default starting shape; an explicit fixture
+may still request it. Structural fit now additionally represents advanced
+player share, depth span, mirror-invariant lateral asymmetry, and classified
+forward share. This gives Gegenpress a direct high-line/front-number signal,
+Catenaccio a five-defender candidate, and Zona Mista an asymmetric candidate.
+The weights are transparent DESIGN_PRIORS used for ranking, not measured
+football constants.
+
+Starting-XI construction changes from slot-ordered greedy assignment to a
+fixed-shape global-pair greedy assignment. Each iteration selects the highest
+scoring remaining compatible slot/player pair, so permuting an otherwise
+identical formation's slot array no longer changes the physical player-to-slot
+assignment. Goalkeeper compatibility, preferred-position distance,
+role-weighted ability, identity-keyed lineup variation, and fixed authored
+starters remain intact.
+
+With equal candidate abilities and the default starting prior over 100 seeds,
+the team-0/team-1 modal selections are 4-2-3-1 for Salida Lavolpiana
+(58%/57%), 4-3-3 for Juego de Posicion (92%/86%), 4-2-3-1 for Gegenpress
+(91%/91%), 5-3-2 for Catenaccio (68%/75%), and asymmetric 4-4-2 for Zona
+Mista (61%/63%). The possession 3-2-5 was selected zero times, as required by
+its default zero prior, while every tactic retained at least one sampled
+alternative. These are seed-distribution diagnostics for this catalog, not
+claims about real-world formation frequencies.
+
+On the same CPU process shape, compiling the start-only opening decision took
+1.280 seconds for three formations and 1.267 seconds for seven; mean warm
+execution over three measured calls increased from 1.548 ms to 2.093 ms.
+Compiler cost analysis estimated 349,126 versus 798,934 FLOPs. The larger
+catalog therefore increases one-time opening work but does not add operations
+to the per-tick physics or rule-policy rollout graph.

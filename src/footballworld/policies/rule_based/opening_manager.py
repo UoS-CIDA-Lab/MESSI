@@ -56,16 +56,18 @@ _ROLE_ABILITY_WEIGHT = jnp.asarray(
 _REGISTRATION_ABILITY_WEIGHT = jnp.asarray(
     [0.25, 0.10, 0.10, 0.30, 0.25], dtype=jnp.float32
 )
-# [attack depth, width, defender share, central-midfield share, wide-role share].
+# [attack depth, width, defender share, central-midfield share, wide-role share,
+# advanced-player share, depth span, mirror-invariant lateral asymmetry,
+# formation-classified forward share].
 # These values only rank structural compatibility after a tactical plan has
 # been fixed; they are transparent design priors rather than empirical rates.
 _TACTICAL_FORMATION_WEIGHT = jnp.asarray(
     [
-        [-0.10, 0.10, 0.00, 0.50, 0.25],  # salida lavolpiana
-        [0.20, 0.40, -0.10, 0.35, 0.30],  # juego de posicion
-        [0.40, -0.10, -0.10, 0.35, 0.10],  # gegenpress
-        [-0.50, -0.30, 0.60, 0.10, -0.10],  # catenaccio
-        [-0.10, 0.35, 0.20, 0.10, 0.40],  # zona mista
+        [-0.10, 0.10, 0.80, 0.50, 0.25, 0.20, 0.00, 0.00, 0.00],  # salida
+        [0.20, 0.40, 0.30, 0.35, 0.30, 0.00, 0.00, 0.00, 0.50],  # juego
+        [0.40, -0.10, 0.50, 0.35, 0.10, 0.80, -0.20, 0.00, 0.00],  # gegen
+        [-0.50, -0.30, 0.90, 0.10, -0.10, -0.40, 0.10, -0.10, 0.00],  # catenaccio
+        [-0.10, 0.35, 0.20, 0.10, 0.40, 0.00, 0.00, 0.80, 0.00],  # zona
     ],
     dtype=jnp.float32,
 )
@@ -195,7 +197,35 @@ def _formation_tactical_fit(
     defender = jnp.sum(outfield & ((role == 1) | (role == 2)), axis=1) / count
     central_midfield = jnp.sum(outfield & (role == 3), axis=1) / count
     wide = jnp.sum(outfield & ((role == 2) | (role == 4) | (role == 6)), axis=1) / count
-    features = jnp.stack((depth, width, defender, central_midfield, wide), axis=1)
+    advanced = jnp.sum(outfield & (anchor[..., 0] >= -0.25), axis=1) / count
+    deepest = jnp.min(jnp.where(outfield, anchor[..., 0], jnp.inf), axis=1)
+    highest = jnp.max(jnp.where(outfield, anchor[..., 0], -jnp.inf), axis=1)
+    depth_span = highest - deepest
+    nondefender = outfield & (role != 1) & (role != 2)
+    left_width = jnp.max(
+        jnp.where(nondefender & (anchor[..., 1] < 0.0), -anchor[..., 1], 0.0),
+        axis=1,
+    )
+    right_width = jnp.max(
+        jnp.where(nondefender & (anchor[..., 1] > 0.0), anchor[..., 1], 0.0),
+        axis=1,
+    )
+    lateral_asymmetry = jnp.abs(left_width - right_width)
+    forward = jnp.sum(outfield & ((role == 5) | (role == 6)), axis=1) / count
+    features = jnp.stack(
+        (
+            depth,
+            width,
+            defender,
+            central_midfield,
+            wide,
+            advanced,
+            depth_span,
+            lateral_asymmetry,
+            forward,
+        ),
+        axis=1,
+    )
     return features @ _TACTICAL_FORMATION_WEIGHT[tactical_plan_code(plan)]
 
 
@@ -243,57 +273,80 @@ def _lineup_for_layout(
     position_fit_weight: float,
     lineup_noise_scale: float,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    """Return one best-XI proposal and its deterministic mean fit."""
+    """Return one slot-order-independent global-pair XI proposal."""
 
     candidates = player_id.shape[0]
-    initial = (
-        jnp.zeros((candidates,), dtype=jnp.bool_),
-        jnp.zeros((candidates,), dtype=jnp.bool_),
-        jnp.full((candidates,), NO_PLAYER, dtype=jnp.int32),
-        jnp.float32(0.0),
-        jnp.bool_(True),
+    slots = anchor.shape[0]
+    selected_role = jnp.clip(role, 0, _ROLE_ABILITY_WEIGHT.shape[0] - 1)
+    compatible = (
+        slot_mask[:, None]
+        & valid_candidate[None, :]
+        & (is_goalkeeper[None, :] == (selected_role[:, None] == 0))
     )
-
-    def assign_slot(carry, slot_input):
-        used, starter, placement, fit_total, complete = carry
-        slot, slot_anchor, slot_role, active_slot = slot_input
-        selected_role = jnp.clip(slot_role, 0, _ROLE_ABILITY_WEIGHT.shape[0] - 1)
-        compatible = valid_candidate & (~used) & (is_goalkeeper == (selected_role == 0))
-        distance = jnp.sum((preferred - slot_anchor) ** 2, axis=-1)
-        deterministic_score = (
-            jnp.sum(ability * _ROLE_ABILITY_WEIGHT[selected_role], axis=-1)
-            - jnp.float32(position_fit_weight) * distance
+    distance = jnp.sum((preferred[None, :, :] - anchor[:, None, :]) ** 2, axis=-1)
+    deterministic_score = (
+        jnp.sum(
+            ability[None, :, :] * _ROLE_ABILITY_WEIGHT[selected_role][:, None, :],
+            axis=-1,
         )
-        signature = _layout_signature(slot_anchor[None, :], slot_role[None])
-        keys = jax.vmap(
-            lambda identity, selected_signature=signature: _identity_key(
+        - jnp.float32(position_fit_weight) * distance
+    )
+    signatures = jax.vmap(
+        lambda slot_anchor, slot_role: _layout_signature(
+            slot_anchor[None, :], slot_role[None]
+        )
+    )(anchor, role)
+    keys = jax.vmap(
+        lambda signature: jax.vmap(
+            lambda identity: _identity_key(
                 match_key,
                 team,
                 identity,
                 _OPENING_PLAYER_STREAM,
-                selected_signature,
+                signature,
             )
         )(player_id)
-        noise = jax.vmap(lambda key: jax.random.gumbel(key, dtype=jnp.float32))(keys)
-        score = deterministic_score + jnp.float32(lineup_noise_scale) * noise
-        chosen = jnp.argmax(jnp.where(compatible, score, -jnp.inf)).astype(jnp.int32)
-        has_candidate = jnp.any(compatible)
-        applies = active_slot & has_candidate
-        starter = starter.at[chosen].set(starter[chosen] | applies)
-        placement = placement.at[chosen].set(
-            jnp.where(applies, jnp.int32(slot), placement[chosen])
+    )(signatures)
+    noise = jax.vmap(
+        jax.vmap(lambda key: jax.random.gumbel(key, dtype=jnp.float32))
+    )(keys)
+    pair_score = deterministic_score + jnp.float32(lineup_noise_scale) * noise
+    initial = (
+        jnp.zeros((candidates,), dtype=jnp.bool_),
+        jnp.zeros((slots,), dtype=jnp.bool_),
+        jnp.zeros((candidates,), dtype=jnp.bool_),
+        jnp.full((candidates,), NO_PLAYER, dtype=jnp.int32),
+        jnp.float32(0.0),
+    )
+
+    def assign_best_pair(carry, _):
+        used, assigned, starter, placement, fit_total = carry
+        available = compatible & (~assigned[:, None]) & (~used[None, :])
+        flat = jnp.argmax(jnp.where(available, pair_score, -jnp.inf)).astype(jnp.int32)
+        selected_slot = flat // jnp.int32(candidates)
+        selected_player = flat % jnp.int32(candidates)
+        applies = jnp.any(available)
+        used = used.at[selected_player].set(used[selected_player] | applies)
+        assigned = assigned.at[selected_slot].set(assigned[selected_slot] | applies)
+        starter = starter.at[selected_player].set(starter[selected_player] | applies)
+        placement = placement.at[selected_player].set(
+            jnp.where(applies, selected_slot, placement[selected_player])
         )
-        used = used.at[chosen].set(used[chosen] | applies)
-        fit_total += jnp.where(applies, deterministic_score[chosen], 0.0)
-        complete &= (~active_slot) | has_candidate
-        return (used, starter, placement, fit_total, complete), None
+        fit_total += jnp.where(
+            applies,
+            deterministic_score[selected_slot, selected_player],
+            jnp.float32(0.0),
+        )
+        return (used, assigned, starter, placement, fit_total), None
 
     final, _ = jax.lax.scan(
-        assign_slot,
+        assign_best_pair,
         initial,
-        (jnp.arange(anchor.shape[0], dtype=jnp.int32), anchor, role, slot_mask),
+        xs=None,
+        length=slots,
     )
-    _, starter, placement, fit_total, complete = final
+    _, assigned, starter, placement, fit_total = final
+    complete = jnp.all((~slot_mask) | assigned)
     slot_count = jnp.maximum(jnp.sum(slot_mask), 1).astype(jnp.float32)
     return starter, placement, fit_total / slot_count, complete
 

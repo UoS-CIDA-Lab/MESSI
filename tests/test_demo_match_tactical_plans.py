@@ -12,6 +12,7 @@ from footballworld.policies import (
     RuleOpeningManagerConfig,
     TacticalPlan,
 )
+from footballworld.policies.rule_based.opening_manager import _formation_tactical_fit
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -91,7 +92,7 @@ def test_fixture_exact_fields_bypass_sampling_and_selection():
     assert names[0][0] == "4-3-3"
     np.testing.assert_array_equal(
         np.asarray(inputs.observation.formation.candidate_probability[0]),
-        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     )
     # The authored home goalkeeper is exact despite a supplied sampling key.
     assert float(inputs.observation.players.max_speed[0, 0]) == pytest.approx(
@@ -170,7 +171,7 @@ def test_opening_formation_softmax_runs_after_tactical_plan_is_fixed():
         render_full_match.FORMATION_CATALOG,
         render_full_match.FORMATION_CATALOG,
         max_registered_players=(20, 20),
-        formation_probabilities=np.full(3, 1.0 / 3.0, dtype=np.float32),
+        formation_probabilities=render_full_match.STARTING_FORMATION_PRIOR,
         key=key,
     )
 
@@ -204,7 +205,7 @@ def test_opening_formation_mode_is_tactical_and_slot_equivalent_across_seeds():
         render_full_match.FORMATION_CATALOG,
         render_full_match.FORMATION_CATALOG,
         max_registered_players=(candidate_count, candidate_count),
-        formation_probabilities=np.full(3, 1.0 / 3.0, dtype=np.float32),
+        formation_probabilities=render_full_match.STARTING_FORMATION_PRIOR,
         sample_abilities=(fixed, fixed),
         key=jax.random.key(0),
     )
@@ -213,8 +214,8 @@ def test_opening_formation_mode_is_tactical_and_slot_equivalent_across_seeds():
         TacticalPlan.SALIDA_LAVOLPIANA: 1,
         TacticalPlan.JUEGO_DE_POSICION: 0,
         TacticalPlan.GEGENPRESS: 1,
-        TacticalPlan.CATENACCIO: 1,
-        TacticalPlan.ZONA_MISTA: 0,
+        TacticalPlan.CATENACCIO: 5,
+        TacticalPlan.ZONA_MISTA: 6,
     }
 
     for plan, expected in expected_mode.items():
@@ -230,9 +231,12 @@ def test_opening_formation_mode_is_tactical_and_slot_equivalent_across_seeds():
 
         selected = np.asarray(jax.jit(jax.vmap(select))(keys))
         for team in (0, 1):
-            counts = np.bincount(selected[:, team], minlength=3)
+            counts = np.bincount(
+                selected[:, team], minlength=len(render_full_match.FORMATION_NAMES)
+            )
             assert int(np.argmax(counts)) == expected
             assert counts[expected] > max(np.delete(counts, expected))
+            assert counts[2] == 0
         assert np.unique(selected).size > 1
 
 
@@ -241,10 +245,78 @@ def test_opening_formation_temperature_must_be_positive():
         RuleOpeningManagerConfig(formation_choice_temperature=0.0)
 
 
+def test_possession_shape_is_explicit_only_and_zona_asymmetry_is_mirror_safe():
+    assert render_full_match.STARTING_FORMATION_PRIOR[2] == 0.0
+    inputs = build_opening_policy_inputs(
+        FootballWorld(),
+        render_full_match._team_candidates(0, 20),
+        render_full_match._team_candidates(1, 20),
+        render_full_match.FORMATION_CATALOG,
+        render_full_match.FORMATION_CATALOG,
+        max_registered_players=(20, 20),
+        formation_probabilities=render_full_match.STARTING_FORMATION_PRIOR,
+        key=jax.random.key(0),
+    )
+    formation = inputs.observation.formation
+    asymmetric = formation.candidate_anchor[0, 6]
+    role = formation.candidate_role[0, 6]
+    player_mask = formation.player_mask[0]
+    baseline = _formation_tactical_fit(
+        asymmetric[None, ...],
+        role[None, ...],
+        player_mask,
+        TacticalPlan.ZONA_MISTA,
+    )
+    mirrored = _formation_tactical_fit(
+        asymmetric.at[:, 1].multiply(-1.0)[None, ...],
+        role[None, ...],
+        player_mask,
+        TacticalPlan.ZONA_MISTA,
+    )
+
+    np.testing.assert_allclose(baseline, mirrored, rtol=0.0, atol=1e-6)
+
+
+def test_global_pair_lineup_is_formation_slot_permutation_equivariant():
+    key = jax.random.key(17)
+    candidates = (
+        render_full_match._team_candidates(0, 20),
+        render_full_match._team_candidates(1, 20),
+    )
+
+    def assigned_positions(layout):
+        inputs = build_opening_policy_inputs(
+            FootballWorld(),
+            candidates[0],
+            candidates[1],
+            layout[None, ...],
+            layout[None, ...],
+            max_registered_players=(20, 20),
+            formation_probabilities=np.ones(1, dtype=np.float32),
+            key=key,
+        )
+        policy = RuleBasedOpeningManagerPolicy()
+        decision = policy.step(
+            inputs.observation, key, policy.initialize(inputs.observation)
+        ).decision
+        placement = np.asarray(decision.placement_slot[0])
+        player_id = np.asarray(inputs.observation.players.player_id[0])
+        return {
+            int(identity): tuple(layout[int(slot)])
+            for identity, slot in zip(player_id, placement, strict=True)
+            if slot >= 0
+        }
+
+    layout = render_full_match.FORMATION_CATALOG[0]
+    permutation = np.asarray([5, 2, 9, 0, 7, 1, 10, 4, 8, 3, 6])
+
+    assert assigned_positions(layout) == assigned_positions(layout[permutation])
+
+
 def test_joint_lineup_formation_choice_is_catalog_permutation_equivariant():
     key = jax.random.key(73)
     env = FootballWorld()
-    probability = np.asarray([0.2, 0.3, 0.5], dtype=np.float32)
+    probability = render_full_match.STARTING_FORMATION_PRIOR
 
     def decide(catalog, prior):
         inputs = build_opening_policy_inputs(
@@ -272,7 +344,7 @@ def test_joint_lineup_formation_choice_is_catalog_permutation_equivariant():
         return catalog[indices]
 
     baseline = decide(render_full_match.FORMATION_CATALOG, probability)
-    permutation = np.asarray([2, 0, 1])
+    permutation = np.asarray([6, 2, 4, 0, 5, 1, 3])
     permuted = decide(
         render_full_match.FORMATION_CATALOG[permutation], probability[permutation]
     )
