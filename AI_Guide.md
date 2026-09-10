@@ -38,10 +38,12 @@ this repository.
    `--no-matrix-equal-roster-abilities` only when independent episode sampling
    is itself part of the experiment.
 7. `--matrix-workers N` launches up to N isolated match subprocesses. It is
-   process concurrency, not a `vmap`/JAX batch of N environments. Size it from
-   measured per-child memory, compilation pressure, CPU capacity, and output
-   I/O. A value of 25 is syntactically valid but must not be described as safe
-   or faster without a host measurement.
+   process concurrency, not a `vmap`/JAX batch of N environments. The tactical
+   matrix defaults to 25 workers so all ordered cells can start together;
+   callers on smaller hosts must lower it explicitly. Size it from measured
+   per-child memory, compilation pressure, CPU capacity, and output I/O. The
+   2026-09-11 CPU run measured roughly 2.9 GB RSS per active child, so the
+   default may require about 73 GB before filesystem cache and report work.
 8. For non-video experiments use `--report-only`; do not render video and then
    discard it. `--plan-matrix --matrix-legs 2` defaults to the complete 25-cell
    ordered space: twenty slot-counterbalanced distinct-plan games and five

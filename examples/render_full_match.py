@@ -66,7 +66,7 @@ from footballworld.rendering import (
 from footballworld.rendering.integrity import publication_authority
 
 DEFAULT_CANDIDATE_COUNT = 20
-DEFAULT_MATRIX_WORKERS = 2
+DEFAULT_MATRIX_WORKERS = 25
 MIN_CANDIDATE_COUNT = 18
 MAX_CANDIDATE_COUNT = 23
 RANDOM_TACTICAL_PLAN = "random"

@@ -249,14 +249,14 @@ def test_demo_plan_resolution_rejects_unknown_names():
         )
 
 
-def test_demo_matrix_defaults_to_cpu_bounded_parallel_two_leg_runs(tmp_path):
+def test_demo_matrix_defaults_to_cpu_full_parallel_two_leg_runs(tmp_path):
     args = render_full_match._parser().parse_args(
         ["--output", str(tmp_path / "matrix"), "--plan-matrix"]
     )
 
     assert args.plan_matrix
     assert args.matrix_platform == "cpu"
-    assert args.matrix_workers == 2
+    assert args.matrix_workers == 25
     assert args.matrix_legs == 2
     assert args.matrix_include_self_play
     assert args.matrix_equal_roster_abilities

@@ -731,3 +731,11 @@ the complete 25-cell matrix is still required for policy-quality calibration.
 The renderer separately moves score/team text to normalized y=0.965 and the
 clock to y=0.915, a 27-pixel baseline separation at 540p, without changing the
 replay time axis or event semantics.
+
+The matrix launcher default subsequently changes from two to 25 independent
+child processes at explicit user request, allowing every ordered policy cell
+to start together. This is process concurrency rather than a JAX `vmap` and
+does not change match semantics. Eight concurrent CPU children in the v1 run
+used approximately 2.9 GB RSS each; extrapolating that observation gives about
+73 GB for 25 children, excluding filesystem cache and aggregation overhead.
+`--matrix-workers` remains available for hosts that cannot support that load.
