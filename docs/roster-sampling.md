@@ -39,6 +39,13 @@ Set `RosterSampling(enabled=False)` to ignore a supplied key explicitly.
 Exact-profile mode avoids hidden host randomness and provides a deterministic
 setup contract.
 
+The host-only `build_opening_policy_inputs` boundary also accepts a paired
+boolean `sample_abilities` mask. It is intended for strict match fixtures where
+complete authored ability bundles remain exact while omitted bundles in the
+same candidate pool are sampled. Omitting the mask retains the existing
+all-candidates sampling behavior. This mask is consumed before reset and never
+enters the recurrent environment step.
+
 Height and reach are not sampled independently. The sampler draws height and
 the non-negative margin `max_reach_height_m - height_m`, then reconstructs
 reach. Consequently `reach >= height` is structural rather than probabilistic;

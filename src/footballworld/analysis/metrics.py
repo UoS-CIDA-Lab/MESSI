@@ -14,7 +14,7 @@ import numpy as np
 from footballworld.analysis.dataset import MatchDataset
 
 REPORT_SCHEMA = "footballworld.match-report/9"
-METRICS_VERSION = "footballworld.match-metrics/11"
+METRICS_VERSION = "footballworld.match-metrics/12"
 INTENT_PASS = 2
 INTENT_SHOT = 3
 INTENT_CLEAR = 4
@@ -50,6 +50,11 @@ SHOT_CONTEXT_SUSTAINED_MIN_S = 12.0
 SHOT_ROUTE_MAX_PRIOR_NODES = 7
 SHOT_ROUTE_MAX_TRACK_PATH_POINTS = 2048
 SHOT_ROUTE_FALLBACK_LOOKBACK_S = 15.0
+CROSS_SIGNATURE_SIDE_SPIN = 0.18
+CROSS_SIGNATURE_BACK_SPIN = 0.35
+CROSS_SIGNATURE_ATOL = 1.0e-6
+DEFENSIVE_LINE_BREAK_MIN_PROGRESS_M = 5.0
+DEFENSIVE_LINE_BREAK_MARGIN_M = 0.5
 SHOT_CONTEXT_CATEGORIES = (
     ("penalty_kick", "Penalty kick"),
     ("free_kick", "Free kick"),
@@ -166,6 +171,42 @@ def _action_direction_unit(row: dict[str, Any]) -> list[float] | None:
         return None
     unit = vector / magnitude
     return [round(float(unit[0]), 6), round(float(unit[1]), 6)]
+
+
+def _action_spin(row: dict[str, Any]) -> list[float] | None:
+    """Decode the retained submitted spin without inferring a kick type."""
+
+    raw = row.get("spin")
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        return None
+    try:
+        spin = np.asarray(raw, dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+    if spin.shape != (2,) or not np.all(np.isfinite(spin)):
+        return None
+    return [float(spin[0]), float(spin[1])]
+
+
+def _is_rule_policy_cross_signature(spin: list[float] | None) -> bool:
+    """Match the shipped rule policy's cross controls, not a provider label."""
+
+    if spin is None:
+        return False
+    return bool(
+        np.isclose(
+            abs(spin[0]),
+            CROSS_SIGNATURE_SIDE_SPIN,
+            rtol=0.0,
+            atol=CROSS_SIGNATURE_ATOL,
+        )
+        and np.isclose(
+            spin[1],
+            CROSS_SIGNATURE_BACK_SPIN,
+            rtol=0.0,
+            atol=CROSS_SIGNATURE_ATOL,
+        )
+    )
 
 
 def _direction_family(direction_unit: list[float] | None) -> str:
@@ -347,6 +388,7 @@ def _collect_policy_contact_facts(
                         "intended_receiver_player_id"
                     ),
                     "applied_direction_unit": _action_direction_unit(row),
+                    "submitted_spin": _action_spin(row),
                 }
                 for row in action.get("rows", [])
                 if isinstance(row, dict)
@@ -444,6 +486,7 @@ def _collect_policy_contact_facts(
                         "applied_direction_unit": pass_action.get(
                             "applied_direction_unit"
                         ),
+                        "submitted_spin": pass_action.get("submitted_spin"),
                         "mechanism": fields.get("mechanism"),
                         "law11_effect": fields.get("law11_effect"),
                         "restart_kind": int(fields.get("restart_kind", -1)),
@@ -823,6 +866,7 @@ def _pass_map_rows(
     facts: dict[str, Any],
     attack_direction_by_tick: dict[int, tuple[float, float]],
     player_positions_by_tick: dict[int, dict[int, tuple[float, float]]],
+    player_snapshots_by_tick: dict[int, list[dict[str, Any]]],
     half_length: float,
 ) -> list[dict[str, Any]]:
     """Describe realized open-play pass contacts without claiming completion."""
@@ -911,6 +955,28 @@ def _pass_map_rows(
         normalized_start = _attack_normalized_position(start, direction)
         source_half, source_third = _source_context(normalized_start[0], half_length)
         applied_direction_unit = source.get("applied_direction_unit")
+        cross_signature = _is_rule_policy_cross_signature(source.get("submitted_spin"))
+        opponent_x = sorted(
+            (
+                direction * float(player["position"][0])
+                for player in player_snapshots_by_tick.get(int(source["tick"]), [])
+                if player.get("team") == 1 - int(team)
+                and isinstance(player.get("position"), tuple)
+                and len(player["position"]) >= 2
+                and np.isfinite(player["position"][0])
+            ),
+            reverse=True,
+        )
+        defensive_line_x_m = opponent_x[1] if len(opponent_x) >= 2 else None
+        progress_m = None if end is None else float(end[0]) - float(normalized_start[0])
+        defensive_line_break = bool(
+            defensive_line_x_m is not None
+            and end is not None
+            and progress_m is not None
+            and progress_m >= DEFENSIVE_LINE_BREAK_MIN_PROGRESS_M
+            and normalized_start[0] <= defensive_line_x_m
+            and float(end[0]) >= defensive_line_x_m + DEFENSIVE_LINE_BREAK_MARGIN_M
+        )
         rows.append(
             {
                 "control_tick": int(source["tick"]),
@@ -936,6 +1002,13 @@ def _pass_map_rows(
                 "receipt_geometry_family": family,
                 "applied_direction_unit": applied_direction_unit,
                 "applied_direction_family": _direction_family(applied_direction_unit),
+                "rule_policy_cross_control_signature": cross_signature,
+                "defensive_line_x_m_at_source": (
+                    None
+                    if defensive_line_x_m is None
+                    else round(float(defensive_line_x_m), 3)
+                ),
+                "defensive_line_breaking_pass_proxy": defensive_line_break,
                 "source_half": source_half,
                 "source_third": source_third,
                 "outcome": outcome,
@@ -1447,6 +1520,9 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     """Recompute a compact report from verified tracking and event facts."""
 
     event_header = _event_header(dataset)
+    action_controls_available = bool(
+        event_header.get("action_controls_available", True)
+    )
     pre_frame_management = event_header.get("pre_frame_management", []) or []
     initial_identities = _initial_identities(dataset)
     for batch in pre_frame_management:
@@ -1477,6 +1553,7 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     public_clocks: dict[int, tuple[int, float, float]] = {}
     attack_direction_by_tick: dict[int, tuple[float, float]] = {}
     player_positions_by_tick: dict[int, dict[int, tuple[float, float]]] = {}
+    player_snapshots_by_tick: dict[int, list[dict[str, Any]]] = {}
     stadium = dataset.metadata["stadium"]
     length = float(stadium["length"])
     legacy_stadium_width = "width" not in stadium
@@ -1622,6 +1699,21 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                 for player in players
                 if player["active"] and player["on_pitch"] and not player["sent_off"]
             }
+            if previous is not None and int(previous["control_tick"]) == tick - 1:
+                player_snapshots_by_tick[tick] = [
+                    {
+                        "team": int(player["team"]),
+                        "player_id": int(player["player_id"]),
+                        "position": (
+                            float(player["position"][0]),
+                            float(player["position"][1]),
+                        ),
+                    }
+                    for player in previous["players"]
+                    if player["active"]
+                    and player["on_pitch"]
+                    and not player["sent_off"]
+                ]
         elapsed_s = max(0.0, clock - first_clock)
         window_index = int(elapsed_s // ANALYSIS_WINDOW_S)
         chart_window(window_index)
@@ -2045,6 +2137,7 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         contact_facts,
         attack_direction_by_tick,
         player_positions_by_tick,
+        player_snapshots_by_tick,
         length / 2.0,
     )
     shot_map_rows = _shot_map_rows(
@@ -2302,13 +2395,24 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
 
     team_realized_passes = np.zeros(2, dtype=np.int64)
     team_completed_passes = np.zeros(2, dtype=np.int64)
+    team_cross_signatures = np.zeros(2, dtype=np.int64)
+    team_completed_cross_signatures = np.zeros(2, dtype=np.int64)
+    team_line_break_proxies = np.zeros(2, dtype=np.int64)
+    team_completed_line_break_proxies = np.zeros(2, dtype=np.int64)
     for row in pass_map_rows:
         team = row.get("team")
         if team not in (0, 1):
             continue
         team_realized_passes[int(team)] += 1
-        if row.get("outcome") == "same_team_next_contact":
+        completed = row.get("outcome") == "same_team_next_contact"
+        cross_signature = row.get("rule_policy_cross_control_signature") is True
+        line_break = row.get("defensive_line_breaking_pass_proxy") is True
+        team_cross_signatures[int(team)] += int(cross_signature)
+        team_line_break_proxies[int(team)] += int(line_break)
+        if completed:
             team_completed_passes[int(team)] += 1
+            team_completed_cross_signatures[int(team)] += int(cross_signature)
+            team_completed_line_break_proxies[int(team)] += int(line_break)
     team_shot_outcomes = [Counter(), Counter()]
     for row in shot_map_rows:
         team = row.get("team")
@@ -2320,6 +2424,10 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     for team in (0, 1):
         realized_passes = int(team_realized_passes[team])
         completed_passes = int(team_completed_passes[team])
+        cross_signatures = int(team_cross_signatures[team])
+        completed_cross_signatures = int(team_completed_cross_signatures[team])
+        line_break_proxies = int(team_line_break_proxies[team])
+        completed_line_break_proxies = int(team_completed_line_break_proxies[team])
         shot_outcomes = team_shot_outcomes[team]
         realized_shots = int(sum(shot_outcomes.values()))
         shot_goals = int(shot_outcomes["goal"])
@@ -2352,6 +2460,14 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                 if not realized_passes
                 else round(completed_passes / realized_passes, 6)
             ),
+            "rule_policy_cross_control_signatures": (
+                cross_signatures if action_controls_available else None
+            ),
+            "completed_rule_policy_cross_control_signatures": (
+                completed_cross_signatures if action_controls_available else None
+            ),
+            "defensive_line_breaking_pass_proxies": line_break_proxies,
+            "completed_defensive_line_breaking_pass_proxies": completed_line_break_proxies,
             "penalty_area_entries": int(penalty_area_entries[team]),
             "corners": int(team_event_counts[team]["restart_corner"]),
             "fouls_committed": int(team_event_counts[team]["fouls_committed"]),
@@ -2419,6 +2535,34 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                     "ratio",
                     "Same-team next-contact receipts divided by realized open-play pass contacts.",
                     quality="receipt_proxy",
+                ),
+                _metric(
+                    f"team.{team}.rule_policy_cross_control_signatures",
+                    team_row["rule_policy_cross_control_signatures"],
+                    "passes",
+                    "Realized open-play PASS contacts whose retained submitted spin exactly matches the shipped rule policy cross-control signature (absolute side spin 0.18, back spin 0.35, tolerance 1e-6).",
+                    quality="policy_specific_control_signature",
+                ),
+                _metric(
+                    f"team.{team}.completed_rule_policy_cross_control_signatures",
+                    team_row["completed_rule_policy_cross_control_signatures"],
+                    "passes",
+                    "Rule-policy cross-control signatures followed by a same-team next distinct-actor contact before a boundary.",
+                    quality="policy_specific_receipt_proxy",
+                ),
+                _metric(
+                    f"team.{team}.defensive_line_breaking_pass_proxies",
+                    team_row["defensive_line_breaking_pass_proxies"],
+                    "passes",
+                    "Realized open-play passes progressing at least 5 m whose next distinct-actor contact lies at least 0.5 m beyond the source-time second-last opponent; this is a through-pass proxy, not an event label.",
+                    quality="geometry_proxy",
+                ),
+                _metric(
+                    f"team.{team}.completed_defensive_line_breaking_pass_proxies",
+                    team_row["completed_defensive_line_breaking_pass_proxies"],
+                    "passes",
+                    "Defensive-line-breaking pass proxies followed by a same-team next distinct-actor contact before a boundary.",
+                    quality="geometry_receipt_proxy",
                 ),
                 _metric(
                     f"team.{team}.penalty_area_entries",
@@ -2748,6 +2892,8 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             "outcome_semantics": "next_contact_by_distinct_actor_before_boundary",
             "applied_direction_semantics": "L2-unit submitted force_to_ball in the team attack-normalized frame, retained only when the deliberate PASS kick was applied",
             "receipt_geometry_semantics": "direction from exact source contact to the next distinct-actor contact before a boundary; this is not kick direction",
+            "cross_control_signature_semantics": "policy-specific exact match of retained submitted spin: absolute side spin 0.18 and back spin 0.35 within absolute tolerance 1e-6; this identifies the shipped rule policy control signature and is not a generic or provider cross label",
+            "defensive_line_breaking_proxy_semantics": "source-to-next-distinct-contact progress of at least 5 m, starting at or behind and ending at least 0.5 m beyond the second-last active opponent's source-time attack-normalized x; this geometry proxy is not a through-pass event label",
             "rows": pass_map_rows,
         },
         "shot_map": {
@@ -2845,7 +2991,6 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         quality_warnings.append(
             "Legacy replay metadata omitted stadium width; assuming 68 metres."
         )
-    action_controls_available = event_header.get("action_controls_available", True)
     if not action_controls_available:
         quality_warnings.append(
             "Submitted action controls are unavailable; submitted action counts are not observable."

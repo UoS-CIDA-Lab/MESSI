@@ -35,7 +35,13 @@ from footballworld.policies.rule_based.state import (
     initialize_rule_policy_state,
     update_rule_policy_state,
 )
-from footballworld.policies.rule_based.tactical_plan import TacticalPlan
+from footballworld.policies.rule_based.tactical_plan import (
+    TacticalPlan,
+    TacticalPlanSelection,
+    select_tactical_plans_from_abilities,
+    tactical_plan_code,
+    tactical_plan_from_code,
+)
 
 __all__ = [
     "AttackPattern",
@@ -53,6 +59,7 @@ __all__ = [
     "RulePolicyConfig",
     "RulePolicyState",
     "TacticalPlan",
+    "TacticalPlanSelection",
     "apply_tactical_observation",
     "initialize_rule_manager_state",
     "initialize_rule_policy_state",
@@ -61,5 +68,8 @@ __all__ = [
     "make_rule_based_opening_manager_policy",
     "make_rule_based_policy",
     "policy_config_fingerprint",
+    "select_tactical_plans_from_abilities",
+    "tactical_plan_code",
+    "tactical_plan_from_code",
     "update_rule_policy_state",
 ]

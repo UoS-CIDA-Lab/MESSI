@@ -14,7 +14,8 @@ from pathlib import Path
 from filelock import FileLock
 
 MATRIX_SCHEMA = "footballworld.tactical-plan-matrix/1"
-MULTI_REPORT_SCHEMA = "footballworld.tactical-matrix-report/1"
+MULTI_REPORT_SCHEMA = "footballworld.tactical-matrix-report/2"
+MATCH_METRICS_SCHEMA = "footballworld.match-metrics/12"
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -57,6 +58,10 @@ def build_tactical_matrix_report(
             "shots_on_target": 0,
             "pass_attempts": 0,
             "passes_completed": 0,
+            "cross_signatures": 0,
+            "completed_cross_signatures": 0,
+            "line_break_proxies": 0,
+            "completed_line_break_proxies": 0,
             "possession_s": 0.0,
             "penalty_area_entries": 0,
             "corners": 0,
@@ -105,6 +110,10 @@ def build_tactical_matrix_report(
         completion = _read_json(completion_path)
         status = _read_json(status_path)
         report = _read_json(report_path)
+        _require(
+            report.get("metrics_schema") == MATCH_METRICS_SCHEMA,
+            f"unsupported child metrics schema: {report_path}",
+        )
         checks = {
             "child return code": raw.get("returncode") == 0,
             "report status": status.get("status") == "complete",
@@ -195,6 +204,18 @@ def build_tactical_matrix_report(
             other = score[1 - team_index]
             team = teams[team_index]
             _require(isinstance(team, dict), f"invalid team row: {report_path}")
+            for metric_name in (
+                "rule_policy_cross_control_signatures",
+                "completed_rule_policy_cross_control_signatures",
+                "defensive_line_breaking_pass_proxies",
+                "completed_defensive_line_breaking_pass_proxies",
+            ):
+                metric_value = team.get(metric_name)
+                _require(
+                    isinstance(metric_value, int)
+                    and not isinstance(metric_value, bool),
+                    f"unavailable {metric_name}: {report_path}",
+                )
             aggregate = aggregates[plan]
             aggregate["appearances"] += 1
             aggregate["wins"] += int(mine > other)
@@ -206,6 +227,18 @@ def build_tactical_matrix_report(
             aggregate["shots_on_target"] += int(team["shots_on_target"])
             aggregate["pass_attempts"] += int(team["open_play_pass_attempts"])
             aggregate["passes_completed"] += int(team["open_play_completed_passes"])
+            aggregate["cross_signatures"] += int(
+                team["rule_policy_cross_control_signatures"]
+            )
+            aggregate["completed_cross_signatures"] += int(
+                team["completed_rule_policy_cross_control_signatures"]
+            )
+            aggregate["line_break_proxies"] += int(
+                team["defensive_line_breaking_pass_proxies"]
+            )
+            aggregate["completed_line_break_proxies"] += int(
+                team["completed_defensive_line_breaking_pass_proxies"]
+            )
             aggregate["possession_s"] += float(team["possession_s"])
             for name in (
                 "penalty_area_entries",
@@ -234,6 +267,18 @@ def build_tactical_matrix_report(
                 "open_play_pass_attempts": attempts,
                 "open_play_pass_completion": (
                     int(aggregate["passes_completed"]) / attempts if attempts else None
+                ),
+                "rule_policy_cross_control_signatures": int(
+                    aggregate.pop("cross_signatures")
+                ),
+                "completed_rule_policy_cross_control_signatures": int(
+                    aggregate.pop("completed_cross_signatures")
+                ),
+                "defensive_line_breaking_pass_proxies": int(
+                    aggregate.pop("line_break_proxies")
+                ),
+                "completed_defensive_line_breaking_pass_proxies": int(
+                    aggregate.pop("completed_line_break_proxies")
                 ),
                 "average_controlled_possession_s": possession_s / appearances,
             }
@@ -352,6 +397,8 @@ def render_tactical_matrix_html(
             f"<td>{row['goals_for']}-{row['goals_against']}</td>"
             f"<td>{row['realized_shots']} ({row['shots_on_target']})</td>"
             f"<td>{completion_label}</td>"
+            f"<td>{row['rule_policy_cross_control_signatures']} ({row['completed_rule_policy_cross_control_signatures']})</td>"
+            f"<td>{row['defensive_line_breaking_pass_proxies']} ({row['completed_defensive_line_breaking_pass_proxies']})</td>"
             f"<td>{row['average_controlled_possession_s']:.1f}</td>"
             "</tr>"
         )
@@ -405,7 +452,7 @@ table{{width:100%;border-collapse:collapse;background:var(--white);border:1px so
 <p>Distinct-plan fixtures only; 3 points for a win, 1 for a draw. Ties: goal difference, goals for, plan name.</p>
 <table><thead><tr><th>Rank</th><th>Plan</th><th>P</th><th>W-D-L</th><th>GF-GA</th><th>GD</th><th>Pts</th></tr></thead><tbody>{"".join(standings)}</tbody></table>
 <h2>Policy aggregates</h2>
-<table><thead><tr><th>Plan</th><th>Apps</th><th>W-D-L</th><th>GF-GA</th><th>Shots (on target)</th><th>Pass completion</th><th>Avg controlled possession s</th></tr></thead><tbody>{"".join(policies)}</tbody></table>
+<table><thead><tr><th>Plan</th><th>Apps</th><th>W-D-L</th><th>GF-GA</th><th>Shots (on target)</th><th>Pass completion</th><th>Cross signatures (received)</th><th>Line breaks (received)</th><th>Avg controlled possession s</th></tr></thead><tbody>{"".join(policies)}</tbody></table>
 <h2>Every match</h2>
 <table><thead><tr><th>Team 0</th><th>Team 1</th><th>Score</th><th>Duration s</th><th>Frames</th><th>Individual report</th></tr></thead><tbody>{"".join(matches)}</tbody></table>
 <footer>Host-only aggregation from verified single-match reports. <a href="{json_href}">Machine-readable JSON</a>.</footer>

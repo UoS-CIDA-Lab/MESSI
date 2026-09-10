@@ -419,6 +419,21 @@ swept active/passive event scheduler rather than assuming endpoint eligibility
 at time zero. The touch reducer continues to exclude non-contact involvement;
 the separate resolver handles the observable selected-challenge branch.
 
+### Opening tactical and formation selection
+
+| Surface | Value | Class | Decision | Assessment |
+|---|---:|---|---|---|
+| roster-to-plan ability weights | 5 x 5 rows summing to 1 | DESIGN_PRIOR | DEFER | Relative speed/body/control/endurance compatibility for the five rule plans; not a measured causal tactic-selection model. |
+| automatic plan temperature | 0.35 | DESIGN_PRIOR | DEFER | Softmax diversity control applied once after episode abilities are realized. |
+| formation-fit weight | 2.0 | DESIGN_PRIOR | DEFER | Joint gain for best-XI and plan/shape compatibility in the formation softmax logit. |
+| plan-to-formation weights | 5 x 5 signed table | DESIGN_PRIOR | DEFER | Ranks attack depth, width, defender share, central midfield and wide-role structure; it never makes a legal formation impossible. |
+
+The automatic order is ability realization, roster-conditioned tactical-plan
+softmax, feasible-XI evaluation for every formation, then formation sampling.
+Explicit fixture abilities, plans, formations, and XIs bypass only their own
+automatic decision. Gumbel-max is used as the exact categorical sampler for
+the declared softmax logits, with match-key and content-addressed streams.
+
 ### Restart taker selection
 
 | Surface | Value | Class | Decision | Assessment |

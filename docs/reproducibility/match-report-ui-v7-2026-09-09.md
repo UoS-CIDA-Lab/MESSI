@@ -177,3 +177,34 @@ chronological route segments, 19 oldest/newest fade endpoints, one direct
 free-kick shot, four other restart attacks, 13 quick-after-regain shots, and one
 counterattack. The chart emitted all eight exclusive categories, including the
 zero-count penalty row.
+
+## Metrics 12 cross signature and defensive-line-break proxy (2026-09-11)
+
+Existing exact open-play PASS contacts, retained submitted action controls,
+source-time tracking positions, attack directions, and next-distinct-actor
+receipt semantics are retained. Analysis remains host-only and adds no policy,
+physics, event-schema, replay, or JAX rollout leaf.
+
+The report now counts the shipped rule policy's cross-control signature from
+the already retained spin pair: absolute side spin 0.18 and back spin 0.35,
+with absolute tolerance 1e-6. This is a compatibility-derived policy signature,
+not a generic cross classifier or provider event. It separately counts
+same-team next-contact receipts and therefore does not call a submitted or
+applied kick completed without a later exact contact fact.
+
+A second count exposes conservative defensive-line-breaking pass geometry as a
+through-pass proxy. It requires two source-time opponents, at least 5 m of
+progress, a source at or behind the second-last opponent, and a next contact at
+least 0.5 m beyond that line. The distance and margin are design priors, not
+measured football constants. Missing opponent or endpoint geometry fails
+closed. Single-match JSON/HTML and complete tactical-matrix aggregation expose
+both attempted proxies and same-team receipts; matrix report schema 2 rejects
+older child metrics rather than silently presenting absent fields as zeros.
+
+Focused public and validation report tests passed 69/69. Read-only reanalysis
+of the existing authoritative seed-29 `juego_de_posicion` versus `gegenpress`
+90-minute replay produced 19 cross signatures with four same-team receipts and
+two line-break proxies with one receipt for Team 0; Team 1 produced 22 cross
+signatures with 11 receipts and one line-break proxy with no same-team receipt.
+These are descriptive checks that the new counters consume retained facts, not
+evidence that either proxy matches provider event annotation.

@@ -58,6 +58,26 @@ def _team_rows(report: dict[str, Any]) -> str:
             "open_play_pass_completion",
             lambda x: "Unavailable" if x is None else f"{100 * x:.1f}%",
         ),
+        (
+            "Rule-policy cross signatures",
+            "rule_policy_cross_control_signatures",
+            lambda x: "Unavailable" if x is None else str(x),
+        ),
+        (
+            "Completed rule-policy cross signatures",
+            "completed_rule_policy_cross_control_signatures",
+            lambda x: "Unavailable" if x is None else str(x),
+        ),
+        (
+            "Defensive-line-breaking passes (through-pass proxy)",
+            "defensive_line_breaking_pass_proxies",
+            str,
+        ),
+        (
+            "Completed defensive-line-breaking passes",
+            "completed_defensive_line_breaking_pass_proxies",
+            str,
+        ),
         ("Penalty-area entries", "penalty_area_entries", str),
         ("Corners", "corners", str),
         ("Fouls committed", "fouls_committed", str),
@@ -1275,6 +1295,20 @@ def _comparison_rows(report: dict[str, Any]) -> str:
             "open_play_pass_completion",
             100.0,
             "%",
+        ),
+        (
+            "Rule-policy cross signatures",
+            "Exact shipped-policy cross spin signature on realized open-play PASS contacts; not a generic cross label.",
+            "rule_policy_cross_control_signatures",
+            1.0,
+            "",
+        ),
+        (
+            "Defensive-line-breaking passes",
+            "Source-to-next-contact second-last-opponent line breaks; a through-pass geometry proxy, not an event label.",
+            "defensive_line_breaking_pass_proxies",
+            1.0,
+            "",
         ),
         (
             "Penalty-area entries",

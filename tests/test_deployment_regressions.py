@@ -445,6 +445,114 @@ def test_zero_distance_pass_map_is_renderable():
     assert "Unavailable m" in rendered
 
 
+def test_pass_map_identifies_exact_cross_signature_and_line_break_proxy():
+    source_contact = {
+        "time_key": (10, 0, 0.0),
+        "order": 0,
+        "slot": 3,
+        "actor": 3,
+        "team": 0,
+        "player_id": 13,
+        "slot_generation": 0,
+        "position": (0.0, 20.0, 0.11),
+    }
+    receiver_contact = {
+        "time_key": (12, 0, 0.0),
+        "order": 0,
+        "slot": 8,
+        "actor": 8,
+        "team": 0,
+        "player_id": 18,
+        "slot_generation": 0,
+        "position": (36.0, 4.0, 0.11),
+    }
+    rows = analysis_metrics._pass_map_rows(
+        {
+            "contacts": [source_contact, receiver_contact],
+            "boundaries": [],
+            "pass_sources": [
+                {
+                    "tick": 10,
+                    "actor": 3,
+                    "team": 0,
+                    "player_id": 13,
+                    "slot_generation": 0,
+                    "intended_receiver_player_id": 18,
+                    "applied_direction_unit": [1.0, 0.0],
+                    "submitted_spin": [-0.18, 0.35],
+                    "contact": source_contact,
+                }
+            ],
+        },
+        {10: (1.0, -1.0)},
+        {10: {18: (4.0, 2.0)}},
+        {
+            10: [
+                {"team": 1, "player_id": 21, "position": (40.0, 0.0)},
+                {"team": 1, "player_id": 22, "position": (30.0, 5.0)},
+                {"team": 1, "player_id": 23, "position": (10.0, -5.0)},
+            ]
+        },
+        52.5,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["rule_policy_cross_control_signature"] is True
+    assert rows[0]["defensive_line_x_m_at_source"] == 30.0
+    assert rows[0]["defensive_line_breaking_pass_proxy"] is True
+    assert rows[0]["outcome"] == "same_team_next_contact"
+
+
+def test_line_break_proxy_fails_closed_without_two_source_time_opponents():
+    source_contact = {
+        "time_key": (10, 0, 0.0),
+        "order": 0,
+        "slot": 3,
+        "actor": 3,
+        "team": 0,
+        "player_id": 13,
+        "slot_generation": 0,
+        "position": (0.0, 0.0, 0.11),
+    }
+    receiver_contact = {
+        "time_key": (12, 0, 0.0),
+        "order": 0,
+        "slot": 8,
+        "actor": 8,
+        "team": 0,
+        "player_id": 18,
+        "slot_generation": 0,
+        "position": (40.0, 0.0, 0.11),
+    }
+    rows = analysis_metrics._pass_map_rows(
+        {
+            "contacts": [source_contact, receiver_contact],
+            "boundaries": [],
+            "pass_sources": [
+                {
+                    "tick": 10,
+                    "actor": 3,
+                    "team": 0,
+                    "player_id": 13,
+                    "slot_generation": 0,
+                    "intended_receiver_player_id": 18,
+                    "applied_direction_unit": [1.0, 0.0],
+                    "submitted_spin": [0.0, 0.0],
+                    "contact": source_contact,
+                }
+            ],
+        },
+        {10: (1.0, -1.0)},
+        {10: {18: (4.0, 0.0)}},
+        {10: [{"team": 1, "player_id": 21, "position": (30.0, 0.0)}]},
+        52.5,
+    )
+
+    assert rows[0]["rule_policy_cross_control_signature"] is False
+    assert rows[0]["defensive_line_x_m_at_source"] is None
+    assert rows[0]["defensive_line_breaking_pass_proxy"] is False
+
+
 def test_pass_map_shot_marker_exposes_attack_normalized_direction():
     np.testing.assert_allclose(
         _action_direction_unit({"force_to_ball": [0.3, -0.4]}),

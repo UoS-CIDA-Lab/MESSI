@@ -108,11 +108,13 @@ an intent receipt, not proof that the kick occurred or the pass was completed.
 ## Metric contract
 
 `report.json` uses `footballworld.match-report/9` and
-`footballworld.match-metrics/11`; every receipt names a metric ID, version,
+`footballworld.match-metrics/12`; every receipt names a metric ID, version,
 unit, definition, and quality class.
 
-The schema bump is intentional: realized-shot rows now separate the actual
-tracking ball path from positioned event nodes. The path contains only
+The schema bump is intentional: realized-pass rows now expose a policy-specific
+cross control signature and a conservative defensive-line-breaking geometry
+proxy. Realized-shot rows retain the separation between the actual tracking
+ball path and positioned event nodes. The path contains only
 attack-normalized tracking samples from the sequence start through the frame
 strictly before the shot. Nodes retain the start plus at most six latest exact
 same-team deliberate CONTROL contacts or kick-applied PASS, SHOT, CLEAR, and
@@ -152,6 +154,19 @@ latest contact. No intermediate position is inferred.
   planned pass succeeding.
 - Same-team next contact is reported as a receipt proxy. It is not renamed as
   provider pass completion.
+- A rule-policy cross signature is counted only when a realized open-play PASS
+  contact joins to retained submitted spin with absolute side spin `0.18` and
+  back spin `0.35` within absolute tolerance `1e-6`. Those values identify the
+  shipped rule policy's controls; they are compatibility-derived signatures,
+  not measured football constants or a generic/provider cross label. A
+  same-team next distinct-actor contact is reported separately as a receipt.
+- A defensive-line-breaking pass proxy requires an exact source and next
+  distinct-actor contact, at least two active opponents at the source frame,
+  at least 5 m of attack-normalized progress, a source at or behind the
+  source-time second-last opponent, and an endpoint at least 0.5 m beyond that
+  line. The 5 m and 0.5 m thresholds are conservative design priors. This is
+  explicitly a through-pass geometry proxy, not proof of pass intent, space
+  targeting, or a provider through-ball event. Missing geometry fails closed.
 - The two-dimensional ball density assigns each preceding live tracking
   interval to an approximately 2 m by 2 m absolute-pitch cell. The grid records
   seconds, not duplicated frame counts, and reports live time outside the pitch

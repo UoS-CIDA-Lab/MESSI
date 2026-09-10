@@ -27,6 +27,7 @@ from itertools import combinations
 from pathlib import Path
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from footballworld import (
@@ -36,8 +37,9 @@ from footballworld import (
     Player,
     PlayerProfile,
     RuleBasedOpeningManagerPolicy,
+    RuleOpeningManagerConfig,
     build_opening_policy_inputs,
-    create_opening_match_from_policy,
+    create_opening_match,
     initialize_policy_state,
     make_managed_runner,
 )
@@ -46,11 +48,14 @@ from footballworld.analysis import (
     write_match_report,
     write_tactical_matrix_report,
 )
+from footballworld.config.match_fixture import LoadedMatchFixture, load_match_fixture
 from footballworld.policies import (
     RulePolicyConfig,
     TacticalPlan,
     make_rule_based_policy,
     policy_config_fingerprint,
+    select_tactical_plans_from_abilities,
+    tactical_plan_from_code,
 )
 from footballworld.rendering import (
     DEFAULT_RENDER_FPS,
@@ -65,11 +70,13 @@ DEFAULT_MATRIX_WORKERS = 2
 MIN_CANDIDATE_COUNT = 18
 MAX_CANDIDATE_COUNT = 23
 RANDOM_TACTICAL_PLAN = "random"
+AUTO_TACTICAL_PLAN = "auto"
 TACTICAL_PLAN_NAMES = tuple(plan.value for plan in TacticalPlan)
-TACTICAL_PLAN_ARGUMENTS = (*TACTICAL_PLAN_NAMES, RANDOM_TACTICAL_PLAN)
-# ASCII "FWPL". This dedicated fold-in domain keeps demo plan sampling from
-# consuming or perturbing the match/reset random stream.
-_TACTICAL_PLAN_RANDOM_STREAM = 0x4657504C
+TACTICAL_PLAN_ARGUMENTS = (
+    *TACTICAL_PLAN_NAMES,
+    AUTO_TACTICAL_PLAN,
+    RANDOM_TACTICAL_PLAN,
+)
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL_DFL_POLICY_REFERENCE = (
     ROOT / "calib/policy/artifacts/dfl-report-guideline-v1.json"
@@ -175,6 +182,12 @@ def _positive_integer(value: str) -> int:
     return result
 
 
+def _option_present(arguments: Sequence[str], name: str) -> bool:
+    """Recognize both ``--name value`` and ``--name=value`` CLI forms."""
+
+    return any(value == name or value.startswith(f"{name}=") for value in arguments)
+
+
 def _window(value: str) -> ReplayWindow:
     parts = value.split(":")
     if len(parts) not in (2, 3):
@@ -194,27 +207,33 @@ def _window(value: str) -> ReplayWindow:
 def _resolve_team_tactical_plans(
     requested: Sequence[str],
     match_key: jax.Array,
-) -> tuple[TacticalPlan, TacticalPlan]:
-    """Resolve two explicit or seed-keyed random demo plans on the host."""
+    opening_players,
+) -> tuple[tuple[TacticalPlan, TacticalPlan], object]:
+    """Resolve explicit plans or roster-conditioned softmax choices."""
 
     if isinstance(requested, (str, bytes)) or len(requested) != 2:
         raise ValueError("requested tactical plans must contain exactly two values")
-    selection_key = jax.random.fold_in(match_key, _TACTICAL_PLAN_RANDOM_STREAM)
+    ability = jnp.stack(
+        (
+            opening_players.max_speed,
+            opening_players.height,
+            opening_players.reach_height,
+            opening_players.ball_control,
+            opening_players.endurance_factor,
+        ),
+        axis=-1,
+    )
+    selection = select_tactical_plans_from_abilities(
+        ability,
+        opening_players.valid,
+        opening_players.is_goalkeeper,
+        match_key,
+    )
+    selected_codes = np.asarray(jax.device_get(selection.plan_code), dtype=np.int64)
     resolved: list[TacticalPlan] = []
     for team, value in enumerate(requested):
-        if value == RANDOM_TACTICAL_PLAN:
-            team_key = jax.random.fold_in(selection_key, team)
-            index = int(
-                jax.device_get(
-                    jax.random.randint(
-                        team_key,
-                        shape=(),
-                        minval=0,
-                        maxval=len(TACTICAL_PLAN_NAMES),
-                    )
-                )
-            )
-            resolved.append(tuple(TacticalPlan)[index])
+        if value in (AUTO_TACTICAL_PLAN, RANDOM_TACTICAL_PLAN):
+            resolved.append(tactical_plan_from_code(int(selected_codes[team])))
             continue
         try:
             resolved.append(TacticalPlan(value))
@@ -223,7 +242,7 @@ def _resolve_team_tactical_plans(
             raise ValueError(
                 f"unknown demo tactical plan {value!r}; choose from {choices}"
             ) from error
-    return resolved[0], resolved[1]
+    return (resolved[0], resolved[1]), selection
 
 
 def _team_candidates(team: int, count: int) -> tuple[Player, ...]:
@@ -246,6 +265,129 @@ def _team_candidates(team: int, count: int) -> tuple[Player, ...]:
             )
         )
     return tuple(players)
+
+
+def _fixture_opening_arguments(
+    loaded: LoadedMatchFixture,
+) -> tuple[dict[str, object], tuple[tuple[str, ...], tuple[str, ...]]]:
+    """Translate a strict host fixture without weakening its exact fields."""
+
+    fixture = loaded.fixture
+    team_layouts: list[np.ndarray] = []
+    team_layout_names: list[tuple[str, ...]] = []
+    exact_formation: list[bool] = []
+    for team in fixture.teams:
+        if team.formation is None:
+            team_layouts.append(FORMATION_CATALOG)
+            team_layout_names.append(FORMATION_NAMES)
+            exact_formation.append(False)
+            continue
+        if team.formation.positions is not None:
+            layout = np.asarray(team.formation.positions, dtype=np.float32)
+        else:
+            try:
+                layout = FORMATION_CATALOG[FORMATION_NAMES.index(team.formation.name)]
+            except ValueError as error:
+                raise ValueError(
+                    f"fixture formation {team.formation.name!r} needs positions "
+                    f"or one of {', '.join(FORMATION_NAMES)}"
+                ) from error
+        team_layouts.append(layout[None, ...])
+        team_layout_names.append((team.formation.name,))
+        exact_formation.append(True)
+
+    layout_count = max(layout.shape[0] for layout in team_layouts)
+    probabilities = np.zeros((2, layout_count), dtype=np.float32)
+    candidates: list[tuple[Player, ...]] = []
+    starter_indices: list[tuple[int, ...] | None] = []
+    sample_masks: list[tuple[bool, ...]] = []
+    padded_layouts: list[np.ndarray] = []
+    padded_names: list[tuple[str, ...]] = []
+    for team_index, team in enumerate(fixture.teams):
+        layouts = team_layouts[team_index]
+        names = team_layout_names[team_index]
+        if layouts.shape[0] < layout_count:
+            layouts = np.repeat(layouts[:1], layout_count, axis=0)
+            names = tuple(names[0] for _ in range(layout_count))
+        padded_layouts.append(layouts)
+        padded_names.append(names)
+        if exact_formation[team_index]:
+            probabilities[team_index, 0] = 1.0
+        else:
+            probabilities[team_index] = 1.0 / layout_count
+
+        id_to_index = {
+            player.player_id: index for index, player in enumerate(team.players)
+        }
+        starters = (
+            None
+            if team.starting_player_ids is None
+            else tuple(id_to_index[player_id] for player_id in team.starting_player_ids)
+        )
+        starter_indices.append(starters)
+        slot_by_id = (
+            {}
+            if team.starting_player_ids is None
+            else {
+                player_id: slot
+                for slot, player_id in enumerate(team.starting_player_ids)
+            }
+        )
+        preferred_layout = padded_layouts[team_index][0]
+        candidates.append(
+            tuple(
+                Player(
+                    player.profile_reference(),
+                    initial_position=(
+                        tuple(
+                            float(value)
+                            for value in preferred_layout[slot_by_id[player.player_id]]
+                        )
+                        if player.player_id in slot_by_id
+                        else (0.0, 0.0)
+                    ),
+                )
+                for player in team.players
+            )
+        )
+        sample_masks.append(tuple(player.abilities is None for player in team.players))
+
+    return (
+        {
+            "team_0_candidates": candidates[0],
+            "team_1_candidates": candidates[1],
+            "team_0_formation_layouts": padded_layouts[0],
+            "team_1_formation_layouts": padded_layouts[1],
+            "team_0_starters": starter_indices[0],
+            "team_1_starters": starter_indices[1],
+            "max_registered_players": (
+                len(candidates[0]),
+                len(candidates[1]),
+            ),
+            "formation_probabilities": probabilities,
+            "kickoff_team": 0 if fixture.kickoff_team is None else fixture.kickoff_team,
+            "sample_abilities": (sample_masks[0], sample_masks[1]),
+        },
+        (padded_names[0], padded_names[1]),
+    )
+
+
+def _preserve_exact_lineups(opening_decision, authored, exact_lineup):
+    """Replace only team rows whose starting XI was explicitly authored."""
+
+    registered = opening_decision.registered
+    starter = opening_decision.starter
+    placement_slot = opening_decision.placement_slot
+    for team, fixed in enumerate(exact_lineup):
+        if fixed:
+            registered = registered.at[team].set(authored.registered[team])
+            starter = starter.at[team].set(authored.starter[team])
+            placement_slot = placement_slot.at[team].set(authored.placement_slot[team])
+    return opening_decision._replace(
+        registered=registered,
+        starter=starter,
+        placement_slot=placement_slot,
+    )
 
 
 def _selected_windows(args: argparse.Namespace) -> Sequence[ReplayWindow] | None:
@@ -361,21 +503,30 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=29)
     parser.add_argument(
+        "--match-fixture",
+        type=Path,
+        default=None,
+        help=(
+            "strict footballworld.match-fixture/1 JSON initial conditions; "
+            "explicit abilities, tactics, lineup, and formation remain exact"
+        ),
+    )
+    parser.add_argument(
         "--team-0-plan",
         choices=TACTICAL_PLAN_ARGUMENTS,
-        default=TacticalPlan.JUEGO_DE_POSICION.value,
+        default=AUTO_TACTICAL_PLAN,
         help=(
-            "Team 0 rule-policy plan; 'random' makes one seed-keyed choice "
-            "for the whole match"
+            "Team 0 rule-policy plan; auto/random samples a roster-conditioned "
+            "softmax once for the whole match"
         ),
     )
     parser.add_argument(
         "--team-1-plan",
         choices=TACTICAL_PLAN_ARGUMENTS,
-        default=TacticalPlan.JUEGO_DE_POSICION.value,
+        default=AUTO_TACTICAL_PLAN,
         help=(
-            "Team 1 rule-policy plan; 'random' makes one seed-keyed choice "
-            "for the whole match"
+            "Team 1 rule-policy plan; auto/random samples a roster-conditioned "
+            "softmax once for the whole match"
         ),
     )
     parser.add_argument(
@@ -803,6 +954,23 @@ def _run_plan_matrix(args: argparse.Namespace, argv: Sequence[str]) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = _parser().parse_args(raw_argv)
+    loaded_fixture = (
+        None if args.match_fixture is None else load_match_fixture(args.match_fixture)
+    )
+    if (
+        loaded_fixture is not None
+        and loaded_fixture.fixture.seed is not None
+        and not _option_present(raw_argv, "--seed")
+    ):
+        args.seed = loaded_fixture.fixture.seed
+    if (
+        args.plan_matrix
+        and loaded_fixture is not None
+        and any(team.tactical_plan is not None for team in loaded_fixture.fixture.teams)
+    ):
+        raise ValueError(
+            "--plan-matrix requires fixture tactical_plan fields to be omitted"
+        )
     if args.report_only and args.verify_video:
         raise ValueError("--report-only cannot be combined with --verify-video")
     if args.report_only:
@@ -819,6 +987,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "(or use --allow-dirty for diagnostics only)"
         )
     cli_source_start = _file_receipt(Path(__file__).resolve())
+    match_fixture_source_start = (
+        None if loaded_fixture is None else _file_receipt(loaded_fixture.source_path)
+    )
     publication_receipt: dict[str, object] = {}
     publication_mode = publication_authority(
         dirty=bool(git_start["dirty"]),
@@ -852,6 +1023,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def publication_guard() -> dict[str, object]:
         cli_source_end = _file_receipt(Path(__file__).resolve())
+        match_fixture_source_end = (
+            None
+            if loaded_fixture is None
+            else _file_receipt(loaded_fixture.source_path)
+        )
         git_end = _git_snapshot()
         if cli_source_end != cli_source_start:
             raise RuntimeError(
@@ -863,6 +1039,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "repository revision or dirty state changed during capture; "
                 "staged output will not be published"
             )
+        if match_fixture_source_end != match_fixture_source_start:
+            raise RuntimeError(
+                "match fixture changed during capture; staged output will not "
+                "be published"
+            )
         receipt: dict[str, object] = {
             **publication_mode,
             "stable_during_capture": True,
@@ -872,16 +1053,63 @@ def main(argv: Sequence[str] | None = None) -> int:
             "fixture_source_start": cli_source_start,
             "fixture_source_end": cli_source_end,
             "fixture_source_stable_during_capture": True,
+            "match_fixture_source_start": match_fixture_source_start,
+            "match_fixture_source_end": match_fixture_source_end,
+            "match_fixture_source_stable_during_capture": True,
         }
         publication_receipt.update(receipt)
         return receipt
 
     match_key = jax.random.key(args.seed)
     env = FootballWorld()
-    requested_tactical_plans = (args.team_0_plan, args.team_1_plan)
-    resolved_tactical_plans = _resolve_team_tactical_plans(
+    if loaded_fixture is None:
+        team_0 = _team_candidates(0, args.candidate_count)
+        team_1 = _team_candidates(1, args.candidate_count)
+        equal_prior = np.full(
+            len(FORMATION_NAMES), 1.0 / len(FORMATION_NAMES), dtype=np.float32
+        )
+        opening_arguments: dict[str, object] = {
+            "team_0_candidates": team_0,
+            "team_1_candidates": team_1,
+            "team_0_formation_layouts": FORMATION_CATALOG,
+            "team_1_formation_layouts": FORMATION_CATALOG,
+            "max_registered_players": (
+                args.candidate_count,
+                args.candidate_count,
+            ),
+            "formation_probabilities": equal_prior,
+        }
+        formation_names = (FORMATION_NAMES, FORMATION_NAMES)
+        exact_lineup = (False, False)
+    else:
+        opening_arguments, formation_names = _fixture_opening_arguments(loaded_fixture)
+        exact_lineup = tuple(
+            team.starting_player_ids is not None
+            for team in loaded_fixture.fixture.teams
+        )
+    # Candidate abilities are realized exactly once before either tactical or
+    # formation selection. Explicit CLI plans remain fixed.
+    opening_inputs = build_opening_policy_inputs(
+        env, key=match_key, **opening_arguments
+    )
+    requested_tactical_plans = [args.team_0_plan, args.team_1_plan]
+    if loaded_fixture is not None:
+        for team, fixture_team in enumerate(loaded_fixture.fixture.teams):
+            if fixture_team.tactical_plan is None:
+                continue
+            flag = f"--team-{team}-plan"
+            requested = requested_tactical_plans[team]
+            fixed = fixture_team.tactical_plan.value
+            if _option_present(raw_argv, flag) and requested != fixed:
+                raise ValueError(
+                    f"{flag} conflicts with exact fixture tactical_plan {fixed!r}"
+                )
+            requested_tactical_plans[team] = fixed
+    requested_tactical_plans = tuple(requested_tactical_plans)
+    resolved_tactical_plans, tactical_selection = _resolve_team_tactical_plans(
         requested_tactical_plans,
         match_key,
+        opening_inputs.observation.players,
     )
     rule_policy_config = RulePolicyConfig(
         team_tactical_plans=resolved_tactical_plans,
@@ -893,50 +1121,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         "resolved_team_tactical_plans": [
             plan.value for plan in resolved_tactical_plans
         ],
-        "random_selection_basis": (
-            "one host-side choice per random team from --seed using the "
-            "dedicated FWPL JAX fold-in domain; fixed for the whole match"
+        "automatic_selection_basis": (
+            "softmax of equal plan prior plus realized outfield ability fit; "
+            "one identity-stable seed-keyed choice before formation selection"
         ),
+        "automatic_selection_logits": np.asarray(
+            jax.device_get(tactical_selection.logits), dtype=np.float32
+        ).tolist(),
+        "automatic_selection_probabilities": np.asarray(
+            jax.device_get(tactical_selection.probability), dtype=np.float32
+        ).tolist(),
         "config_sha256": policy_config_fingerprint(rule_policy_config),
         "config_hash_basis": "SHA-256 of the canonical RulePolicyConfig JSON",
     }
-    team_0 = _team_candidates(0, args.candidate_count)
-    team_1 = _team_candidates(1, args.candidate_count)
-    equal_prior = np.full(
-        len(FORMATION_NAMES), 1.0 / len(FORMATION_NAMES), dtype=np.float32
+    opening_policy = RuleBasedOpeningManagerPolicy(
+        RuleOpeningManagerConfig(team_tactical_plans=resolved_tactical_plans)
     )
-
-    opening_inputs = build_opening_policy_inputs(
-        env,
-        team_0,
-        team_1,
-        FORMATION_CATALOG,
-        FORMATION_CATALOG,
-        max_registered_players=(args.candidate_count, args.candidate_count),
-        formation_probabilities=equal_prior,
-        key=match_key,
-    )
-    opening_policy = RuleBasedOpeningManagerPolicy()
-    created = create_opening_match_from_policy(
-        env,
-        opening_inputs,
+    opening_policy_state = opening_policy.initialize(opening_inputs.observation)
+    opening_step = opening_policy.step(
+        opening_inputs.observation,
         match_key,
-        policy=opening_policy,
+        opening_policy_state,
+    )
+    opening_decision = opening_step.decision
+    if any(exact_lineup):
+        opening_decision = _preserve_exact_lineups(
+            opening_decision,
+            opening_inputs.authored_selection,
+            exact_lineup,
+        )
+    created = create_opening_match(
+        env,
+        opening_inputs.observation,
+        opening_decision,
+        kickoff_team=int(opening_arguments.get("kickoff_team", 0)),
     )
     runner = make_managed_runner(
         env,
         player_policy=player_policy,
         chunk_steps=args.event_chunk,
     )
-    match = created.match
-    players_per_team = FORMATION_CATALOG.shape[1]
+    match = created
+    players_per_team = match.inputs.selected_formation_layout.shape[0] // 2
     selected_layout = np.asarray(
         match.inputs.selected_formation_layout, dtype=np.float32
     )
     selected_formation = {
         f"team_{team}": {
             "index": int(match.inputs.selected_formation_index[team]),
-            "name": FORMATION_NAMES[match.inputs.selected_formation_index[team]],
+            "name": formation_names[team][match.inputs.selected_formation_index[team]],
             "layout": selected_layout[
                 team * players_per_team : (team + 1) * players_per_team
             ].tolist(),
@@ -953,9 +1186,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         "config_hash_basis": "SHA-256 of sorted compact canonical JSON",
         "decision": _opening_decision_receipt(
             opening_inputs.observation,
-            created.decision,
+            opening_decision,
         ),
     }
+    if loaded_fixture is None:
+        match_fixture_receipt = None
+        profile_sampling = "identity-keyed clipped Gaussian once before reset"
+    else:
+        match_fixture_receipt = {
+            "schema": loaded_fixture.fixture.schema,
+            "match_id": loaded_fixture.fixture.match_id,
+            "source_path": str(loaded_fixture.source_path),
+            "source_sha256": loaded_fixture.source_sha256,
+            "configuration_sha256": loaded_fixture.configuration_sha256,
+            "provenance": asdict(loaded_fixture.fixture.provenance),
+            "ability_modes": [
+                [player.ability_mode for player in team.players]
+                for team in loaded_fixture.fixture.teams
+            ],
+            "tactical_plan_modes": [
+                team.tactical_plan_mode for team in loaded_fixture.fixture.teams
+            ],
+            "formation_modes": [
+                team.formation_mode for team in loaded_fixture.fixture.teams
+            ],
+            "lineup_modes": [team.lineup_mode for team in loaded_fixture.fixture.teams],
+        }
+        profile_sampling = (
+            "exact fixture ability bundles retained; omitted bundles sampled "
+            "once with identity-keyed clipped Gaussian"
+        )
     roster = env.roster_metadata_si(match.reset.rollout, match.management.state)
     player_state = initialize_policy_state(
         env,
@@ -987,17 +1247,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         metadata={
             "long_run_fixture": {
                 "seed": args.seed,
-                "candidate_count_per_team": args.candidate_count,
-                "formation_catalog": FORMATION_NAMES,
+                "candidate_count_per_team": np.sum(
+                    np.asarray(opening_inputs.observation.players.valid), axis=1
+                ).tolist(),
+                "formation_catalog": [list(names) for names in formation_names],
                 "formation_probability_basis": (
-                    "equal structural design prior; not fitted to DFL"
+                    "exact fixture selections are one-hot; omitted selections use "
+                    "an equal structural design prior, not a measured frequency"
                 ),
+                "match_fixture": match_fixture_receipt,
                 "selected_formation": selected_formation,
                 "opening_manager": opening_manager_receipt,
                 "rule_player_policy": rule_player_policy_receipt,
-                "profile_sampling": (
-                    "identity-keyed clipped Gaussian once before reset"
-                ),
+                "profile_sampling": profile_sampling,
                 "source_authority_at_start": {
                     **publication_mode,
                     "git": git_start,

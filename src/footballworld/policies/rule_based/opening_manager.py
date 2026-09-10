@@ -11,6 +11,7 @@ rather than changing it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
+from functools import partial
 from numbers import Real
 from typing import NamedTuple
 
@@ -29,6 +30,11 @@ from footballworld.policies.manager import (
     validate_opening_policy_shapes,
 )
 from footballworld.policies.opening_formation import RuleBasedOpeningFormationPolicy
+from footballworld.policies.rule_based.tactical_plan import (
+    TacticalPlan,
+    canonical_tactical_plan,
+    tactical_plan_code,
+)
 
 _OPENING_PLAYER_STREAM = 0x4C494E45  # ASCII "LINE".
 _OPENING_FORMATION_STREAM = 0x464F524D  # ASCII "FORM".
@@ -50,6 +56,19 @@ _ROLE_ABILITY_WEIGHT = jnp.asarray(
 _REGISTRATION_ABILITY_WEIGHT = jnp.asarray(
     [0.25, 0.10, 0.10, 0.30, 0.25], dtype=jnp.float32
 )
+# [attack depth, width, defender share, central-midfield share, wide-role share].
+# These values only rank structural compatibility after a tactical plan has
+# been fixed; they are transparent design priors rather than empirical rates.
+_TACTICAL_FORMATION_WEIGHT = jnp.asarray(
+    [
+        [-0.10, 0.10, 0.00, 0.50, 0.25],  # salida lavolpiana
+        [0.20, 0.40, -0.10, 0.35, 0.30],  # juego de posicion
+        [0.40, -0.10, -0.10, 0.35, 0.10],  # gegenpress
+        [-0.50, -0.30, 0.60, 0.10, -0.10],  # catenaccio
+        [-0.10, 0.35, 0.20, 0.10, 0.40],  # zona mista
+    ],
+    dtype=jnp.float32,
+)
 
 
 class AuthoredOpeningSelection(NamedTuple):
@@ -70,12 +89,29 @@ class RuleOpeningManagerState(NamedTuple):
 class RuleOpeningManagerConfig:
     """Start-only reference-policy design priors, not measured constants."""
 
+    team_tactical_plans: tuple[TacticalPlan, TacticalPlan] = (
+        TacticalPlan.JUEGO_DE_POSICION,
+        TacticalPlan.JUEGO_DE_POSICION,
+    )
     position_fit_weight: float = 1.25
+    # Softmax logit gain for the deterministic best-XI fit of each formation.
+    # This is an explicit design prior, not a measured football constant.
+    formation_fit_weight: float = 2.0
     lineup_noise_scale: float = 0.025
     registration_noise_scale: float = 0.02
 
     def __post_init__(self) -> None:
+        plans = self.team_tactical_plans
+        if not isinstance(plans, tuple) or len(plans) != 2:
+            raise TypeError("team_tactical_plans must be a length-two tuple")
+        object.__setattr__(
+            self,
+            "team_tactical_plans",
+            tuple(canonical_tactical_plan(plan) for plan in plans),
+        )
         for item in fields(self):
+            if item.name == "team_tactical_plans":
+                continue
             value = getattr(self, item.name)
             if isinstance(value, bool) or not isinstance(value, Real):
                 raise TypeError(f"{item.name} must be a real number")
@@ -140,33 +176,116 @@ def _identity_key(
     return jax.random.fold_in(key, context.astype(jnp.uint32))
 
 
+def _formation_tactical_fit(
+    anchor: jax.Array,
+    role: jax.Array,
+    player_mask: jax.Array,
+    plan: TacticalPlan,
+) -> jax.Array:
+    outfield = player_mask[None, :] & (role != 0)
+    count = jnp.maximum(jnp.sum(outfield, axis=1), 1).astype(jnp.float32)
+    depth = jnp.sum(jnp.where(outfield, anchor[..., 0], 0.0), axis=1) / count
+    width = jnp.sum(jnp.where(outfield, jnp.abs(anchor[..., 1]), 0.0), axis=1) / count
+    defender = jnp.sum(outfield & ((role == 1) | (role == 2)), axis=1) / count
+    central_midfield = jnp.sum(outfield & (role == 3), axis=1) / count
+    wide = jnp.sum(outfield & ((role == 2) | (role == 4) | (role == 6)), axis=1) / count
+    features = jnp.stack((depth, width, defender, central_midfield, wide), axis=1)
+    return features @ _TACTICAL_FORMATION_WEIGHT[tactical_plan_code(plan)]
+
+
 def _choose_formation(
-    observations: OpeningManagerObservation,
+    probability: jax.Array,
+    anchor: jax.Array,
+    role: jax.Array,
+    lineup_fit: jax.Array,
+    lineup_complete: jax.Array,
+    tactical_fit: jax.Array,
     match_key: jax.Array,
+    team: int,
+    fit_weight: float,
 ) -> tuple[jax.Array, jax.Array]:
-    selected = []
-    usable_rows = []
-    for team in (TEAM_0, TEAM_1):
-        probability = observations.formation.candidate_probability[team]
-        anchor = observations.formation.candidate_anchor[team]
-        role = observations.formation.candidate_role[team]
-        signatures = jax.vmap(_layout_signature)(anchor, role)
-        base_key = jax.random.fold_in(match_key, jnp.uint32(_OPENING_FORMATION_STREAM))
-        base_key = jax.random.fold_in(base_key, jnp.uint32(team))
-        keys = jax.vmap(
-            lambda value, selected_base_key=base_key: jax.random.fold_in(
-                selected_base_key, value
-            )
-        )(signatures)
-        noise = jax.vmap(lambda key: jax.random.gumbel(key, dtype=jnp.float32))(keys)
-        positive = (probability > 0.0) & jnp.isfinite(probability)
-        score = jnp.where(
-            positive, jnp.log(jnp.maximum(probability, 1e-12)) + noise, -jnp.inf
+    """Sample a layout only after every candidate has a feasible-XI receipt."""
+
+    signatures = jax.vmap(_layout_signature)(anchor, role)
+    base_key = jax.random.fold_in(match_key, jnp.uint32(_OPENING_FORMATION_STREAM))
+    base_key = jax.random.fold_in(base_key, jnp.uint32(team))
+    keys = jax.vmap(lambda value: jax.random.fold_in(base_key, value))(signatures)
+    noise = jax.vmap(lambda key: jax.random.gumbel(key, dtype=jnp.float32))(keys)
+    usable = (probability > 0.0) & jnp.isfinite(probability) & lineup_complete
+    logits = jnp.log(jnp.maximum(probability, 1e-12)) + jnp.float32(fit_weight) * (
+        lineup_fit + tactical_fit
+    )
+    selected = jnp.argmax(jnp.where(usable, logits + noise, -jnp.inf)).astype(jnp.int32)
+    return selected, jnp.any(usable)
+
+
+def _lineup_for_layout(
+    anchor: jax.Array,
+    role: jax.Array,
+    slot_mask: jax.Array,
+    valid_candidate: jax.Array,
+    player_id: jax.Array,
+    is_goalkeeper: jax.Array,
+    preferred: jax.Array,
+    ability: jax.Array,
+    match_key: jax.Array,
+    team: int,
+    position_fit_weight: float,
+    lineup_noise_scale: float,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Return one best-XI proposal and its deterministic mean fit."""
+
+    candidates = player_id.shape[0]
+    initial = (
+        jnp.zeros((candidates,), dtype=jnp.bool_),
+        jnp.zeros((candidates,), dtype=jnp.bool_),
+        jnp.full((candidates,), NO_PLAYER, dtype=jnp.int32),
+        jnp.float32(0.0),
+        jnp.bool_(True),
+    )
+
+    def assign_slot(carry, slot_input):
+        used, starter, placement, fit_total, complete = carry
+        slot, slot_anchor, slot_role, active_slot = slot_input
+        selected_role = jnp.clip(slot_role, 0, _ROLE_ABILITY_WEIGHT.shape[0] - 1)
+        compatible = valid_candidate & (~used) & (is_goalkeeper == (selected_role == 0))
+        distance = jnp.sum((preferred - slot_anchor) ** 2, axis=-1)
+        deterministic_score = (
+            jnp.sum(ability * _ROLE_ABILITY_WEIGHT[selected_role], axis=-1)
+            - jnp.float32(position_fit_weight) * distance
         )
-        usable = jnp.any(positive)
-        selected.append(jnp.argmax(score).astype(jnp.int32))
-        usable_rows.append(usable)
-    return jnp.stack(selected), jnp.stack(usable_rows)
+        signature = _layout_signature(slot_anchor[None, :], slot_role[None])
+        keys = jax.vmap(
+            lambda identity, selected_signature=signature: _identity_key(
+                match_key,
+                team,
+                identity,
+                _OPENING_PLAYER_STREAM,
+                selected_signature,
+            )
+        )(player_id)
+        noise = jax.vmap(lambda key: jax.random.gumbel(key, dtype=jnp.float32))(keys)
+        score = deterministic_score + jnp.float32(lineup_noise_scale) * noise
+        chosen = jnp.argmax(jnp.where(compatible, score, -jnp.inf)).astype(jnp.int32)
+        has_candidate = jnp.any(compatible)
+        applies = active_slot & has_candidate
+        starter = starter.at[chosen].set(starter[chosen] | applies)
+        placement = placement.at[chosen].set(
+            jnp.where(applies, jnp.int32(slot), placement[chosen])
+        )
+        used = used.at[chosen].set(used[chosen] | applies)
+        fit_total += jnp.where(applies, deterministic_score[chosen], 0.0)
+        complete &= (~active_slot) | has_candidate
+        return (used, starter, placement, fit_total, complete), None
+
+    final, _ = jax.lax.scan(
+        assign_slot,
+        initial,
+        (jnp.arange(anchor.shape[0], dtype=jnp.int32), anchor, role, slot_mask),
+    )
+    _, starter, placement, fit_total, complete = final
+    slot_count = jnp.maximum(jnp.sum(slot_mask), 1).astype(jnp.float32)
+    return starter, placement, fit_total / slot_count, complete
 
 
 def _rank_mask(
@@ -211,18 +330,18 @@ class RuleBasedOpeningManagerPolicy:
         state: RuleOpeningManagerState,
         parameters: NoPolicyParameters = NO_POLICY_PARAMETERS,
     ) -> OpeningManagerPolicyStep[RuleOpeningManagerState]:
-        candidates, _, slots = validate_opening_policy_shapes(observations)
+        candidates, _, _ = validate_opening_policy_shapes(observations)
         _validate_state(state)
         if type(parameters) is not NoPolicyParameters:
             raise TypeError(
                 "rule opening-manager parameters must be NoPolicyParameters"
             )
 
-        layout, layout_usable = _choose_formation(observations, match_key)
-        eligible = observations.formation.valid & (~state.decided) & layout_usable
         registered = jnp.zeros((2, candidates), dtype=jnp.bool_)
         starter = jnp.zeros((2, candidates), dtype=jnp.bool_)
         placement = jnp.full((2, candidates), NO_PLAYER, dtype=jnp.int32)
+        selected_layouts = []
+        eligible_rows = []
         ability = jnp.stack(
             (
                 observations.players.max_speed,
@@ -235,61 +354,61 @@ class RuleBasedOpeningManagerPolicy:
         )
 
         for team in (TEAM_0, TEAM_1):
-            chosen_anchor = observations.formation.candidate_anchor[team, layout[team]]
-            chosen_role = observations.formation.candidate_role[team, layout[team]]
             slot_mask = observations.formation.player_mask[team]
             valid_candidate = observations.players.valid[team]
-            used = jnp.zeros((candidates,), dtype=jnp.bool_)
-            team_starter = jnp.zeros((candidates,), dtype=jnp.bool_)
-            team_placement = jnp.full((candidates,), NO_PLAYER, dtype=jnp.int32)
             preferred = observations.players.preferred_position[team]
-
-            for slot in range(slots):
-                role = jnp.clip(chosen_role[slot], 0, _ROLE_ABILITY_WEIGHT.shape[0] - 1)
-                slot_is_goalkeeper = role == 0
-                compatible = (
-                    valid_candidate
-                    & (~used)
-                    & (observations.players.is_goalkeeper[team] == slot_is_goalkeeper)
-                )
-                distance = jnp.sum((preferred - chosen_anchor[slot]) ** 2, axis=-1)
-                role_score = jnp.sum(
-                    ability[team] * _ROLE_ABILITY_WEIGHT[role], axis=-1
-                )
-                slot_signature = _layout_signature(
-                    chosen_anchor[slot : slot + 1], chosen_role[slot : slot + 1]
-                )
-                keys = jax.vmap(
-                    lambda identity, selected_team=team, signature=slot_signature: (
-                        _identity_key(
-                            match_key,
-                            selected_team,
-                            identity,
-                            _OPENING_PLAYER_STREAM,
-                            signature,
-                        )
-                    )
-                )(observations.players.player_id[team])
-                noise = jax.vmap(lambda key: jax.random.gumbel(key, dtype=jnp.float32))(
-                    keys
-                )
-                score = (
-                    role_score
-                    - self.config.position_fit_weight * distance
-                    + self.config.lineup_noise_scale * noise
-                )
-                chosen = jnp.argmax(jnp.where(compatible, score, -jnp.inf)).astype(
-                    jnp.int32
-                )
-                has_candidate = jnp.any(compatible)
-                applies = eligible[team] & slot_mask[slot] & has_candidate
-                team_starter = team_starter.at[chosen].set(
-                    team_starter[chosen] | applies
-                )
-                team_placement = team_placement.at[chosen].set(
-                    jnp.where(applies, jnp.int32(slot), team_placement[chosen])
-                )
-                used = used.at[chosen].set(used[chosen] | applies)
+            lineup_for_team = partial(
+                _lineup_for_layout,
+                slot_mask=slot_mask,
+                valid_candidate=valid_candidate,
+                player_id=observations.players.player_id[team],
+                is_goalkeeper=observations.players.is_goalkeeper[team],
+                preferred=preferred,
+                ability=ability[team],
+                match_key=match_key,
+                team=team,
+                position_fit_weight=self.config.position_fit_weight,
+                lineup_noise_scale=self.config.lineup_noise_scale,
+            )
+            (
+                layout_starters,
+                layout_placements,
+                layout_fits,
+                layout_complete,
+            ) = jax.vmap(lineup_for_team)(
+                observations.formation.candidate_anchor[team],
+                observations.formation.candidate_role[team],
+            )
+            tactical_fit = _formation_tactical_fit(
+                observations.formation.candidate_anchor[team],
+                observations.formation.candidate_role[team],
+                slot_mask,
+                self.config.team_tactical_plans[team],
+            )
+            selected_layout, layout_usable = _choose_formation(
+                observations.formation.candidate_probability[team],
+                observations.formation.candidate_anchor[team],
+                observations.formation.candidate_role[team],
+                layout_fits,
+                layout_complete,
+                tactical_fit,
+                match_key,
+                team,
+                self.config.formation_fit_weight,
+            )
+            eligible = (
+                observations.formation.valid[team]
+                & (~state.decided[team])
+                & layout_usable
+            )
+            team_starter = layout_starters[selected_layout] & eligible
+            team_placement = jnp.where(
+                eligible,
+                layout_placements[selected_layout],
+                jnp.int32(NO_PLAYER),
+            )
+            selected_layouts.append(selected_layout)
+            eligible_rows.append(eligible)
 
             registration_keys = jax.vmap(
                 lambda identity, selected_team=team: _identity_key(
@@ -314,10 +433,12 @@ class RuleBasedOpeningManagerPolicy:
                 observations.players.player_id[team],
                 observations.max_registered_players[team],
             )
-            registered = registered.at[team].set(team_registered & eligible[team])
+            registered = registered.at[team].set(team_registered & eligible)
             starter = starter.at[team].set(team_starter)
             placement = placement.at[team].set(team_placement)
 
+        layout = jnp.stack(selected_layouts)
+        eligible = jnp.stack(eligible_rows)
         formation = ManagerFormationCommand(
             requested=eligible,
             layout_index=jnp.where(eligible, layout, jnp.int32(NO_PLAYER)),

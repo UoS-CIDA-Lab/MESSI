@@ -66,3 +66,8 @@ this repository.
     counts, artifacts created, remaining uncertainties, and the exact behavior
     retained or changed with its rationale. Never claim a command passed
     if it was skipped, timed out, or failed before test collection.
+15. Treat `footballworld.match-fixture/1` fields as field-local authority.
+    Explicit complete abilities, tactical plans, formations, and starting XIs
+    are fixed inputs; only omitted fields may be sampled or policy-selected.
+    Do not add time-scripted manager actions to compensate for a rollout that
+    diverges from a historical match.

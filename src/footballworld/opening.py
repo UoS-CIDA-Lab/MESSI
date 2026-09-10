@@ -170,6 +170,7 @@ def _as_profile_and_position(
             ball_control=float(represented[3]),
             endurance_factor=float(represented[4]),
             is_goalkeeper=profile.is_goalkeeper,
+            preferred_roles=profile.preferred_roles,
         ),
         preferred,
     )
@@ -217,6 +218,7 @@ def _candidate_rows(
     team_0_candidates: Sequence[Player | PlayerProfile],
     team_1_candidates: Sequence[Player | PlayerProfile],
     sampling_key: jax.Array | None,
+    sample_abilities: tuple[tuple[bool, ...], tuple[bool, ...]] | None = None,
 ) -> tuple[
     tuple[tuple[PlayerProfile, ...], tuple[PlayerProfile, ...]],
     tuple[tuple[np.ndarray, ...], tuple[np.ndarray, ...]],
@@ -224,6 +226,19 @@ def _candidate_rows(
     source_rows = (tuple(team_0_candidates), tuple(team_1_candidates))
     if not source_rows[0] or not source_rows[1]:
         raise ValueError("both opening candidate pools must be non-empty")
+    if sample_abilities is None:
+        sample_rows = tuple(tuple(True for _ in row) for row in source_rows)
+    else:
+        if type(sample_abilities) is not tuple or len(sample_abilities) != 2:
+            raise TypeError("sample_abilities must be a pair of boolean tuples")
+        sample_rows = sample_abilities
+        for team, row in enumerate(sample_rows):
+            if type(row) is not tuple or len(row) != len(source_rows[team]):
+                raise ValueError(
+                    f"sample_abilities[{team}] must match its candidate count"
+                )
+            if any(type(value) is not bool for value in row):
+                raise TypeError("sample_abilities entries must be bool")
     profile_rows: list[tuple[PlayerProfile, ...]] = []
     position_rows: list[tuple[np.ndarray, ...]] = []
     seen: set[int] = set()
@@ -295,15 +310,37 @@ def _candidate_rows(
             )
 
         sampled_values = jax.device_get(jax.vmap(sample_one)(*columns, keys))
+        flat_sample = sample_rows[0] + sample_rows[1]
         sampled_flat = tuple(
             PlayerProfile(
                 player_id=profile.player_id,
-                max_speed_mps=float(sampled_values.max_speed[index]),
-                height_m=float(sampled_values.height[index]),
-                max_reach_height_m=float(sampled_values.reach_height[index]),
-                ball_control=float(sampled_values.ball_control[index]),
-                endurance_factor=float(sampled_values.endurance_factor[index]),
+                max_speed_mps=(
+                    float(sampled_values.max_speed[index])
+                    if flat_sample[index]
+                    else profile.max_speed_mps
+                ),
+                height_m=(
+                    float(sampled_values.height[index])
+                    if flat_sample[index]
+                    else profile.height_m
+                ),
+                max_reach_height_m=(
+                    float(sampled_values.reach_height[index])
+                    if flat_sample[index]
+                    else profile.max_reach_height_m
+                ),
+                ball_control=(
+                    float(sampled_values.ball_control[index])
+                    if flat_sample[index]
+                    else profile.ball_control
+                ),
+                endurance_factor=(
+                    float(sampled_values.endurance_factor[index])
+                    if flat_sample[index]
+                    else profile.endurance_factor
+                ),
                 is_goalkeeper=profile.is_goalkeeper,
+                preferred_roles=profile.preferred_roles,
             )
             for index, profile in enumerate(flat)
         )
@@ -400,6 +437,7 @@ def build_opening_policy_inputs(
     team_1_starters: Sequence[int] | None = None,
     max_registered_players: tuple[int, int] | None = None,
     formation_probabilities: np.ndarray | jax.Array | None = None,
+    sample_abilities: tuple[tuple[bool, ...], tuple[bool, ...]] | None = None,
     kickoff_team: int = TEAM_0,
     key: jax.Array | None = None,
 ) -> OpeningPolicyInputs:
@@ -408,7 +446,9 @@ def build_opening_policy_inputs(
     ``Player.initial_position`` is interpreted only as a normalized-policy
     preference; registered formation slots determine the actual kickoff pose.
     If roster sampling is enabled and ``key`` is supplied, every candidate is
-    sampled here exactly once with an identity-keyed stream. The realized
+    sampled here exactly once with an identity-keyed stream. ``sample_abilities``
+    may mark authored exact profiles false while omitted profiles remain true.
+    The realized
     profiles are what the policy observes and what the authoritative materializer
     later reconstructs. :func:`create_opening_match` deliberately passes
     ``key=None`` to both environment constructors, preventing a second draw.
@@ -424,7 +464,7 @@ def build_opening_policy_inputs(
     if key is not None:
         validate_prng_key(key, name="key")
     profiles, preferred = _candidate_rows(
-        env, team_0_candidates, team_1_candidates, key
+        env, team_0_candidates, team_1_candidates, key, sample_abilities
     )
     layouts = (
         _layout_catalog(team_0_formation_layouts, name="team_0_formation_layouts"),

@@ -61,14 +61,24 @@ registration/XI/placement; the adapter cannot change an already-created roster.
 `build_opening_policy_inputs` creates the pre-reset opening observation from
 host `Player` / `PlayerProfile` candidates and per-team formation catalogs. It also returns an explicit authored-selection adapter input for callers that
 want their supplied roster preserved. The built-in `RuleBasedOpeningManagerPolicy`
-does not consume that adapter: it selects registration, the exact XI, a catalog
-formation, and a unique candidate-to-slot placement from observable candidate
-profiles and preferred positions. With roster sampling enabled, the builder
+does not consume that adapter: it evaluates a feasible XI and unique
+candidate-to-slot placement for every catalog formation, then samples the
+formation from a softmax-equivalent Gumbel-max score combining its registered
+prior, best-XI fit, and the already selected tactical plan. Formation selection
+therefore occurs after abilities and tactics are known. With roster sampling enabled, the builder
 draws every candidate once in one identity-keyed vectorized operation; the
 realized values are both what the policy sees and what match construction
 receives. Candidate and catalog noise is keyed by player identity or formation
 content, so reordering either axis only reorders the corresponding output.
 Player ids are random-stream identities, never ability inputs.
+
+The long-run CLI defaults omitted tactical plans to a five-way roster-aware
+softmax. Its logits combine an equal plan prior with the realized outfield
+ability profile, and a dedicated match-key stream samples once before opening
+formation selection. An explicit team plan bypasses this draw. A strict
+`footballworld.match-fixture/1` input likewise keeps every explicit complete
+ability bundle exact, forces an explicit plan or formation, and preserves an
+explicit XI; only omitted fields use sampling or policy selection.
 
 The long-run render fixture instantiates its
 `RuleBasedOpeningManagerPolicy` explicitly rather than relying on an implicit

@@ -186,11 +186,12 @@ python demo_match.py --output output/tactical-demo \
 ```
 
 `--team-0-plan` and `--team-1-plan` accept `salida_lavolpiana`,
-`juego_de_posicion`, `gegenpress`, `catenaccio`, `zona_mista`, or `random`;
-both default to `juego_de_posicion`. A `random` selection is resolved once per
-team from a dedicated key derived from `--seed`, then remains fixed for the
-match. Replay provenance records the resolved plans and the rule-policy
-configuration fingerprint.
+`juego_de_posicion`, `gegenpress`, `catenaccio`, `zona_mista`, `auto`, or
+`random`. Omitted plans default to `auto`; `auto` and the legacy `random` alias
+sample once from a roster-ability-conditioned softmax after abilities are
+realized, then remain fixed before formation selection and for the match.
+Explicit named plans bypass this draw. Replay provenance records the softmax
+receipt, resolved plans, and rule-policy configuration fingerprint.
 
 ```bash
 JAX_PLATFORMS=cpu PYTHONPATH=src python examples/render_full_match.py \

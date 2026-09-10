@@ -39,6 +39,10 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
                 "shots_on_target": 2 + index,
                 "open_play_pass_attempts": 100,
                 "open_play_completed_passes": 90,
+                "rule_policy_cross_control_signatures": 8 + index,
+                "completed_rule_policy_cross_control_signatures": 5 + index,
+                "defensive_line_breaking_pass_proxies": 6 + index,
+                "completed_defensive_line_breaking_pass_proxies": 4 + index,
                 "possession_s": 1_000.0 + index,
                 "penalty_area_entries": 3,
                 "corners": 2,
@@ -49,6 +53,7 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
     _write_json(
         output / "report" / "report.json",
         {
+            "metrics_schema": "footballworld.match-metrics/12",
             "quality": {
                 "hashes_verified": True,
                 "full_duration_complete": True,
@@ -120,8 +125,21 @@ def test_multi_report_writes_json_and_html_with_individual_links(tmp_path):
     assert "Policy league standings" in html_path.read_text(encoding="utf-8")
     assert "open match report" in html_path.read_text(encoding="utf-8")
     assert json.loads(json_path.read_text())["schema"] == (
-        "footballworld.tactical-matrix-report/1"
+        "footballworld.tactical-matrix-report/2"
     )
+
+
+def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
+    report = build_tactical_matrix_report(_matrix(tmp_path))
+
+    alpha = next(row for row in report["policy_aggregates"] if row["plan"] == "alpha")
+    assert alpha["rule_policy_cross_control_signatures"] == 34
+    assert alpha["completed_rule_policy_cross_control_signatures"] == 22
+    assert alpha["defensive_line_breaking_pass_proxies"] == 26
+    assert alpha["completed_defensive_line_breaking_pass_proxies"] == 18
+    rendered = render_tactical_matrix_html(report, output_dir=tmp_path / "report")
+    assert "Cross signatures (received)" in rendered
+    assert "Line breaks (received)" in rendered
 
 
 def test_multi_report_rejects_duplicate_ordered_cells(tmp_path):
@@ -131,6 +149,20 @@ def test_multi_report_rejects_duplicate_ordered_cells(tmp_path):
     _write_json(summary, value)
 
     with pytest.raises(ValueError, match="duplicate ordered cell"):
+        build_tactical_matrix_report(summary)
+
+
+def test_multi_report_rejects_old_child_metrics_instead_of_defaulting_to_zero(
+    tmp_path,
+):
+    summary = _matrix(tmp_path)
+    value = json.loads(summary.read_text())
+    child = Path(value["matches"][0]["output"]) / "report" / "report.json"
+    report = json.loads(child.read_text())
+    report["metrics_schema"] = "footballworld.match-metrics/11"
+    _write_json(child, report)
+
+    with pytest.raises(ValueError, match="unsupported child metrics schema"):
         build_tactical_matrix_report(summary)
 
 

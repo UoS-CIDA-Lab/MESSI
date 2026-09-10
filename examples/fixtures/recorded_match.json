@@ -1,0 +1,48 @@
+{
+  "schema": "footballworld.match-fixture/1",
+  "match_id": "example-recorded-initial-conditions",
+  "provenance": {
+    "kind": "estimated",
+    "source": "illustrative match-sheet transcription",
+    "notes": "Values are an example schema fixture, not measured player constants."
+  },
+  "seed": 29,
+  "kickoff_team": 0,
+  "teams": [
+    {
+      "name": "Home",
+      "tactical_plan": "juego_de_posicion",
+      "formation": {"name": "4-3-3"},
+      "starting_player_ids": [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+      "players": [
+        {"player_id": 100, "name": "Home GK", "is_goalkeeper": true, "preferred_roles": ["GK"], "abilities": {"max_speed_mps": 7.2, "height_m": 1.9, "max_reach_height_m": 2.85, "ball_control": 0.55, "endurance_factor": 1.0}},
+        {"player_id": 101, "preferred_roles": ["CB"]},
+        {"player_id": 102, "preferred_roles": ["CB"]},
+        {"player_id": 103, "preferred_roles": ["FB"]},
+        {"player_id": 104, "preferred_roles": ["FB"]},
+        {"player_id": 105, "preferred_roles": ["CM"]},
+        {"player_id": 106, "preferred_roles": ["CM"]},
+        {"player_id": 107, "preferred_roles": ["CM"]},
+        {"player_id": 108, "preferred_roles": ["WF"]},
+        {"player_id": 109, "preferred_roles": ["CF"]},
+        {"player_id": 110, "preferred_roles": ["WF"]}
+      ]
+    },
+    {
+      "name": "Away",
+      "players": [
+        {"player_id": 200, "name": "Away GK", "is_goalkeeper": true, "preferred_roles": ["GK"]},
+        {"player_id": 201, "preferred_roles": ["CB"]},
+        {"player_id": 202, "preferred_roles": ["CB"]},
+        {"player_id": 203, "preferred_roles": ["FB"]},
+        {"player_id": 204, "preferred_roles": ["FB"]},
+        {"player_id": 205, "preferred_roles": ["CM"]},
+        {"player_id": 206, "preferred_roles": ["CM"]},
+        {"player_id": 207, "preferred_roles": ["WM"]},
+        {"player_id": 208, "preferred_roles": ["WM"]},
+        {"player_id": 209, "preferred_roles": ["CF"]},
+        {"player_id": 210, "preferred_roles": ["CF"]}
+      ]
+    }
+  ]
+}

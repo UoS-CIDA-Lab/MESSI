@@ -16,16 +16,18 @@ python demo_match.py --output output/tactical-demo \
 
 `--team-0-plan` and `--team-1-plan` independently accept
 `salida_lavolpiana`, `juego_de_posicion`, `gegenpress`, `catenaccio`,
-`zona_mista`, or `random`; each option defaults to `juego_de_posicion`.
-`random` is resolved once for each requesting team from a dedicated PRNG key
-derived from `--seed`. The two resolved plans are then fixed for the whole
-match. Replay provenance records those resolved plan names and the SHA-256
+`zona_mista`, `auto`, or `random`; omission defaults to `auto`. `auto` and the
+legacy `random` alias are resolved once per requesting team from a softmax of
+the equal plan prior plus the already-realized outfield ability profile. The
+seeded selections are then fixed before formation selection and for the whole
+match. An explicit named plan bypasses the softmax. Replay provenance records
+the logits, probabilities, resolved plan names, and the SHA-256
 fingerprint of the canonical `RulePolicyConfig`, so the effective policy input
 can be audited without treating a requested `random` label as the realized
 configuration.
 
-FootballWorld uses side-specific selection and seeded, independent random
-resolution because those properties make comparisons
+FootballWorld uses side-specific selection and seeded, independent softmax
+sampling because those properties make comparisons
 reproducible and prevent one side's request from determining the other's.
 FootballWorld rejects the continuous style-vector mechanism for this
 surface: its rule policy defines five named, mechanism-specific tactical plans,
@@ -33,6 +35,17 @@ so the CLI selects among those explicit plans rather than interpolating an
 unidentified vector whose values would not map to FootballWorld's tactical
 branches. Plan resolution and receipt construction stay host-side and add no
 state, branch, or operation to the JAX transition.
+
+For recorded or estimated initial conditions, pass the strict host-only
+fixture described in `docs/match-fixture-format.md`:
+
+```bash
+python demo_match.py --output output/recorded-initial-state \
+  --match-fixture examples/fixtures/recorded_match.json
+```
+
+Explicit complete abilities, tactics, formations, and starting XIs are fixed;
+only omitted fields use sampling or automatic policy selection.
 
 ## Full matches and selected intervals
 
