@@ -46,6 +46,11 @@ from footballworld.policies.manager import (
     ManagerPolicyStep,
     NoPolicyParameters,
 )
+from footballworld.policies.rule_based.tactical_plan import (
+    TacticalPlan,
+    canonical_tactical_plan,
+    tactical_plan_code,
+)
 from footballworld.rules.restart import (
     RESTART_TAKER_TEMPERATURE,
     restart_taker_random_key,
@@ -138,6 +143,19 @@ _ROLE_SUBSTITUTION_PROPENSITY = jnp.asarray(
     [0.000, 0.049, 0.100, 0.165, 0.220, 0.221, 0.259],
     dtype=jnp.float32,
 )
+# [in-possession depth, in-possession width, out-of-possession defender share,
+# out-of-possession compactness]. These are coaching-inspired DESIGN_PRIORS,
+# not measured formation-transition rates.
+_TACTICAL_PHASE_FORMATION_WEIGHT = jnp.asarray(
+    [
+        [0.40, 0.20, 0.25, 0.20],  # salida lavolpiana
+        [0.65, 0.60, 0.15, 0.10],  # juego de posicion
+        [0.70, 0.20, 0.30, 0.55],  # gegenpress
+        [0.15, 0.05, 0.75, 0.65],  # catenaccio
+        [0.30, 0.40, 0.50, 0.45],  # zona mista
+    ],
+    dtype=jnp.float32,
+)
 
 
 def _prefer_declared_role_candidates(
@@ -178,9 +196,16 @@ class RuleManagerConfig:
     formation_width_gain: float = 0.12
     formation_incumbent_bonus: float = 0.30
     formation_noise_scale: float = 0.04
+    formation_phase_gain: float = 0.55
+    team_tactical_plans: tuple[TacticalPlan | str, TacticalPlan | str] = (
+        TacticalPlan.SALIDA_LAVOLPIANA,
+        TacticalPlan.SALIDA_LAVOLPIANA,
+    )
 
     def __post_init__(self) -> None:
         for field in fields(self):
+            if field.name == "team_tactical_plans":
+                continue
             value = getattr(self, field.name)
             if isinstance(value, bool) or not isinstance(value, Real):
                 raise TypeError(f"{field.name} must be a real number")
@@ -204,9 +229,18 @@ class RuleManagerConfig:
             "formation_width_gain",
             "formation_incumbent_bonus",
             "formation_noise_scale",
+            "formation_phase_gain",
         ):
             if getattr(self, name) < 0.0:
                 raise ValueError(f"{name} must be non-negative")
+        plans = self.team_tactical_plans
+        if not isinstance(plans, tuple) or len(plans) != 2:
+            raise ValueError("team_tactical_plans must contain exactly two plans")
+        object.__setattr__(
+            self,
+            "team_tactical_plans",
+            (canonical_tactical_plan(plans[0]), canonical_tactical_plan(plans[1])),
+        )
 
 
 class RuleManagerState(NamedTuple):
@@ -285,6 +319,24 @@ def _normalized_candidate_score(
         jnp.float32(0.5),
     )
     return jnp.where(candidate, normalized, jnp.float32(0.0)).astype(jnp.float32)
+
+
+def _formation_phase_fit(
+    attack_depth: jax.Array,
+    width: jax.Array,
+    defender_fraction: jax.Array,
+    owns_next_possession: jax.Array,
+    defends_next_possession: jax.Array,
+    tactical_plan: TacticalPlan | str,
+) -> jax.Array:
+    """Score phase-specific shape without inferring unobserved live possession."""
+
+    weight = _TACTICAL_PHASE_FORMATION_WEIGHT[tactical_plan_code(tactical_plan)]
+    return owns_next_possession.astype(jnp.float32) * (
+        weight[0] * attack_depth + weight[1] * width
+    ) + defends_next_possession.astype(jnp.float32) * (
+        weight[2] * defender_fraction + weight[3] * (jnp.float32(1.0) - width)
+    )
 
 
 def _effective_formation_change_tick(
@@ -661,6 +713,18 @@ class RuleBasedManager:
             width = _normalized_candidate_score(
                 observations.formation_candidate_width[team], valid_layout
             )
+            owns_next_possession = observations.restart_team[team] == jnp.int32(team)
+            defends_next_possession = observations.restart_team[team] == jnp.int32(
+                other
+            )
+            phase_fit = _formation_phase_fit(
+                attack_depth,
+                width,
+                defender_fraction,
+                owns_next_possession,
+                defends_next_possession,
+                self.config.team_tactical_plans[team],
+            )
             base_score = (
                 self.config.formation_attack_gain * chase * attack_depth
                 + self.config.formation_protect_gain * protect * defender_fraction
@@ -668,6 +732,7 @@ class RuleBasedManager:
                 * (fitness - jnp.float32(0.5))
                 * width
                 + self.config.formation_prior_weight * jnp.log(jnp.maximum(prior, 1e-6))
+                + self.config.formation_phase_gain * phase_fit
             )
             layout_keys = jax.vmap(
                 lambda signature, boundary_tick=restart_tick[team], selected_team=team: (

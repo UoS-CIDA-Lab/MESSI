@@ -50,8 +50,10 @@ from footballworld.analysis import (
 )
 from footballworld.config.match_fixture import LoadedMatchFixture, load_match_fixture
 from footballworld.policies import (
+    RuleManagerConfig,
     RulePolicyConfig,
     TacticalPlan,
+    make_rule_based_manager,
     make_rule_based_policy,
     policy_config_fingerprint,
     select_tactical_plans_from_abilities,
@@ -1254,9 +1256,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         opening_decision,
         kickoff_team=int(opening_arguments.get("kickoff_team", 0)),
     )
+    manager_config = RuleManagerConfig(
+        team_tactical_plans=resolved_tactical_plans,
+    )
+    manager_policy = make_rule_based_manager(env, manager_config)
     runner = make_managed_runner(
         env,
         player_policy=player_policy,
+        manager_policy=manager_policy,
         chunk_steps=args.event_chunk,
     )
     match = created
@@ -1285,6 +1292,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         "decision": _opening_decision_receipt(
             opening_inputs.observation,
             opening_decision,
+        ),
+    }
+    manager_config_receipt = asdict(manager_config)
+    rule_manager_policy_receipt = {
+        "class": f"{type(manager_policy).__module__}.{type(manager_policy).__qualname__}",
+        "config": manager_config_receipt,
+        "config_sha256": _canonical_json_sha256(manager_config_receipt),
+        "config_hash_basis": "SHA-256 of sorted compact canonical JSON",
+        "formation_phase_basis": (
+            "restart ownership projects the next observable possession phase; "
+            "score, time, fitness, tactical plan, and minimum hold remain active"
         ),
     }
     if loaded_fixture is None:
@@ -1351,11 +1369,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "formation_catalog": [list(names) for names in formation_names],
                 "formation_probability_basis": (
                     "exact fixture selections are one-hot; omitted selections use "
-                    "an equal structural design prior, not a measured frequency"
+                    "an equal prior among starting shapes while the in-possession "
+                    "3-2-5 has zero automatic prior; neither is a measured frequency"
                 ),
                 "match_fixture": match_fixture_receipt,
                 "selected_formation": selected_formation,
                 "opening_manager": opening_manager_receipt,
+                "rule_manager_policy": rule_manager_policy_receipt,
                 "rule_player_policy": rule_player_policy_receipt,
                 "profile_sampling": profile_sampling,
                 "source_authority_at_start": {
@@ -1409,6 +1429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "capture_and_render_seconds": result.capture_and_render_seconds,
         "selected_formation": selected_formation,
         "opening_manager": opening_manager_receipt,
+        "rule_manager_policy": rule_manager_policy_receipt,
         "rule_player_policy": rule_player_policy_receipt,
         "publication_guard": publication_receipt,
         "video_decode_verified_before_publication": verify_video,

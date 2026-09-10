@@ -804,3 +804,38 @@ execution over three measured calls increased from 1.548 ms to 2.093 ms.
 Compiler cost analysis estimated 349,126 versus 798,934 FLOPs. The larger
 catalog therefore increases one-time opening work but does not add operations
 to the per-tick physics or rule-policy rollout graph.
+
+## 2026-09-11 observable phase-responsive manager formations
+
+The existing low-frequency manager boundary, environment-authoritative
+formation command, five-minute formation hold, incumbent bonus, keyed
+variation, and score/time/fitness response are retained. Formation changes
+remain legal manager transactions at observable restart boundaries rather
+than hidden per-tick state changes. This prevents formation oscillation and
+keeps manager reasoning outside the lean physics/player-policy step.
+
+The manager now receives the same fixed two-team tactical plans as the player
+and opening policies. At each new non-goalkeeper-hold restart, the restart
+owner is used as the observable projection of the next possession phase. An
+own restart adds tactic-conditioned attack-depth and width fit; an opponent
+restart adds defender-share and compact-width fit. The previous chase/protect
+score, match progress, fitness, catalog prior, and hold terms remain active,
+so phase is one input rather than a scripted formation schedule. No live
+possession is invented when the restart has no owner.
+
+The structural principles follow FIFA Training Centre's separation of
+[in-possession](https://www.fifatrainingcentre.com/en/resources-tools/football-language/in-possession/index.php)
+maintenance/progression from
+[out-of-possession](https://www.fifatrainingcentre.com/en/resources-tools/football-language/out-of-possession/index.php)
+pressure and team shape, and its description of defensive organisation through
+[horizontal and vertical compactness](https://www.fifatrainingcentre.com/en/game/game-analysis/out-of-possession/team-organisation--out-of-possession-.php).
+The FA's coaching overview likewise treats the regain/loss moment as a distinct
+[transition phase](https://www.thefa.com/bootroom/resources/coaching/what-is-transition).
+The resulting four-value tactic table and default phase gain are declared
+DESIGN_PRIORS, not measured transition frequencies or universal football
+constants.
+
+The full-match example explicitly constructs this configured manager and
+publishes its complete configuration and hash in replay metadata and the
+summary. Explicit fixture tactics continue to remain fixed; omitted tactics
+continue to use the existing roster-conditioned opening selection.
