@@ -676,7 +676,7 @@ class _ManagedBoundaryResult(NamedTuple):
 def _make_managed_event_chunk(
     runner: ManagedRunner,
     num_steps: int,
-    render_fps: float,
+    render_fps: float | None,
 ):
     """Build an exact-event scan that pauses at the same manager boundaries."""
 
@@ -1558,11 +1558,27 @@ def make_event_capture_runner(
 def _compiled_managed_event_chunk(
     runner: ManagedRunner,
     event_chunk_steps: int,
-    render_fps: float,
+    render_fps: float | None,
 ):
     """Reuse event and manager executables across repeated managed captures."""
 
     return jax.jit(_make_managed_event_chunk(runner, event_chunk_steps, render_fps))
+
+
+def _managed_capture_chunk_kernel(
+    runner: ManagedRunner,
+    event_chunk_steps: int,
+    render_fps: float,
+    *,
+    render_video: bool,
+):
+    """Select the fixed event kernel without retaining unused visual samples."""
+
+    return _compiled_managed_event_chunk(
+        runner,
+        event_chunk_steps,
+        render_fps if render_video else None,
+    )
 
 
 @lru_cache(maxsize=16)
@@ -2033,7 +2049,12 @@ def render_managed_event_match(
     watchdog = _RestartWatchdog.from_environment(env)
     start_control_tick = _host_control_tick(current.rollout)
     started = time.perf_counter()
-    chunk_kernel = _compiled_managed_event_chunk(runner, event_chunk_steps, render_fps)
+    chunk_kernel = _managed_capture_chunk_kernel(
+        runner,
+        event_chunk_steps,
+        render_fps,
+        render_video=render_video,
+    )
     manager_kernel = _compiled_exact_manager_decision(
         runner,
         respect_environment_manager_switches,

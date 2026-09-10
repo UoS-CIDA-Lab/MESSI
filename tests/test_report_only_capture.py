@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from footballworld.rendering.capture import (
+    _managed_capture_chunk_kernel,
     _replace_last_render_sample,
     _WindowSink,
 )
@@ -25,6 +26,43 @@ class _FakeSpool:
         for path in paths:
             path.write_bytes(b"x")
         return paths
+
+
+def test_report_only_managed_kernel_omits_visual_samples(monkeypatch):
+    selected = []
+    marker = object()
+
+    def compiled(runner, event_chunk_steps, render_fps):
+        selected.append((runner, event_chunk_steps, render_fps))
+        return marker
+
+    monkeypatch.setattr(
+        "footballworld.rendering.capture._compiled_managed_event_chunk",
+        compiled,
+    )
+    runner = object()
+
+    assert (
+        _managed_capture_chunk_kernel(
+            runner,
+            256,
+            20.0,
+            render_video=False,
+        )
+        is marker
+    )
+    assert selected.pop() == (runner, 256, None)
+
+    assert (
+        _managed_capture_chunk_kernel(
+            runner,
+            256,
+            20.0,
+            render_video=True,
+        )
+        is marker
+    )
+    assert selected.pop() == (runner, 256, 20.0)
 
 
 def test_manager_boundary_endpoint_replacement_skips_report_only_groups():
