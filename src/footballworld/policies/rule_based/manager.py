@@ -339,6 +339,13 @@ def _formation_phase_fit(
     )
 
 
+def _formation_change_boundary(restart_kind: jax.Array) -> jax.Array:
+    """Return restart kinds whose projector fully resets the taker and shape."""
+
+    kind = jnp.asarray(restart_kind, dtype=jnp.int32)
+    return (kind == jnp.int32(RK_KICKOFF)) | (kind == jnp.int32(RK_GOALKICK))
+
+
 def _effective_formation_change_tick(
     policy_tick: jax.Array,
     tactical_epoch: jax.Array,
@@ -765,7 +772,7 @@ class RuleBasedManager:
             )
             request = (
                 new_restart[team]
-                & (observations.restart_kind[team] != RK_GK_HOLD)
+                & _formation_change_boundary(observations.restart_kind[team])
                 & held
                 & jnp.any(valid_layout)
                 & (selected != current)

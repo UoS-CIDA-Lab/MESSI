@@ -1,8 +1,12 @@
 import jax.numpy as jnp
 import numpy as np
 
+from footballworld.core.constants import RK_CORNER, RK_FREEKICK, RK_GOALKICK, RK_KICKOFF
 from footballworld.policies import RuleManagerConfig, TacticalPlan
-from footballworld.policies.rule_based.manager import _formation_phase_fit
+from footballworld.policies.rule_based.manager import (
+    _formation_change_boundary,
+    _formation_phase_fit,
+)
 
 
 def test_manager_tactical_plans_are_canonical_and_two_team():
@@ -54,3 +58,10 @@ def test_phase_fit_is_inactive_when_restart_has_no_team():
     )
 
     np.testing.assert_array_equal(score, np.zeros(2, dtype=np.float32))
+
+
+def test_formation_change_uses_only_full_reposition_restart_boundaries():
+    assert bool(_formation_change_boundary(jnp.int32(RK_KICKOFF)))
+    assert bool(_formation_change_boundary(jnp.int32(RK_GOALKICK)))
+    assert not bool(_formation_change_boundary(jnp.int32(RK_FREEKICK)))
+    assert not bool(_formation_change_boundary(jnp.int32(RK_CORNER)))

@@ -839,3 +839,15 @@ The full-match example explicitly constructs this configured manager and
 publishes its complete configuration and hash in replay metadata and the
 summary. Explicit fixture tactics continue to remain fixed; omitted tactics
 continue to use the existing roster-conditioned opening selection.
+
+Full-match seed-29 Gegenpress self-play exposed a deterministic liveness
+interaction at control tick 45,205: changing formation during a continuous
+free-kick approach preserved the old taker's causal position while projecting
+the remaining players into the new layout, and the restart never regained its
+layout-ready gate. The manager therefore limits formation commands to kickoffs
+and goal kicks, whose restart projectors fully reset the taker and team shape.
+Free kicks, offside restarts, corners, and throw-ins retain their continuous
+approach contract without an in-flight formation mutation. This is a
+correctness restriction on command timing, not a change to formation scoring;
+score, phase, fitness, tactic, hysteresis, and keyed choice remain active at
+the safe boundaries.
