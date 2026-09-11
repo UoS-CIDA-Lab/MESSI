@@ -239,10 +239,14 @@ A tighter regulation-surface
 crop increases the pitch's screen occupancy while alternating grass, cropped
 sloped stands, regulation 3D goal frames and nets, the ball's real height, and
 the retained top-down minimap preserve spatial context. Each player uses one
-team-coloured compound silhouette with a distinct head and a compact
-shirt/arms/legs outline. It remains one batched scatter collection rather than
-per-player body patches, and retains the existing team, goalkeeper, dismissal,
-number, and depth-scale semantics. The aerial recovery countdown drives a
+team-coloured chibi silhouette with a deliberately enlarged head, compressed
+torso, and the identifying number centred inside the head. A small prebuilt
+pose palette makes the two legs alternate from causal tracking velocity and
+video time while a stationary player holds the neutral pose. The figures
+remain one batched scatter collection rather than per-player body patches, and
+retain the existing team, goalkeeper, dismissal, number, and depth-scale
+semantics. The gait is host-only presentation state: it neither changes nor
+feeds back into player velocity. The aerial recovery countdown drives a
 bounded sine arc, so the silhouette visibly rises and returns after a high-ball
 contact without requiring historical frames. Its ground-anchored recovery ring and shrinking shadow
 reinforce the jump without changing the player's physical position. The two stamina bars use full-capacity dark rails, which keep
@@ -345,6 +349,16 @@ For a clipped window, only the preceding `adjudication_seconds` worth of host
 visual frames are inspected to restore a still-active banner. Event rows from
 outside the selected window are not copied into that window's `event.json`.
 
+A goal has an additional, stricter presentation contract. The exact goal frame
+is frozen for `goal_hold_seconds`, which defaults to exactly 2.0 video seconds,
+and only then does playback resume at the next sampled environment frame. The
+environment clock, score transition, and conceding team's immediate kickoff
+remain unchanged; only the encoded video timeline is lengthened. After the
+hold, every subsequent environment sample is retained while the otherwise
+carried goal banner is stripped. This prevents the kickoff from moving behind
+the celebration panel without deleting it, and the render receipt records both
+the duration and these host-only semantics.
+
 The cached 4:30--4:40 comparison around source frame 4,094 contains the exact
 foul banner for player 2007 (display slot 17) on player 1014 (display slot 6).
 Both before and after clips contain 150 frames at 1,920x1,080 and 15 Hz. On the
@@ -358,7 +372,8 @@ receipt is preserved.
 
 Each managed/default output directory contains:
 
-- `match.mp4`: H264 replay on the exact source time axis.
+- `match.mp4`: H264 replay on the source time axis, except for the explicitly
+  receipted two-second frozen presentation inserted at each goal.
 - `tracking.npz`: lossless fixed-dtype state records grouped into bounded
   NumPy chunks, one structured `.npy` member per rollout chunk.
 - `event.json`: requested intent plus exact realized events.

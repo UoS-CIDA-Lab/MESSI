@@ -232,6 +232,7 @@ class ReplaySidecarSpool:
         video_frame_count: int,
         video_fps: float,
         sample_every: int,
+        presentation_frame_delta: int = 0,
         render_metadata: Any,
         video_verification: str,
         completion: dict[str, Any] | None = None,
@@ -483,9 +484,13 @@ class ReplaySidecarSpool:
         )
         if int(video_sample_frame_count) != expected_sample_frames:
             raise ValueError("video sample grid and source duration are inconsistent")
+        if isinstance(presentation_frame_delta, bool) or not isinstance(
+            presentation_frame_delta, int
+        ):
+            raise TypeError("presentation_frame_delta must be an integer")
         expected_video_frames = (
             int(video_sample_frame_count) + int(sample_every) - 1
-        ) // int(sample_every)
+        ) // int(sample_every) + presentation_frame_delta
         if int(video_frame_count) != expected_video_frames:
             raise ValueError("video and source frame counts are inconsistent")
         if event_contract is None or metadata_contract is None:
@@ -494,6 +499,7 @@ class ReplaySidecarSpool:
         first_metadata["tracking_frame_count"] = self._frame_count
         first_metadata["video_sample_frame_count"] = int(video_sample_frame_count)
         first_metadata["video_frame_count"] = int(video_frame_count)
+        first_metadata["presentation_frame_delta"] = presentation_frame_delta
         first_metadata["tracking_fps"] = (
             self.control_fps if uniform and self._frame_count > 1 else None
         )

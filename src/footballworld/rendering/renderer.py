@@ -206,7 +206,7 @@ def _player_intent_painter_order(
     intent_rings: Any,
     players: Any,
 ) -> tuple[Any, ...]:
-    """Return back-to-front field cues so player spheres occlude intent rings."""
+    """Return back-to-front field cues so player figures occlude intent rings."""
 
     return (
         field_of_view_fan,
@@ -396,48 +396,90 @@ def _goal_overlay_font_sizes(style: RenderStyle) -> tuple[float, float]:
     return 20.0 * scale, 8.5 * scale
 
 
-def _player_marker_geometry() -> tuple[np.ndarray, np.ndarray]:
-    """Return one compact footballer silhouette for the scatter collection.
+def _player_marker_geometry(leg_swing: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """Return one compact chibi footballer pose for the scatter collection.
 
-    A compound path keeps the head and shirt/legs distinct while retaining one
-    batched artist for every player.  This improves the visual identity over a
-    generic circular token without adding per-player patches or frame history.
+    The deliberately enlarged head is centred on the marker origin so the
+    existing shirt-number text sits inside it.  Torso, independently swinging
+    legs, and head remain one compound path; callers can prebuild a small pose
+    palette without adding any rollout state or per-player patch artists.
     """
 
     move, line, close = 1, 2, 79  # matplotlib.path.Path codes
-    body = np.asarray(
+    swing = float(np.clip(leg_swing, -1.0, 1.0))
+    torso = np.asarray(
         (
-            (-0.22, 0.34),
-            (-0.46, 0.12),
-            (-0.34, -0.08),
-            (-0.23, 0.02),
-            (-0.18, -0.36),
-            (-0.37, -0.78),
-            (-0.15, -0.86),
-            (0.00, -0.49),
-            (0.15, -0.86),
-            (0.37, -0.78),
-            (0.18, -0.36),
-            (0.23, 0.02),
-            (0.34, -0.08),
-            (0.46, 0.12),
-            (0.22, 0.34),
-            (-0.22, 0.34),
+            (-0.17, -0.28),
+            (-0.40, -0.42),
+            (-0.34, -0.61),
+            (-0.20, -0.51),
+            (-0.15, -0.78),
+            (0.15, -0.78),
+            (0.20, -0.51),
+            (0.34, -0.61),
+            (0.40, -0.42),
+            (0.17, -0.28),
+            (-0.17, -0.28),
+        ),
+        dtype=np.float64,
+    )
+    left_leg = np.asarray(
+        (
+            (-0.15, -0.70),
+            (-0.01, -0.72),
+            (-0.04 + 0.18 * swing, -1.05),
+            (-0.20 + 0.18 * swing, -1.05),
+            (-0.15, -0.70),
+        ),
+        dtype=np.float64,
+    )
+    right_leg = np.asarray(
+        (
+            (0.01, -0.72),
+            (0.15, -0.70),
+            (0.20 - 0.18 * swing, -1.05),
+            (0.04 - 0.18 * swing, -1.05),
+            (0.01, -0.72),
         ),
         dtype=np.float64,
     )
     theta = np.linspace(0.0, 2.0 * np.pi, 13)
-    head = np.column_stack((0.19 * np.cos(theta), 0.19 * np.sin(theta) + 0.66))
-    vertices = np.concatenate((body, head), axis=0)
-    body_codes = np.asarray(
-        (move, *(line for _ in range(body.shape[0] - 2)), close),
-        dtype=np.uint8,
+    head = np.column_stack((0.34 * np.cos(theta), 0.34 * np.sin(theta)))
+
+    parts = (torso, left_leg, right_leg, head)
+    vertices = np.concatenate(parts, axis=0)
+    codes = np.concatenate(
+        tuple(
+            np.asarray(
+                (move, *(line for _ in range(part.shape[0] - 2)), close),
+                dtype=np.uint8,
+            )
+            for part in parts
+        )
     )
-    head_codes = np.asarray(
-        (move, *(line for _ in range(head.shape[0] - 2)), close),
-        dtype=np.uint8,
-    )
-    return vertices, np.concatenate((body_codes, head_codes))
+    return vertices, codes
+
+
+_PLAYER_WALK_SWINGS = np.linspace(-1.0, 1.0, 7, dtype=np.float32)
+
+
+def _player_walk_pose_indices(
+    player_velocity: np.ndarray,
+    active: np.ndarray,
+    *,
+    video_seconds: float,
+) -> np.ndarray:
+    """Quantize causal velocity into a small deterministic walking palette."""
+
+    velocity = np.asarray(player_velocity, dtype=np.float32)
+    speed = np.linalg.norm(velocity, axis=-1)
+    cadence_hz = 1.35 + 0.22 * np.clip(speed, 0.0, 7.0)
+    slot_phase = np.arange(speed.size, dtype=np.float32) * np.float32(0.173)
+    phase = 2.0 * np.pi * (np.float32(video_seconds) * cadence_hz + slot_phase)
+    swing = np.sin(phase) * np.clip(speed / 2.5, 0.0, 1.0)
+    centre = _PLAYER_WALK_SWINGS.size // 2
+    indices = np.rint((swing + 1.0) * centre).astype(np.int32)
+    return np.where(np.asarray(active) & (speed >= 0.2), indices, centre)
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,6 +492,7 @@ class _VisualFrame:
     ball_position: np.ndarray
     ball_live: bool
     player_position: np.ndarray
+    player_velocity: np.ndarray
     player_body_forward: np.ndarray
     player_gaze_yaw: np.ndarray
     aerial_progress: np.ndarray
@@ -705,6 +748,54 @@ def _propagate_adjudications(
     return propagated
 
 
+def _insert_goal_presentation_holds(
+    frames: list[_VisualFrame], *, video_fps: float, duration_seconds: float
+) -> list[_VisualFrame]:
+    """Replace each carried goal interval with one exact frozen video hold.
+
+    The source rollout remains untouched and may restart immediately. Reusing
+    the immutable goal frame delays only the presentation timeline, preventing
+    live kickoff motion from being hidden behind the celebration overlay.
+    """
+
+    presented_origin: int | None = None
+    result: list[_VisualFrame] = []
+    for frame in frames:
+        expanded, presented_origin = _goal_presentation_frames(
+            frame,
+            presented_origin,
+            video_fps=video_fps,
+            duration_seconds=duration_seconds,
+        )
+        result.extend(expanded)
+    return result
+
+
+def _goal_presentation_frames(
+    frame: _VisualFrame,
+    presented_origin: int | None,
+    *,
+    video_fps: float,
+    duration_seconds: float,
+) -> tuple[list[_VisualFrame], int | None]:
+    """Expand one frame while retaining post-goal environment samples."""
+
+    adjudication = frame.adjudication
+    if adjudication is None or not adjudication.goal:
+        return [frame], presented_origin
+    origin = adjudication.origin_control_tick
+    if origin != presented_origin:
+        hold_frames = max(1, round(float(video_fps) * float(duration_seconds)))
+        return [frame] * hold_frames, origin
+    if frame.control_tick == origin:
+        # Multiple physics-backed samples can describe the same goal control
+        # transition. The first frozen sample already represents that cell.
+        return [], presented_origin
+    # Banner carry supplies chunk continuity, but presentation must resume at
+    # the very next environment sample rather than discard live kickoff time.
+    return [replace(frame, adjudication=None)], presented_origin
+
+
 def _high_head_contact_mask(frame: HostFrame, *, ball_radius_m: float) -> np.ndarray:
     """Locate realized above-stature headers from exact contact sidecars."""
     mask = np.zeros(frame.player_position.shape[0], dtype=bool)
@@ -797,6 +888,7 @@ def _visual_frame(
         ball_position=frame.ball_position,
         ball_live=frame.ball_live,
         player_position=frame.player_position,
+        player_velocity=frame.player_velocity,
         player_body_forward=frame.player_body_forward,
         player_gaze_yaw=frame.player_gaze_yaw,
         aerial_progress=aerial_progress,
@@ -1511,7 +1603,7 @@ class ReplayRenderer:
         fps: float,
         faststart: bool = True,
     ) -> Path:
-        """Render an independent contiguous frame range to one MP4."""
+        """Render an independent, presentation-prepared frame range to MP4."""
         if not frames:
             raise ValueError("frames must not be empty")
         if (
@@ -1521,11 +1613,6 @@ class ReplayRenderer:
             or float(fps) <= 0.0
         ):
             raise ValueError("fps must be a finite positive real scalar")
-        frames = _propagate_adjudications(
-            frames,
-            control_fps=self.control_fps,
-            duration_seconds=self.style.adjudication_seconds,
-        )
         (
             imageio,
             plt,
@@ -1792,11 +1879,15 @@ class ReplayRenderer:
             linewidths=0,
             zorder=4,
         )
+        walk_paths = tuple(
+            MplPath(*_player_marker_geometry(float(swing)))
+            for swing in _PLAYER_WALK_SWINGS
+        )
         players = ax.scatter(
             zeros[:, 0],
             zeros[:, 1],
             s=style.player_size,
-            marker=MplPath(*_player_marker_geometry()),
+            marker=walk_paths[_PLAYER_WALK_SWINGS.size // 2],
             c=colors,
             edgecolors="#101010",
             linewidths=1.0,
@@ -1849,7 +1940,7 @@ class ReplayRenderer:
                 0,
                 number_labels[i],
                 color="white",
-                fontsize=8.0,
+                fontsize=6.2,
                 weight="bold",
                 ha="center",
                 va="center",
@@ -2032,6 +2123,17 @@ class ReplayRenderer:
                 player_shadow.set_sizes(size * (0.92 - 0.24 * jump_phase))
                 players.set_offsets(display_pos)
                 players.set_sizes(size)
+                video_seconds = (
+                    float(frame.video_time_s)
+                    if frame.video_time_s is not None
+                    else float(frame.control_tick) / self.control_fps
+                )
+                walk_pose = _player_walk_pose_indices(
+                    frame.player_velocity,
+                    active,
+                    video_seconds=video_seconds,
+                )
+                players.set_paths([walk_paths[index] for index in walk_pose])
                 goalkeeper_changed = not np.array_equal(
                     frame.is_goalkeeper, cached_goalkeeper
                 )
@@ -2570,8 +2672,34 @@ def render_mp4(
     sample_indices = _resample_indices(frames, control_fps, float(fps))
     indices = sample_indices[::every]
     video_sample_frame_count = len(sample_indices)
-    video_frame_count = len(indices)
-    render_fps = video_frame_count * float(fps) / video_sample_frame_count
+    sampled_frame_count = len(indices)
+    render_fps = sampled_frame_count * float(fps) / video_sample_frame_count
+    source_render_frames = [
+        _visual_frame(
+            frame,
+            max_outfield_aerial_recovery_substeps=(
+                max_outfield_aerial_recovery_substeps
+            ),
+            max_goalkeeper_aerial_recovery_substeps=(
+                max_goalkeeper_aerial_recovery_substeps
+            ),
+            ball_radius_m=ball_radius_m,
+        )
+        for frame in frames
+    ]
+    source_render_frames = _propagate_adjudications(
+        source_render_frames,
+        control_fps=control_fps,
+        duration_seconds=style.adjudication_seconds,
+    )
+    render_frames = [source_render_frames[int(index)] for index in indices]
+    render_frames = _insert_goal_presentation_holds(
+        render_frames,
+        video_fps=render_fps,
+        duration_seconds=style.goal_hold_seconds,
+    )
+    video_frame_count = len(render_frames)
+    del source_render_frames
     if workers == 1 or video_frame_count < _MIN_PARALLEL_RENDER_FRAMES:
         planned_chunk_frames = video_frame_count
         segment_count = 1
@@ -2633,26 +2761,6 @@ def render_mp4(
         collect_exact_events=False,
         include_all_action_controls=exact_actions,
     )
-    source_render_frames = [
-        _visual_frame(
-            frame,
-            max_outfield_aerial_recovery_substeps=(
-                max_outfield_aerial_recovery_substeps
-            ),
-            max_goalkeeper_aerial_recovery_substeps=(
-                max_goalkeeper_aerial_recovery_substeps
-            ),
-            ball_radius_m=ball_radius_m,
-        )
-        for frame in frames
-    ]
-    source_render_frames = _propagate_adjudications(
-        source_render_frames,
-        control_fps=control_fps,
-        duration_seconds=style.adjudication_seconds,
-    )
-    render_frames = [source_render_frames[int(index)] for index in indices]
-    del source_render_frames
     del frames
     if used_workers == 1:
         ReplayRenderer(

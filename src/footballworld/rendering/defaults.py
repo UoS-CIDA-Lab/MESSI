@@ -52,7 +52,7 @@ class RenderStyle:
     width_px: int = 1920
     height_px: int = 1080
     dpi: int = 150
-    # One spherical team-coloured marker is deliberately presentation-only.
+    # One team-coloured compound figure is deliberately presentation-only.
     # This is the largest marker that stays legible without overrunning the
     # nearby intent/FOV cues.
     player_size: float = 185.0
@@ -65,6 +65,7 @@ class RenderStyle:
     camera_distance_m: float = 150.0
     camera_focal_length: float = 820.0
     adjudication_seconds: float = 2.5
+    goal_hold_seconds: float = 2.0
     # Full-view observations have no physical visibility aperture. This
     # host-only width changes only the visual gaze cue; partial observations
     # always render the environment's authoritative horizontal FOV.
@@ -94,6 +95,7 @@ class RenderStyle:
         adjudication_seconds = _finite_real(
             "adjudication_seconds", self.adjudication_seconds
         )
+        goal_hold_seconds = _finite_real("goal_hold_seconds", self.goal_hold_seconds)
         gaze_cue_degrees = _finite_real("gaze_cue_degrees", self.gaze_cue_degrees)
         if not -90.0 <= camera_azimuth <= 90.0:
             raise ValueError("camera_azimuth_degrees must be in [-90, 90]")
@@ -105,6 +107,8 @@ class RenderStyle:
             raise ValueError("camera_focal_length must be positive")
         if adjudication_seconds <= 0.0:
             raise ValueError("adjudication_seconds must be positive")
+        if goal_hold_seconds <= 0.0:
+            raise ValueError("goal_hold_seconds must be positive")
         if not 0.0 < gaze_cue_degrees <= 360.0:
             raise ValueError("gaze_cue_degrees must be in (0, 360]")
         if crf > 51:

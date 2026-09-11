@@ -70,6 +70,7 @@ from footballworld.rendering.renderer import (
     RenderResult,
     _carry_adjudication,
     _concat_segments,
+    _goal_presentation_frames,
     _interaction_overlay_geometry,
     _render_segment,
     _renderer_spawn_environment,
@@ -1309,6 +1310,9 @@ class _WindowSink:
         self.scheduler = scheduler
         self.control_fps = control_fps
         self.previous_adjudication = None
+        self.presented_goal_origin: int | None = None
+        self.base_visual_frames = 0
+        self.goal_presentation_delta = 0
         self.max_outfield_aerial_recovery_substeps = (
             max_outfield_aerial_recovery_substeps
         )
@@ -1391,7 +1395,16 @@ class _WindowSink:
                 break
             selected.append(frame)
             for render_frame in render_groups[local]:
-                self.visual.append(self._prepare_visual(render_frame))
+                visual = self._prepare_visual(render_frame)
+                self.base_visual_frames += 1
+                expanded, self.presented_goal_origin = _goal_presentation_frames(
+                    visual,
+                    self.presented_goal_origin,
+                    video_fps=self.scheduler.render_fps,
+                    duration_seconds=(self.scheduler.requested_style.goal_hold_seconds),
+                )
+                self.goal_presentation_delta += len(expanded) - 1
+                self.visual.extend(expanded)
                 if len(self.visual) >= self.chunk_frames:
                     self._flush_visual()
         self.spool.append(selected)
@@ -1452,7 +1465,12 @@ class _WindowSink:
             )
         if not self.segments:
             raise ValueError(f"replay window {self.window.name!r} has no video")
-        expected_encoded = self.spool.frame_count * self.scheduler.samples_per_control
+        expected_source_visual = (
+            self.spool.frame_count * self.scheduler.samples_per_control
+        )
+        if self.base_visual_frames != expected_source_visual:
+            raise RuntimeError("source visual count does not match exact decimation")
+        expected_encoded = expected_source_visual + self.goal_presentation_delta
         if self.encoded_frames != expected_encoded:
             raise RuntimeError(
                 "video frame count does not match exact sidecar decimation"
@@ -1503,11 +1521,12 @@ class _WindowSink:
             "ordinary_training_step_unchanged": True,
         }
         event, tracking, metadata = self.spool.finalize(
-            video_sample_frame_count=self.encoded_frames,
+            video_sample_frame_count=expected_source_visual,
             video_sample_fps=render_fps,
             video_frame_count=self.encoded_frames,
             video_fps=render_fps,
             sample_every=self.every,
+            presentation_frame_delta=self.goal_presentation_delta,
             render_metadata=render_metadata,
             video_verification="successful_encoder_close_and_segment_count",
             completion=completion,
