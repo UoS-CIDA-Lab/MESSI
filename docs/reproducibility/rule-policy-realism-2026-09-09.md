@@ -1277,3 +1277,16 @@ advantage was only 0.85%, while executable text grew from 33,906,991 to
 33,913,894 characters and compiler temporary memory from 160,792 to 160,920
 bytes. This is host noise rather than a defensible runtime improvement, so the
 dynamic branch was removed and the simpler unconditional categorical retained.
+
+A completion-conditioned progression-gain candidate advanced to a full matrix
+check. Raising the existing DESIGN_PRIOR from 0.60 to 0.80 changes receiver
+ranking only; pass eligibility, completion estimation, physical execution,
+macro cadence, offside authority, and PRNG streams are retained. In the fixed
+four-seed, 4,500-step profile, realized passes rose from 578 to 599, shots from
+five to seven, and realized forward passes from 202 to 228. Same-team receipts
+changed from 545/578 (94.29%) to 561/599 (93.66%), while mean shot distance
+improved from 16.21 m to 15.88 m. Realized backward passes also rose from 207
+to 214, so the candidate is not accepted as a direct backward-service fix; it
+is promoted because it creates more completed forward service and more,
+slightly closer shots without a material receipt decline. Full-matrix results
+remain the acceptance authority.

@@ -71,7 +71,7 @@ class RulePolicyConfig:
     # Independent completion-conditioned reward for positive signed progress.
     # DFL-v2 intent calibration candidate: seven provider matches and a
     # four-seed FootballWorld validation; this is not a universal constant.
-    progressive_pass_value_gain: float = 0.60
+    progressive_pass_value_gain: float = 0.80
     pass_distance_penalty_per_m: float = 0.01
     receiver_choice_temperature: float = 0.20
     macro_choice_temperature: float = 0.30
