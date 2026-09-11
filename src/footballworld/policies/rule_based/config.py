@@ -74,9 +74,6 @@ class RulePolicyConfig:
     progressive_pass_value_gain: float = 0.60
     pass_distance_penalty_per_m: float = 0.01
     receiver_choice_temperature: float = 0.20
-    # Use a sharper already-scored service distribution only after entering
-    # the attacking third. This DESIGN_PRIOR does not change eligibility.
-    attacking_third_receiver_temperature: float = 0.10
     macro_choice_temperature: float = 0.30
     shot_portion_temperature: float = 0.18
     # Macro-action calibration priors. The pass scale changes only the
@@ -280,7 +277,6 @@ class RulePolicyConfig:
             "turnover_shot_settle_s",
             "kickoff_path_window_s",
             "receiver_choice_temperature",
-            "attacking_third_receiver_temperature",
             "macro_choice_temperature",
             "shot_portion_temperature",
             "shot_value_gain",

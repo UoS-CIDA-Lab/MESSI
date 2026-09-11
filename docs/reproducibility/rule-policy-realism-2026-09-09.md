@@ -1053,4 +1053,11 @@ but correctly withheld the receipt because the separate diagnostic replay had
 zero categorical mismatches and one continuous element with a 1.52e-6 absolute
 difference, exceeding its declared 1e-6 tolerance. That unpublished run is not
 used as evidence and the profiler tolerance is not relaxed. The complete
-matrix is used as the fail-closed behavioral acceptance test for this candidate.
+matrix was therefore used as the fail-closed behavioral acceptance test. It
+reduced pooled attacking-third backward share only from 75.25% to 74.18%, and
+left 45 concentration warnings, while reducing shots from 411 to 393,
+on-target shots from 224 to 212, and box-origin shots from 214 to 204. The
+candidate and its extra hot-path conditional were removed. Pooled temporal
+pass changes remained between -0.46 and +0.20 percentage points and no other
+anomaly family appeared, so the rejection is specifically an attacking-output
+tradeoff rather than a liveness or late-match-quality failure.
