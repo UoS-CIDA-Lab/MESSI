@@ -405,6 +405,11 @@ No independent coefficient was added. The finite outgoing-ray proxy reuses
 `bounce_h_keep`, `ground_settle_vz`, and all roll knots. Bounce count is
 analytically derived from impact speed, restitution, and settle speed; there
 is no configured horizon, bounce cap, intent angle, or new tolerance radius.
+Rolling distance integrates `v / d(v)` across every configured piecewise-linear
+deceleration interval. Reusing only the release-speed deceleration for the
+whole path was unsound: fast passes enter lower-speed intervals with less
+resistance, so that shortcut materially underestimated their finite range and
+could fail to arm the restriction for an intended moving goalkeeper receiver.
 
 This remains an intent proxy, not trajectory truth. Do not tune authoritative
 flight/bounce/roll/GK reach to repair its labels. Audit false positives and

@@ -113,17 +113,72 @@ def _conservative_path_length(
     )
     later_bounce_s = 2.0 * impact_speed / gravity * finite_ratio_sum
     post_bounce_speed = horizontal_speed * jnp.power(horizontal_keep, bounce_count)
-    post_bounce_deceleration = jnp.interp(
+    rolling_distance = _rolling_stop_distance(
         post_bounce_speed,
-        jnp.asarray(physics.roll_v_knots, dtype=velocity.dtype),
-        jnp.asarray(physics.roll_d_knots, dtype=velocity.dtype),
-    )
-    rolling_distance = (
-        post_bounce_speed
-        * post_bounce_speed
-        / (2.0 * jnp.maximum(post_bounce_deceleration, DIV_EPS))
+        physics=physics,
     )
     return horizontal_speed * (first_flight_s + later_bounce_s) + rolling_distance
+
+
+def _rolling_stop_distance(
+    speed: jax.Array,
+    *,
+    physics: BallPhysics,
+) -> jax.Array:
+    """Integrate the configured piecewise-linear rolling deceleration.
+
+    ``advance_supported_ground_motion`` evaluates ``roll_d_knots`` at the
+    ball's current speed.  Treating that first value as constant for the whole
+    run systematically shortens fast ground passes because the configured
+    resistance falls as the ball slows.  For each linear knot interval this
+    helper evaluates the closed-form distance integral ``integral(v / d(v))``.
+
+    The result remains a straight, unopposed intent proxy: ground slip, curl,
+    drag and player interception are deliberately outside this calculation.
+    No new football coefficient or rollout loop is introduced.
+    """
+
+    dtype = jnp.asarray(speed).dtype
+    query_speed = jnp.maximum(jnp.asarray(speed, dtype=dtype), 0.0)
+    speed_knots = jnp.asarray(physics.roll_v_knots, dtype=dtype)
+    deceleration_knots = jnp.asarray(physics.roll_d_knots, dtype=dtype)
+    lower_speed = speed_knots[:-1]
+    upper_speed = speed_knots[1:]
+    lower_deceleration = deceleration_knots[:-1]
+    upper_deceleration = deceleration_knots[1:]
+
+    segment_upper = jnp.clip(query_speed, lower_speed, upper_speed)
+    slope = (upper_deceleration - lower_deceleration) / (upper_speed - lower_speed)
+    nonconstant = jnp.abs(slope) > DIV_EPS
+    safe_slope = jnp.where(nonconstant, slope, 1.0)
+    intercept = lower_deceleration - slope * lower_speed
+    segment_upper_deceleration = jnp.maximum(
+        lower_deceleration + slope * (segment_upper - lower_speed),
+        DIV_EPS,
+    )
+    linear_integral = (
+        segment_upper_deceleration
+        - lower_deceleration
+        - intercept * jnp.log(segment_upper_deceleration / lower_deceleration)
+    ) / (safe_slope * safe_slope)
+    constant_integral = (segment_upper * segment_upper - lower_speed * lower_speed) / (
+        2.0 * lower_deceleration
+    )
+    segment_distance = jnp.where(
+        segment_upper > lower_speed,
+        jnp.where(nonconstant, linear_integral, constant_integral),
+        0.0,
+    )
+
+    # Environment validation requires generated release speeds to be covered
+    # by the table.  Retaining the clamped-interpolation tail makes this helper
+    # total for direct unit use and custom restored states as well.
+    tail_speed = jnp.maximum(query_speed - speed_knots[-1], 0.0)
+    tail_distance = (query_speed * query_speed - speed_knots[-1] * speed_knots[-1]) / (
+        2.0 * deceleration_knots[-1]
+    )
+    tail_distance = jnp.where(tail_speed > 0.0, tail_distance, 0.0)
+    return jnp.sum(segment_distance) + tail_distance
 
 
 def targeted_own_goalkeeper_team(
