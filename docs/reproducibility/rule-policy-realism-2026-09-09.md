@@ -1142,3 +1142,15 @@ progression and shot-quality loss, so the coefficient, scalar branch, and
 carrier-role argument were all removed. Existing pass macro behavior is
 retained pending a candidate that creates a credible forward option rather
 than suppressing a safe one.
+
+The first behavior-preserving efficiency candidate conditionally skipped the
+11-by-opponent aerial arrival race when the carrier was outside a legal cross
+origin. It retained cross targets, masks, randomness, and all tested actions;
+47 focused CPU policy and x64-randomness tests passed. Nevertheless the fixed
+batch-8, 256-step CPU benchmark rejected it. Executable text fell from
+36,552,278 to 36,467,879 characters and cold compile plus first execution from
+39.43 s to 38.83 s, but warm median time increased from 2.656 s to 2.764 s and
+throughput fell from 771.0 to 740.8 simulated match frames/s. Compiler
+temporary bytes also rose from 936,032 to 936,224. The dynamic branch was
+removed; the existing unconditional fixed-shape calculation is faster on this
+CPU workload.
