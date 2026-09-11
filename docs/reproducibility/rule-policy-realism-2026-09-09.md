@@ -1043,3 +1043,14 @@ share remained high at 1,940/2,578 (75.25%). No liveness, repeated-event,
 dismissal, spatial-concentration, or pass-collapse warning occurred. The shot
 selectivity change is retained, while advanced recycling remains an unresolved
 policy-quality target rather than being hidden by pass suppression.
+
+The next isolated candidate keeps the 0.20 receiver/service temperature in
+build-up, restarts, dribbles, and clearances, but uses 0.10 after the carrier
+enters the attacking third. It sharpens selection only among already legal,
+completion-scored services; it does not create a forward receiver or alter the
+macro PASS probability. The first short profiler attempt completed its rollout
+but correctly withheld the receipt because the separate diagnostic replay had
+zero categorical mismatches and one continuous element with a 1.52e-6 absolute
+difference, exceeding its declared 1e-6 tolerance. That unpublished run is not
+used as evidence and the profiler tolerance is not relaxed. The complete
+matrix is used as the fail-closed behavioral acceptance test for this candidate.

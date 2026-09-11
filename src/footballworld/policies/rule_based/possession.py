@@ -921,7 +921,11 @@ def decide_possession(
         service_value,
         service_eligible,
         receiver_key,
-        config.receiver_choice_temperature,
+        jnp.where(
+            source[0] >= hx / jnp.float32(3.0),
+            jnp.float32(config.attacking_third_receiver_temperature),
+            jnp.float32(config.receiver_choice_temperature),
+        ),
     )
     player_count = player_position.shape[0]
     selected_cross = best_service >= player_count
