@@ -1184,3 +1184,21 @@ compile plus first execution fell from 36.24 s to 34.92 s, executable text from
 to 160,792. These are same-host synthetic benchmark results, not a universal
 deployment speed constant. The change adds a scalar fail-closed
 `decision_due` shape check and keeps the output PyTree fixed.
+
+The clean `d2e39d3` loop-08 acceptance matrix completed all 25 full-duration
+seed-29 cells with zero child failure. Relative to loop-07, every compared
+aggregate was exactly unchanged: 411 shots, 224 on target, 214 box-origin,
+49,275 passes with 45,899 same-team next contacts, 19,285 realized forward
+passes, 2,578 attacking-third passes, 1,880 realized backward, 1,431 backward
+without forward support, 818 rule-policy cross signatures, and 89 defensive
+line-break proxies. All per-plan W-D-L, goals, and shot totals were also
+unchanged. This is the full-matrix behavioral acceptance receipt for the
+optimization rather than an inference from the microbenchmark alone.
+
+Pooled six-window completion remained stable within the user-selected five
+percentage-point allowance. A direct attempt-weighted fit from the six 15
+minute bins changed first-to-last by +0.30 points for Catenaccio, -0.43 for
+Gegenpress, -0.30 for Juego de Posicion, -2.10 for Salida Lavolpiana, and
+-1.41 for Zona Mista. Five individual team-match trend warnings and the same
+39 backward-concentration plus 37 no-forward-support warnings remain; no new
+anomaly family appeared.
