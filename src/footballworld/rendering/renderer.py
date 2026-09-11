@@ -386,6 +386,58 @@ class _Adjudication:
     title: str
     detail: str
     accent: str
+    goal: bool = False
+
+
+def _goal_overlay_font_sizes(style: RenderStyle) -> tuple[float, float]:
+    """Scale celebration typography with output height, anchored at 540p."""
+
+    scale = float(style.height_px) / 540.0
+    return 20.0 * scale, 8.5 * scale
+
+
+def _player_marker_geometry() -> tuple[np.ndarray, np.ndarray]:
+    """Return one compact footballer silhouette for the scatter collection.
+
+    A compound path keeps the head and shirt/legs distinct while retaining one
+    batched artist for every player.  This improves the visual identity over a
+    generic circular token without adding per-player patches or frame history.
+    """
+
+    move, line, close = 1, 2, 79  # matplotlib.path.Path codes
+    body = np.asarray(
+        (
+            (-0.22, 0.34),
+            (-0.46, 0.12),
+            (-0.34, -0.08),
+            (-0.23, 0.02),
+            (-0.18, -0.36),
+            (-0.37, -0.78),
+            (-0.15, -0.86),
+            (0.00, -0.49),
+            (0.15, -0.86),
+            (0.37, -0.78),
+            (0.18, -0.36),
+            (0.23, 0.02),
+            (0.34, -0.08),
+            (0.46, 0.12),
+            (0.22, 0.34),
+            (-0.22, 0.34),
+        ),
+        dtype=np.float64,
+    )
+    theta = np.linspace(0.0, 2.0 * np.pi, 13)
+    head = np.column_stack((0.19 * np.cos(theta), 0.19 * np.sin(theta) + 0.66))
+    vertices = np.concatenate((body, head), axis=0)
+    body_codes = np.asarray(
+        (move, *(line for _ in range(body.shape[0] - 2)), close),
+        dtype=np.uint8,
+    )
+    head_codes = np.asarray(
+        (move, *(line for _ in range(head.shape[0] - 2)), close),
+        dtype=np.uint8,
+    )
+    return vertices, np.concatenate((body_codes, head_codes))
 
 
 @dataclass(frozen=True, slots=True)
@@ -499,6 +551,7 @@ def _frame_adjudication(frame: HostFrame) -> _Adjudication | None:
                     title=f"GOAL — {_team_label(team)}",
                     detail=f"SCORE {int(frame.score[0])} : {int(frame.score[1])}",
                     accent=TEAM_COLORS[team] if team in (0, 1) else "#ffffff",
+                    goal=True,
                 ),
             )
         )
@@ -1661,6 +1714,74 @@ class ReplayRenderer:
             visible=False,
         )
 
+        # SoccerWorld's strongest goal cue was a low-alpha team-colour flash
+        # plus large central typography. Retain that legibility while keeping
+        # FootballWorld's exact scoring-team and score detail. Font sizes scale
+        # with output height so 540p and 1080p preserve the same composition.
+        goal_title_size, goal_detail_size = _goal_overlay_font_sizes(style)
+        goal_flash = Rectangle(
+            (0.0, 0.0),
+            1.0,
+            1.0,
+            transform=ax.transAxes,
+            color="#ffffff",
+            alpha=0.0,
+            zorder=36,
+            visible=False,
+        )
+        goal_panel = Rectangle(
+            (0.320, 0.430),
+            0.360,
+            0.180,
+            transform=ax.transAxes,
+            facecolor="#071019",
+            edgecolor="#ffffff",
+            linewidth=1.4 * float(style.height_px) / 540.0,
+            alpha=0.94,
+            zorder=37,
+            visible=False,
+        )
+        goal_accent = Rectangle(
+            (0.320, 0.598),
+            0.360,
+            0.012,
+            transform=ax.transAxes,
+            color="#ffffff",
+            zorder=38,
+            visible=False,
+        )
+        ax.add_patch(goal_flash)
+        ax.add_patch(goal_panel)
+        ax.add_patch(goal_accent)
+        goal_title = ax.text(
+            0.5,
+            0.535,
+            "",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            color="#ffffff",
+            fontsize=goal_title_size,
+            weight="bold",
+            family="sans-serif",
+            zorder=39,
+            visible=False,
+        )
+        goal_detail = ax.text(
+            0.5,
+            0.475,
+            "",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            color="#e7eef5",
+            fontsize=goal_detail_size,
+            weight="bold",
+            family="monospace",
+            zorder=39,
+            visible=False,
+        )
+
         zeros = np.zeros((count, 2), np.float32)
         player_shadow = ax.scatter(
             zeros[:, 0],
@@ -1675,6 +1796,7 @@ class ReplayRenderer:
             zeros[:, 0],
             zeros[:, 1],
             s=style.player_size,
+            marker=MplPath(*_player_marker_geometry()),
             c=colors,
             edgecolors="#101010",
             linewidths=1.0,
@@ -1805,7 +1927,6 @@ class ReplayRenderer:
         _flatten_circle_markers(
             MplPath,
             player_shadow,
-            players,
             aerial_effect,
             ball_shadow,
             ball,
@@ -1840,6 +1961,11 @@ class ReplayRenderer:
             event_accent,
             event_title,
             event_detail,
+            goal_flash,
+            goal_panel,
+            goal_accent,
+            goal_title,
+            goal_detail,
         ]
         dynamic_minimap = [minimap_players, minimap_ball]
         for artist in dynamic_main + dynamic_minimap:
@@ -2159,7 +2285,8 @@ class ReplayRenderer:
                 score_text.set_text(f"{frame.score[0]} : {frame.score[1]}")
                 clock_text.set_text(self._clock_label(frame))
                 caption = frame.adjudication
-                banner_visible = caption is not None
+                goal_visible = caption is not None and caption.goal
+                banner_visible = caption is not None and not goal_visible
                 for artist in (
                     event_panel,
                     event_accent,
@@ -2168,9 +2295,32 @@ class ReplayRenderer:
                 ):
                     artist.set_visible(banner_visible)
                 if caption is not None:
-                    event_accent.set_facecolor(caption.accent)
-                    event_title.set_text(caption.title)
-                    event_detail.set_text(caption.detail)
+                    if goal_visible:
+                        age_ticks = max(
+                            0, frame.control_tick - caption.origin_control_tick
+                        )
+                        pulse = 0.075 + 0.025 * abs(np.sin(age_ticks * 0.18))
+                        goal_flash.set_facecolor(caption.accent)
+                        goal_flash.set_alpha(pulse)
+                        goal_panel.set_edgecolor(caption.accent)
+                        goal_accent.set_facecolor(caption.accent)
+                        goal_title.set_text("G O A L")
+                        goal_detail.set_text(
+                            f"{caption.title.removeprefix('GOAL — ')}  ·  "
+                            f"{caption.detail}"
+                        )
+                    else:
+                        event_accent.set_facecolor(caption.accent)
+                        event_title.set_text(caption.title)
+                        event_detail.set_text(caption.detail)
+                for artist in (
+                    goal_flash,
+                    goal_panel,
+                    goal_accent,
+                    goal_title,
+                    goal_detail,
+                ):
+                    artist.set_visible(goal_visible)
                 fig.canvas.restore_region(background)
                 for artist in dynamic_main:
                     ax.draw_artist(artist)

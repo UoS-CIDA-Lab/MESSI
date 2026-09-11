@@ -238,11 +238,13 @@ The sole presentation path uses a lower 33-degree fixed oblique pinhole camera.
 A tighter regulation-surface
 crop increases the pitch's screen occupancy while alternating grass, cropped
 sloped stands, regulation 3D goal frames and nets, the ball's real height, and
-the retained top-down minimap preserve spatial context. Each player is one
-team-coloured spherical marker; no separate head, torso, shoulder, or leg icon
-is drawn. The aerial recovery countdown drives a bounded sine arc, so the
-marker visibly rises and returns after a high-ball contact without requiring
-historical frames. Its ground-anchored recovery ring and shrinking shadow
+the retained top-down minimap preserve spatial context. Each player uses one
+team-coloured compound silhouette with a distinct head and a compact
+shirt/arms/legs outline. It remains one batched scatter collection rather than
+per-player body patches, and retains the existing team, goalkeeper, dismissal,
+number, and depth-scale semantics. The aerial recovery countdown drives a
+bounded sine arc, so the silhouette visibly rises and returns after a high-ball
+contact without requiring historical frames. Its ground-anchored recovery ring and shrinking shadow
 reinforce the jump without changing the player's physical position. The two stamina bars use full-capacity dark rails, which keep
 partly depleted bars legible against either grass stripe. FootballWorld avoids a stamina-dependent red gradient because red already identifies the
 home side and foul cues, and changing every player's colour every frame adds
@@ -314,13 +316,18 @@ because its environment exposes distinct carry, challenge, goalkeeper, and ball
 radii that can be configured independently.
 
 There is no historical event feed or scrolling event window. One transient
-adjudication banner may show for 2.5 seconds when an exact
+adjudication may show for 2.5 seconds when an exact
 `step_with_events` transition reports a goal, foul, offside, or committed
 substitution. Deterministic sporting priority is goal, red-card foul, other
 foul, then offside. A same-frame substitution is appended to that decision
 rather than silently discarded; otherwise it receives its own `OUT → IN`
 banner with team and exact registered player ids. Ordinary contacts, passes,
 controls, period boundaries, and non-goal restarts stay out of the video. A
+goal uses the scoring team's low-alpha full-frame flash and a central dark
+panel with `G O A L`, team, and exact post-transition score. Its typography and
+border scale from a 540p layout with output height, so 1,080p does not shrink
+the message relative to the pitch. Other adjudications retain the compact
+upper banner. A
 foul names the pre-management player identities and
 one-based display slot labels for offender and victim, exact offence type,
 source, severity, tactical effect, discipline, restart or advantage. Offside
