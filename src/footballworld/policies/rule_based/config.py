@@ -83,6 +83,9 @@ class RulePolicyConfig:
     # high pass cadence and low shot cadence, not measured football constants.
     pass_macro_value_scale: float = 0.80
     shot_value_gain: float = 1.15
+    # Concentrate extra macro-choice weight on chances already rated highly by
+    # the observation-only shot model. This is a DESIGN_PRIOR, not fitted xG.
+    shot_quality_selectivity_gain: float = 2.0
     cross_value_gain: float = 1.75
     # Arrival-point targeting controls are policy design priors. They expose
     # the existing FootballWorld-compatible moving-receiver mechanism without
@@ -297,6 +300,7 @@ class RulePolicyConfig:
         nonnegative_names = (
             "pass_lateral_penalty",
             "pass_distance_penalty_per_m",
+            "shot_quality_selectivity_gain",
             "shot_noise_base_rad",
             "shot_noise_quality_rad",
             "shot_noise_pressure_rad",

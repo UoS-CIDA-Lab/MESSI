@@ -340,6 +340,10 @@ def plan_shot(
     value = jnp.clip(
         config.shot_value_gain
         * quality
+        * (
+            1.0
+            + config.shot_quality_selectivity_gain * jnp.square(jnp.square(quality))
+        )
         * (0.06 + 0.94 * range_preference)
         * goalkeeper_factor
         * pressure_preference,

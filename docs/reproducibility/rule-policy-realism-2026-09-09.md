@@ -1003,3 +1003,24 @@ hot-path operations were removed. The report produced no liveness, repeated
 event, dismissal, spatial-concentration, pass-collapse, or temporal pass-trend
 warnings; all 38 warnings were the still-unresolved attacking-third backward
 concentration diagnostic.
+
+Joining the same matrix's exact open-play PASS contacts to tracking rows found
+that 76.3% of backward releases from the attacking third had no visible,
+active, onside teammate at least one metre ahead of the carrier. For forward
+releases the corresponding no-ahead-player share was 27.9%. This host-side
+causal snapshot supports a missing-support diagnosis, but it is not a tracking
+provider fit. Three movement candidates were rejected on the four-seed
+4,500-step profile: one staggered forward link produced 579 passes and four
+shots; activating the selected forward's pattern run before it was ahead
+produced 578 and three; increasing attacking block follow from 0.38 to 0.50
+produced 598 and two. The accepted baseline produced 570 and five. All three
+also increased attacking-third backward releases, so none remains in source.
+
+The next candidate changes only shot macro-choice selectivity. The existing
+observation-only quality `q` is multiplied by `1 + 2q^4`, making the relative
+increase 1.6% at `q=0.3`, 48.0% at `q=0.7`, and 131.2% at `q=0.9`. The gain is
+a declared DESIGN_PRIOR, not xG calibration; direction, power, noise, shot
+physics, and the quality ordering are retained. The four-seed profile retained
+five shots and changed mean shot distance from 14.84 m to 14.47 m, with 571
+passes versus 570. This neutral-to-positive short screen requires the complete
+matrix to determine whether absolute on-target and box-origin shots improve.

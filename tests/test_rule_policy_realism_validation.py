@@ -23,6 +23,7 @@ from footballworld.policies.rule_based.possession import (
     _backward_pass_cost,
     _pass_width_context,
     decide_possession,
+    plan_shot,
 )
 from footballworld.policies.rule_based.shape import shape_movement
 from footballworld.policies.rule_based.state import (
@@ -102,6 +103,40 @@ def _fixed_shot(*, value: float, quality: float):
         )
 
     return plan
+
+
+def test_shot_selectivity_concentrates_gain_on_high_quality(monkeypatch):
+    """The extra macro weight must be negligible for a poor shot."""
+
+    import footballworld.policies.rule_based.possession as possession_module
+
+    positions = jnp.zeros((4, 2), dtype=jnp.float32)
+    empty = jnp.zeros((4,), dtype=jnp.bool_)
+
+    def value(quality: float, gain: float) -> float:
+        monkeypatch.setattr(
+            possession_module,
+            "shot_quality",
+            lambda *_args, **_kwargs: jnp.float32(quality),
+        )
+        return float(
+            plan_shot(
+                jnp.asarray((35.0, 0.0), dtype=jnp.float32),
+                positions,
+                empty,
+                empty,
+                replace(RulePolicyConfig(), shot_quality_selectivity_gain=gain),
+                half_length=52.5,
+                goal_width=7.32,
+                current_pressure=jnp.float32(0.0),
+            ).value
+        )
+
+    poor_ratio = value(0.2, 2.0) / value(0.2, 0.0)
+    strong_ratio = value(0.8, 2.0) / value(0.8, 0.0)
+
+    assert poor_ratio == pytest.approx(1.0032, rel=1e-5)
+    assert strong_ratio > poor_ratio + 0.5
 
 
 def _fixed_ranking_metrics(monkeypatch) -> None:
