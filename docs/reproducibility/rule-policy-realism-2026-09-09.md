@@ -1267,3 +1267,13 @@ the documented 15 s, 5 s, joint 60 s/2%, 30 s, and three-dismissals-per-team
 review priors respectively. The original 3-1 spatial spike therefore does not
 recur anywhere in this matrix, and the only active anomaly families remain
 attacking-third backward service and five individual pass-completion trends.
+
+A final behavior-preserving efficiency candidate gated only the macro-action
+categorical draw on `decision_due`. Non-decision frames already return DRIBBLE,
+and all 29 focused policy tests passed, but two fresh scalar CPU measurements
+were inconsistent at 735.9 and 681.6 frames/s. Two interleaved measurements of
+the retained unconditional path were 693.5 and 712.2 frames/s. The pair-median
+advantage was only 0.85%, while executable text grew from 33,906,991 to
+33,913,894 characters and compiler temporary memory from 160,792 to 160,920
+bytes. This is host noise rather than a defensible runtime improvement, so the
+dynamic branch was removed and the simpler unconditional categorical retained.
