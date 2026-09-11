@@ -1202,3 +1202,12 @@ Gegenpress, -0.30 for Juego de Posicion, -2.10 for Salida Lavolpiana, and
 -1.41 for Zona Mista. Five individual team-match trend warnings and the same
 39 backward-concentration plus 37 no-forward-support warnings remain; no new
 anomaly family appeared.
+
+Applying the same non-decision-frame gate to the three-destination clearance
+calculation was rejected. It passed 46 focused tests and reduced cold time from
+the shot-only 34.92 s to 35.27 s within ordinary run variance, executable text
+from 33,906,991 to 33,809,261 characters, but added a second dynamic branch.
+Warm scalar median regressed from 0.352 s to 0.374 s and throughput from 728.1
+to 685.1 simulated match frames/s; temporary bytes also rose from 160,792 to
+160,984. The clearance path is therefore retained as unconditional fixed-shape
+work, and only the independently beneficial shot gate remains.
