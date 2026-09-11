@@ -1024,3 +1024,22 @@ physics, and the quality ordering are retained. The four-seed profile retained
 five shots and changed mean shot distance from 14.84 m to 14.47 m, with 571
 passes versus 570. This neutral-to-positive short screen requires the complete
 matrix to determine whether absolute on-target and box-origin shots improve.
+
+The clean `c67d3c1` seed-29 matrix completed all 25 full-duration cells with no
+child failures. Relative to the last accepted matrix, realized shots increased
+from 368 to 411, on-target shots from 216 to 224, and box-origin shots from 195
+to 214. Passes changed only from 49,081 to 49,275. The realized-shot-weighted
+mean distance increased slightly from 17.55 m to 17.67 m, so the result is an
+absolute high-quality-opportunity improvement rather than a claim that every
+shot became better. A 1.0 selectivity gain reproduced the four-seed baseline
+trajectory exactly and was not substituted for the matrix-tested 2.0 value.
+
+Pooled 15-minute pass-receipt fitted changes remained within the user-selected
+five-point allowance for every tactic: +0.47 points for Catenaccio, -0.56 for
+Gegenpress, -0.24 for Juego de Posicion, -2.09 for Salida Lavolpiana, and -1.36
+for Zona Mista. Five individual team-match trend warnings remain review items.
+The other 45 warnings were attacking-third backward concentration; its pooled
+share remained high at 1,940/2,578 (75.25%). No liveness, repeated-event,
+dismissal, spatial-concentration, or pass-collapse warning occurred. The shot
+selectivity change is retained, while advanced recycling remains an unresolved
+policy-quality target rather than being hidden by pass suppression.
