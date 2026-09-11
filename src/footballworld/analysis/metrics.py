@@ -52,6 +52,8 @@ POLICY_AUDIT_PASS_WINDOW_MIN_ATTEMPTS = 10
 POLICY_AUDIT_PASS_COMPLETION_TREND_DROP = 0.05
 POLICY_AUDIT_PASS_ACTIVITY_MAX_ATTEMPTS = 5
 POLICY_AUDIT_PASS_ACTIVITY_NEIGHBOR_MIN_ATTEMPTS = 20
+POLICY_AUDIT_ATTACKING_THIRD_MIN_PASSES = 20
+POLICY_AUDIT_ATTACKING_THIRD_BACKWARD_SHARE = 0.65
 PLAYER_POSITION_WINDOW_S = 15.0
 PLAYER_POSITION_TARGET_CELL_M = 4.0
 SPACE_OCCUPANCY_WINDOW_S = 30.0
@@ -2623,6 +2625,7 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     team_completed_forward_passes = np.zeros(2, dtype=np.int64)
     team_attacking_third_passes = np.zeros(2, dtype=np.int64)
     team_completed_attacking_third_passes = np.zeros(2, dtype=np.int64)
+    team_attacking_third_backward_passes = np.zeros(2, dtype=np.int64)
     pass_time_bins = np.zeros((2, 6, 2), dtype=np.int64)
     control_fps = float(dataset.metadata["control_fps"])
     for row in pass_map_rows:
@@ -2651,6 +2654,9 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         team_line_break_proxies[int(team)] += int(line_break)
         team_forward_passes[int(team)] += int(forward)
         team_attacking_third_passes[int(team)] += int(attacking_third)
+        team_attacking_third_backward_passes[int(team)] += int(
+            attacking_third and row.get("applied_direction_family") == "backward"
+        )
         if completed:
             team_completed_passes[int(team)] += 1
             team_completed_cross_signatures[int(team)] += int(cross_signature)
@@ -2755,6 +2761,36 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                         "combined_attempts": attempts,
                         "previous_window_attempts": prior_attempts,
                         "next_window_attempts": next_attempts,
+                    },
+                }
+            )
+
+    for team in (0, 1):
+        attacking_third_attempts = int(team_attacking_third_passes[team])
+        backward_attempts = int(team_attacking_third_backward_passes[team])
+        backward_share = (
+            0.0
+            if attacking_third_attempts == 0
+            else backward_attempts / attacking_third_attempts
+        )
+        if (
+            attacking_third_attempts >= POLICY_AUDIT_ATTACKING_THIRD_MIN_PASSES
+            and backward_share >= POLICY_AUDIT_ATTACKING_THIRD_BACKWARD_SHARE
+        ):
+            policy_anomalies.append(
+                {
+                    "code": "attacking_third_backward_pass_concentration",
+                    "severity": "medium",
+                    "message": "Backward releases dominate this team's attacking-third passing and may indicate stalled chance creation.",
+                    "threshold": {
+                        "minimum_attempts": POLICY_AUDIT_ATTACKING_THIRD_MIN_PASSES,
+                        "minimum_backward_share": POLICY_AUDIT_ATTACKING_THIRD_BACKWARD_SHARE,
+                    },
+                    "observed": {
+                        "team": team,
+                        "attempts": attacking_third_attempts,
+                        "backward_attempts": backward_attempts,
+                        "backward_share": round(backward_share, 6),
                     },
                 }
             )
@@ -2873,6 +2909,9 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             "attacking_third_pass_attempts": int(team_attacking_third_passes[team]),
             "completed_attacking_third_passes": int(
                 team_completed_attacking_third_passes[team]
+            ),
+            "attacking_third_backward_pass_attempts": int(
+                team_attacking_third_backward_passes[team]
             ),
             "penalty_area_entries": int(penalty_area_entries[team]),
             "corners": int(team_event_counts[team]["restart_corner"]),

@@ -768,6 +768,37 @@ def _shape_call(
     )
 
 
+def test_central_final_third_attack_keeps_two_forwards_in_box_lanes():
+    """Central progression must not make both box runners retreat to anchors."""
+
+    context, state = _shape_fixture()
+    player_count = context.self_index.shape[0]
+    ball = jnp.broadcast_to(
+        jnp.asarray((32.0, 0.0, 0.11), dtype=jnp.float32),
+        (player_count, 3),
+    )
+    context = context._replace(
+        ball_position=ball,
+        ball_visible=jnp.ones((player_count,), dtype=jnp.bool_),
+    )
+    own_possession = np.asarray(context.self_team) == 1
+
+    result = _shape_call(
+        context,
+        state,
+        phase=jnp.float32(0.0),
+        own_possession=own_possession,
+    )
+
+    # Slots 4 and 5 are the centre and wide forward for team 1. The visible
+    # ball defines the Law-11 line here, so both remain just behind it rather
+    # than falling back to their negative-x formation anchors.
+    assert float(result.target[4, 0]) > 30.0
+    assert float(result.target[5, 0]) > 30.0
+    assert bool(result.urgent[4])
+    assert bool(result.urgent[5])
+
+
 def test_kickoff_waypoint_is_bounded_role_diverse_and_endpoint_inert():
     context, state = _shape_fixture()
     start = _shape_call(context, state, phase=jnp.float32(0.0))

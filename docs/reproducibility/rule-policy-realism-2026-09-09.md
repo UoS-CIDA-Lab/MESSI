@@ -937,3 +937,39 @@ distance and penalty-area origin counts plus forward and attacking-third pass
 attempt/receipt counts. Tactical matrix reports aggregate those exact-event
 and submitted-direction diagnostics alongside on-target shots, crosses, and
 line-break proxies.
+
+The clean `fb14e92` seed-29 matrix completed all 25 ordered 90-minute cells in
+about six wall-clock minutes with 25 CPU child processes. Across 50 team
+appearances it produced 368 realized shots, 216 on-target shots, and 49,081
+passes. Mean shot distance was 17.55 m (realized-shot weighted), compared with
+approximately 18.8 m in the preceding matrix; the on-target share increased
+from approximately 56.5% to 58.7%. Total shot count nevertheless fell from 398,
+so the change removed low-quality shots without yet increasing the absolute
+high-quality-shot volume. Aggregate 15-minute pass-receipt trends ranged from
+-1.83 to +0.81 percentage points by tactic and no dismissal occurred.
+
+That matrix also made an attacking-third defect measurable: 69--80% of each
+tactic's realized attacking-third releases were submitted backward. Reports
+therefore add a host-only warning at at least 20 attacking-third passes and a
+65% backward share. This review threshold is a diagnostic DESIGN_PRIOR, not a
+provider-derived football constant, and raw attempts remain in the JSON.
+
+The existing wide-ball box support, distinct central/far-post/cutback roles,
+formation shape, and observable Law-11 cap are retained. Central final-third
+progression now activates the existing central and far-post runner lanes once
+the ball is within 6 m of the penalty area; previously those two roles could
+retreat to formation anchors unless the ball was also wide. The wide trigger
+keeps its earlier two-box-length/cross-origin conditions, and central support
+does not change the cutback role. On the four fixed 4,500-step CPU seed pairs,
+this structural candidate increased realized shots from 5 to 8, retained 211
+versus 210 forward passes, and produced a 16.85 m mean shot distance versus
+14.84 m for the preceding candidate and 18.52 m for the original baseline.
+The next full matrix remains the acceptance test.
+
+Three additional coefficient-only candidates were rejected. Increasing shot
+gain from 1.15 to 1.35 left shots at five and worsened mean distance from
+14.84 m to 16.72 m. Reducing the PASS macro scale to 0.65 reduced shots to one;
+reducing it to 0.50 raised shots to six but removed 14.8% of forward passes and
+worsened mean shot distance to 19.60 m. Increasing only the advanced backward
+penalty reduced pass volume but did not create an attacking-third forward pass
+in the short sample. None of those defaults was changed.

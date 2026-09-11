@@ -68,6 +68,7 @@ def build_tactical_matrix_report(
             "completed_forward_passes": 0,
             "attacking_third_passes": 0,
             "completed_attacking_third_passes": 0,
+            "attacking_third_backward_passes": 0,
             "possession_s": 0.0,
             "penalty_area_entries": 0,
             "corners": 0,
@@ -242,6 +243,7 @@ def build_tactical_matrix_report(
                 "completed_forward_passes",
                 "attacking_third_pass_attempts",
                 "completed_attacking_third_passes",
+                "attacking_third_backward_pass_attempts",
             ):
                 metric_value = team.get(metric_name)
                 _require(
@@ -289,6 +291,9 @@ def build_tactical_matrix_report(
             aggregate["completed_attacking_third_passes"] += int(
                 team["completed_attacking_third_passes"]
             )
+            aggregate["attacking_third_backward_passes"] += int(
+                team["attacking_third_backward_pass_attempts"]
+            )
             aggregate["possession_s"] += float(team["possession_s"])
             for name in (
                 "penalty_area_entries",
@@ -332,6 +337,9 @@ def build_tactical_matrix_report(
                 ),
                 "completed_attacking_third_passes": int(
                     aggregate.pop("completed_attacking_third_passes")
+                ),
+                "attacking_third_backward_pass_attempts": int(
+                    aggregate.pop("attacking_third_backward_passes")
                 ),
                 "rule_policy_cross_control_signatures": int(
                     aggregate.pop("cross_signatures")
@@ -467,6 +475,18 @@ def render_tactical_matrix_html(
         shot_distance_label = (
             "n/a" if shot_distance is None else f"{float(shot_distance):.1f} m"
         )
+        attacking_third_attempts = int(row["attacking_third_pass_attempts"])
+        attacking_third_backward_share = (
+            None
+            if not attacking_third_attempts
+            else float(row["attacking_third_backward_pass_attempts"])
+            / attacking_third_attempts
+        )
+        attacking_third_backward_label = (
+            "n/a"
+            if attacking_third_backward_share is None
+            else f"{attacking_third_backward_share:.1%} back"
+        )
         policies.append(
             "<tr>"
             f"<td>{html.escape(str(row['plan']))}</td>"
@@ -476,7 +496,7 @@ def render_tactical_matrix_html(
             f"<td>{row['realized_shots']} ({row['shots_on_target']} OT; {row['shots_inside_penalty_area']} box; {shot_distance_label})</td>"
             f"<td>{completion_label}</td>"
             f"<td>{row['forward_pass_attempts']} ({row['completed_forward_passes']})</td>"
-            f"<td>{row['attacking_third_pass_attempts']} ({row['completed_attacking_third_passes']})</td>"
+            f"<td>{row['attacking_third_pass_attempts']} ({row['completed_attacking_third_passes']}; {attacking_third_backward_label})</td>"
             f"<td>{row['rule_policy_cross_control_signatures']} ({row['completed_rule_policy_cross_control_signatures']})</td>"
             f"<td>{row['defensive_line_breaking_pass_proxies']} ({row['completed_defensive_line_breaking_pass_proxies']})</td>"
             f"<td>{row['average_controlled_possession_s']:.1f}</td>"
@@ -557,7 +577,7 @@ table{{width:100%;border-collapse:collapse;background:var(--white);border:1px so
 <p>Distinct-plan fixtures only; 3 points for a win, 1 for a draw. Ties: goal difference, goals for, plan name.</p>
 <table><thead><tr><th>Rank</th><th>Plan</th><th>P</th><th>W-D-L</th><th>GF-GA</th><th>GD</th><th>Pts</th></tr></thead><tbody>{"".join(standings)}</tbody></table>
 <h2>Policy aggregates</h2>
-<table><thead><tr><th>Plan</th><th>Apps</th><th>W-D-L</th><th>GF-GA</th><th>Shots (OT; box; mean distance)</th><th>Pass completion</th><th>Forward passes (received)</th><th>Att. third passes (received)</th><th>Cross signatures (received)</th><th>Line breaks (received)</th><th>Avg controlled possession s</th></tr></thead><tbody>{"".join(policies)}</tbody></table>
+<table><thead><tr><th>Plan</th><th>Apps</th><th>W-D-L</th><th>GF-GA</th><th>Shots (OT; box; mean distance)</th><th>Pass completion</th><th>Forward passes (received)</th><th>Att. third passes (received; back share)</th><th>Cross signatures (received)</th><th>Line breaks (received)</th><th>Avg controlled possession s</th></tr></thead><tbody>{"".join(policies)}</tbody></table>
 {anomaly_section}
 <h2>Every match</h2>
 <table><thead><tr><th>Team 0</th><th>Team 1</th><th>Score</th><th>Duration s</th><th>Frames</th><th>Individual report</th></tr></thead><tbody>{"".join(matches)}</tbody></table>

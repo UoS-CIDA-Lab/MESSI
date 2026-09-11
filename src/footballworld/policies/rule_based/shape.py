@@ -785,20 +785,31 @@ def shape_movement(
         jnp.float32(cross_start_fraction * half_length),
         jnp.float32(half_length - 2.0 * penalty_area_length),
     )
+    # Wide attacks retain their earlier two-box-length trigger.  A central
+    # attack previously had no corresponding final-third support at all, so
+    # forwards could retreat toward their formation anchors after the carrier
+    # advanced beyond the defensive line.  Activate the same two distinct box
+    # lanes only once a central ball is within six metres of the penalty area;
+    # the observable Law-11 cap below remains final authority.
+    central_box_support = (
+        context.ball_visible
+        & (ball_xy[:, 0] >= half_length - penalty_area_length - jnp.float32(6.0))
+        & (jnp.abs(ball_xy[:, 1]) < cross_wide_fraction * half_width)
+    )
+    wide_box_support = advanced_wide_ball & (ball_xy[:, 0] >= box_support_start_x)
+    box_runner_support = wide_box_support | central_box_support
     central_y_limit = jnp.float32(cross_target_central_fraction * half_width)
     central_support = (
         own_possession
-        & advanced_wide_ball
+        & box_runner_support
         & context.self_active
         & central_forward
-        & (ball_xy[:, 0] >= box_support_start_x)
     )
     far_support = (
         own_possession
-        & advanced_wide_ball
+        & box_runner_support
         & context.self_active
         & far_wide_forward
-        & (ball_xy[:, 0] >= box_support_start_x)
     )
     deep_wide_ball = advanced_wide_ball & (
         ball_xy[:, 0] >= jnp.float32(half_length - penalty_area_length - 2.0)
