@@ -1211,3 +1211,28 @@ Warm scalar median regressed from 0.352 s to 0.374 s and throughput from 728.1
 to 685.1 simulated match frames/s; temporary bytes also rose from 160,792 to
 160,984. The clearance path is therefore retained as unconditional fixed-shape
 work, and only the independently beneficial shot gate remains.
+
+The host-only match metrics contract then advanced from
+`footballworld.match-metrics/13` to `/14` without changing a rollout. The
+existing exact realized-contact definition of an attacking-third backward pass
+without forward support is retained: the carrier is in the attacking third,
+the next distinct actor contact is geometrically backward, and no onside
+teammate is at least one metre farther forward at release. The report now also
+records how many of those passes reached the same team and their mean realized
+contact-to-contact distance. This replaces an approximate opening-formation
+role attribution for automated reporting: substitutions and later formation
+changes make that attribution unsafe, whereas the new outcome and geometry are
+observed replay facts.
+
+All 25 loop-08 reports were regenerated in parallel from the retained replay
+artifacts; no simulation was rerun. The matrix remains complete with zero
+failed cells and the same 81 warnings. Of 1,431 unsupported attacking-third
+backward passes, 1,235 reached the same team. Their plan aggregates were:
+Catenaccio 235/213 at 26.14 m mean, Gegenpress 323/282 at 20.27 m, Juego de
+Posicion 263/213 at 22.73 m, Salida Lavolpiana 284/245 at 22.07 m, and Zona
+Mista 326/282 at 24.15 m. The pooled mean is 22.93 m. High receipt success
+therefore does not by itself clear the warning: a material portion of this
+pattern resets the attack over a substantial distance. The behavioral policy
+is unchanged because the narrower suppression candidate already reduced
+forward progression and worsened shot distance; the safer next design target
+is creating a viable forward option rather than deleting successful service.

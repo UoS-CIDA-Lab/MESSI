@@ -52,6 +52,9 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
                 "completed_attacking_third_passes": 15 + index,
                 "attacking_third_backward_pass_attempts": 12 + index,
                 "attacking_third_backward_without_forward_support": 8 + index,
+                "completed_attacking_third_backward_without_forward_support": 6 + index,
+                "mean_attacking_third_backward_without_forward_support_distance_m": 20.0
+                + index,
                 "possession_s": 1_000.0 + index,
                 "penalty_area_entries": 3,
                 "corners": 2,
@@ -62,7 +65,7 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
     _write_json(
         output / "report" / "report.json",
         {
-            "metrics_schema": "footballworld.match-metrics/13",
+            "metrics_schema": "footballworld.match-metrics/14",
             "quality": {
                 "hashes_verified": True,
                 "full_duration_complete": True,
@@ -156,11 +159,16 @@ def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
     assert alpha["completed_attacking_third_passes"] == 62
     assert alpha["attacking_third_backward_pass_attempts"] == 50
     assert alpha["attacking_third_backward_without_forward_support"] == 34
+    assert alpha["completed_attacking_third_backward_without_forward_support"] == 26
+    assert alpha[
+        "mean_attacking_third_backward_without_forward_support_distance_m"
+    ] == pytest.approx(698.0 / 34.0)
     rendered = render_tactical_matrix_html(report, output_dir=tmp_path / "report")
     assert "Shots (OT; box; mean distance)" in rendered
     assert "Forward passes (received)" in rendered
     assert "Att. third passes (received; back/unsupported)" in rendered
     assert "67.6% back" in rendered
+    assert "26 received; 20.5 m mean" in rendered
     assert "Cross signatures (received)" in rendered
     assert "Line breaks (received)" in rendered
 

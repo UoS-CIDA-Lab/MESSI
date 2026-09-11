@@ -15,7 +15,7 @@ from filelock import FileLock
 
 MATRIX_SCHEMA = "footballworld.tactical-plan-matrix/1"
 MULTI_REPORT_SCHEMA = "footballworld.tactical-matrix-report/2"
-MATCH_METRICS_SCHEMA = "footballworld.match-metrics/13"
+MATCH_METRICS_SCHEMA = "footballworld.match-metrics/14"
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -71,6 +71,8 @@ def build_tactical_matrix_report(
             "completed_attacking_third_passes": 0,
             "attacking_third_backward_passes": 0,
             "attacking_third_backward_without_forward_support": 0,
+            "completed_attacking_third_backward_without_forward_support": 0,
+            "attacking_third_backward_without_forward_support_distance_sum_m": 0.0,
             "possession_s": 0.0,
             "penalty_area_entries": 0,
             "corners": 0,
@@ -248,6 +250,7 @@ def build_tactical_matrix_report(
                 "completed_attacking_third_passes",
                 "attacking_third_backward_pass_attempts",
                 "attacking_third_backward_without_forward_support",
+                "completed_attacking_third_backward_without_forward_support",
             ):
                 metric_value = team.get(metric_name)
                 _require(
@@ -304,6 +307,30 @@ def build_tactical_matrix_report(
             aggregate["attacking_third_backward_without_forward_support"] += int(
                 team["attacking_third_backward_without_forward_support"]
             )
+            aggregate[
+                "completed_attacking_third_backward_without_forward_support"
+            ] += int(
+                team["completed_attacking_third_backward_without_forward_support"]
+            )
+            unsupported_mean_distance = team.get(
+                "mean_attacking_third_backward_without_forward_support_distance_m"
+            )
+            unsupported_count = int(
+                team["attacking_third_backward_without_forward_support"]
+            )
+            _require(
+                unsupported_count == 0 or unsupported_mean_distance is not None,
+                f"missing unsupported backward-pass mean distance: {report_path}",
+            )
+            if unsupported_mean_distance is not None:
+                _require(
+                    isinstance(unsupported_mean_distance, (int, float))
+                    and not isinstance(unsupported_mean_distance, bool),
+                    f"invalid unsupported backward-pass mean distance: {report_path}",
+                )
+                aggregate[
+                    "attacking_third_backward_without_forward_support_distance_sum_m"
+                ] += float(unsupported_mean_distance) * unsupported_count
             aggregate["possession_s"] += float(team["possession_s"])
             for name in (
                 "penalty_area_entries",
@@ -325,6 +352,14 @@ def build_tactical_matrix_report(
         possession_s = float(aggregate.pop("possession_s"))
         realized_shots = int(aggregate["realized_shots"])
         shot_distance_sum_m = float(aggregate.pop("shot_distance_sum_m"))
+        unsupported_backward_count = int(
+            aggregate["attacking_third_backward_without_forward_support"]
+        )
+        unsupported_backward_distance_sum_m = float(
+            aggregate.pop(
+                "attacking_third_backward_without_forward_support_distance_sum_m"
+            )
+        )
         aggregate.update(
             {
                 "plan": plan,
@@ -356,6 +391,16 @@ def build_tactical_matrix_report(
                 ),
                 "attacking_third_backward_without_forward_support": int(
                     aggregate.pop("attacking_third_backward_without_forward_support")
+                ),
+                "completed_attacking_third_backward_without_forward_support": int(
+                    aggregate.pop(
+                        "completed_attacking_third_backward_without_forward_support"
+                    )
+                ),
+                "mean_attacking_third_backward_without_forward_support_distance_m": (
+                    unsupported_backward_distance_sum_m / unsupported_backward_count
+                    if unsupported_backward_count
+                    else None
                 ),
                 "rule_policy_cross_control_signatures": int(
                     aggregate.pop("cross_signatures")
@@ -515,6 +560,14 @@ def render_tactical_matrix_html(
         no_support_label = (
             "n/a" if no_support_share is None else f"{no_support_share:.1%} unsupported"
         )
+        unsupported_distance = row[
+            "mean_attacking_third_backward_without_forward_support_distance_m"
+        ]
+        unsupported_detail_label = (
+            "n/a"
+            if unsupported_distance is None
+            else f"{row['completed_attacking_third_backward_without_forward_support']} received; {float(unsupported_distance):.1f} m mean"
+        )
         policies.append(
             "<tr>"
             f"<td>{html.escape(str(row['plan']))}</td>"
@@ -524,7 +577,7 @@ def render_tactical_matrix_html(
             f"<td>{row['realized_shots']} ({row['shots_on_target']} OT; {row['shots_inside_penalty_area']} box; {shot_distance_label})</td>"
             f"<td>{completion_label}</td>"
             f"<td>{row['forward_pass_attempts']} ({row['completed_forward_passes']})</td>"
-            f"<td>{row['attacking_third_pass_attempts']} ({row['completed_attacking_third_passes']}; {attacking_third_backward_label}; {no_support_label})</td>"
+            f"<td>{row['attacking_third_pass_attempts']} ({row['completed_attacking_third_passes']}; {attacking_third_backward_label}; {no_support_label}; {unsupported_detail_label})</td>"
             f"<td>{row['rule_policy_cross_control_signatures']} ({row['completed_rule_policy_cross_control_signatures']})</td>"
             f"<td>{row['defensive_line_breaking_pass_proxies']} ({row['completed_defensive_line_breaking_pass_proxies']})</td>"
             f"<td>{row['average_controlled_possession_s']:.1f}</td>"

@@ -14,7 +14,7 @@ import numpy as np
 from footballworld.analysis.dataset import MatchDataset
 
 REPORT_SCHEMA = "footballworld.match-report/9"
-METRICS_VERSION = "footballworld.match-metrics/13"
+METRICS_VERSION = "footballworld.match-metrics/14"
 INTENT_PASS = 2
 INTENT_SHOT = 3
 INTENT_CLEAR = 4
@@ -2645,6 +2645,15 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     team_attacking_third_backward_without_forward_support = np.zeros(
         2, dtype=np.int64
     )
+    team_completed_attacking_third_backward_without_forward_support = np.zeros(
+        2, dtype=np.int64
+    )
+    team_attacking_third_backward_without_forward_support_distance_sum_m = np.zeros(
+        2, dtype=np.float64
+    )
+    team_attacking_third_backward_without_forward_support_distance_count = np.zeros(
+        2, dtype=np.int64
+    )
     pass_time_bins = np.zeros((2, 6, 2), dtype=np.int64)
     control_fps = float(dataset.metadata["control_fps"])
     for row in pass_map_rows:
@@ -2681,11 +2690,30 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         team_attacking_third_backward_passes[int(team)] += int(
             attacking_third and receipt_direction == "backward"
         )
-        team_attacking_third_backward_without_forward_support[int(team)] += int(
+        backward_without_support = (
             attacking_third
             and receipt_direction == "backward"
             and row.get("onside_teammates_at_least_1m_ahead") == 0
         )
+        team_attacking_third_backward_without_forward_support[int(team)] += int(
+            backward_without_support
+        )
+        team_completed_attacking_third_backward_without_forward_support[
+            int(team)
+        ] += int(backward_without_support and completed)
+        pass_distance_m = row.get("distance_m")
+        if (
+            backward_without_support
+            and isinstance(pass_distance_m, (int, float))
+            and not isinstance(pass_distance_m, bool)
+            and math.isfinite(float(pass_distance_m))
+        ):
+            team_attacking_third_backward_without_forward_support_distance_sum_m[
+                int(team)
+            ] += float(pass_distance_m)
+            team_attacking_third_backward_without_forward_support_distance_count[
+                int(team)
+            ] += 1
         if completed:
             team_completed_passes[int(team)] += 1
             team_completed_cross_signatures[int(team)] += int(cross_signature)
@@ -2801,6 +2829,22 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         backward_without_support = int(
             team_attacking_third_backward_without_forward_support[team]
         )
+        completed_backward_without_support = int(
+            team_completed_attacking_third_backward_without_forward_support[team]
+        )
+        backward_without_support_distance_count = int(
+            team_attacking_third_backward_without_forward_support_distance_count[team]
+        )
+        mean_backward_without_support_distance_m = (
+            None
+            if backward_without_support_distance_count == 0
+            else float(
+                team_attacking_third_backward_without_forward_support_distance_sum_m[
+                    team
+                ]
+                / backward_without_support_distance_count
+            )
+        )
         backward_share = (
             0.0
             if directional_attempts == 0
@@ -2852,6 +2896,12 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                         "team": team,
                         "backward_attempts": backward_attempts,
                         "without_forward_support": backward_without_support,
+                        "completed_without_forward_support": completed_backward_without_support,
+                        "mean_distance_m": (
+                            None
+                            if mean_backward_without_support_distance_m is None
+                            else round(mean_backward_without_support_distance_m, 3)
+                        ),
                         "no_support_share": round(no_support_share, 6),
                     },
                 }
@@ -2980,6 +3030,27 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             ),
             "attacking_third_backward_without_forward_support": int(
                 team_attacking_third_backward_without_forward_support[team]
+            ),
+            "completed_attacking_third_backward_without_forward_support": int(
+                team_completed_attacking_third_backward_without_forward_support[team]
+            ),
+            "mean_attacking_third_backward_without_forward_support_distance_m": (
+                None
+                if team_attacking_third_backward_without_forward_support_distance_count[
+                    team
+                ]
+                == 0
+                else round(
+                    float(
+                        team_attacking_third_backward_without_forward_support_distance_sum_m[
+                            team
+                        ]
+                        / team_attacking_third_backward_without_forward_support_distance_count[
+                            team
+                        ]
+                    ),
+                    6,
+                )
             ),
             "penalty_area_entries": int(penalty_area_entries[team]),
             "corners": int(team_event_counts[team]["restart_corner"]),
