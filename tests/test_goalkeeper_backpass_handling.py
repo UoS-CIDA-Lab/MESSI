@@ -99,25 +99,28 @@ def test_fast_ground_pass_path_uses_the_whole_rolling_table_and_arms_law_12():
             _conservative_path_length(
                 release,
                 velocity,
+                jnp.zeros(3, dtype=jnp.float32),
                 ball=Ball(),
                 physics=BallPhysics(),
             )
         )
         > 25.0
     )
-    eager = targeted_own_goalkeeper_team(state, actor, release, velocity)
+    spin = jnp.zeros(3, dtype=jnp.float32)
+    eager = targeted_own_goalkeeper_team(state, actor, release, velocity, spin)
     compiled = jax.jit(targeted_own_goalkeeper_team)(
         state,
         jnp.int32(actor),
         release,
         velocity,
+        spin,
     )
     assert int(eager) == team
     assert int(compiled) == team
 
 
-def test_goalkeeper_movement_can_reach_the_end_of_a_targeted_pass_ray():
-    """A moving receiver must not make a deliberate back-pass hand-legal."""
+def test_supported_ground_slip_extends_fast_pass_path_before_rolling():
+    """Protect the zero-spin slide phase seen in the second 25-match audit."""
 
     _, _, state = _open_play_state()
     team = 0
@@ -135,18 +138,66 @@ def test_goalkeeper_movement_can_reach_the_end_of_a_targeted_pass_ray():
     release = jnp.asarray((-5.998, 3.245, 0.11), dtype=jnp.float32)
     velocity = jnp.asarray((-19.744, -1.438, 0.0), dtype=jnp.float32)
 
-    # The stationary projection is roughly 5.2 m beyond the finite proxy path,
-    # while the goalkeeper can cover that gap before the decelerating ball.
+    # A rolling-only estimate is about 38.5 m. The environment first slides a
+    # zero-spin release, carrying this pass about 62.5 m in total.
     path_length = float(
         _conservative_path_length(
             release,
             velocity,
+            jnp.zeros(3, dtype=jnp.float32),
             ball=Ball(),
             physics=BallPhysics(),
         )
     )
-    assert 38.0 < path_length < 39.0
-    assert int(targeted_own_goalkeeper_team(state, actor, release, velocity)) == team
+    assert 62.0 < path_length < 63.0
+    assert (
+        int(
+            targeted_own_goalkeeper_team(
+                state,
+                actor,
+                release,
+                velocity,
+                jnp.zeros(3, dtype=jnp.float32),
+            )
+        )
+        == team
+    )
+
+
+def test_goalkeeper_movement_can_reach_the_end_of_a_targeted_pass_ray():
+    """A moving receiver must not make a deliberate back-pass hand-legal."""
+
+    _, _, state = _open_play_state()
+    team = 0
+    team_slots = np.flatnonzero(np.asarray(state.players.team_id) == team)
+    goalkeeper = int(team_slots[np.asarray(state.players.is_goalkeeper)[team_slots]][0])
+    actor = int(team_slots[team_slots != goalkeeper][0])
+    positions = np.asarray(state.players.position).copy()
+    positions[actor] = (0.0, 0.0)
+    positions[goalkeeper] = (-46.0, 0.0)
+    state = state._replace(
+        players=state.players._replace(
+            position=jnp.asarray(positions, dtype=jnp.float32)
+        )
+    )
+    release = jnp.asarray((0.0, 0.0, 0.11), dtype=jnp.float32)
+    velocity = jnp.asarray((-15.0, 0.0, 0.0), dtype=jnp.float32)
+    spin = jnp.zeros(3, dtype=jnp.float32)
+
+    path_length = float(
+        _conservative_path_length(
+            release,
+            velocity,
+            spin,
+            ball=Ball(),
+            physics=BallPhysics(),
+        )
+    )
+    assert 42.0 < path_length < 43.0
+    assert 46.0 - path_length > Ball().radius
+    assert (
+        int(targeted_own_goalkeeper_team(state, actor, release, velocity, spin)) == team
+    )
 
 
 def test_short_or_laterally_missed_team_kick_does_not_arm_backpass_restriction():
@@ -170,12 +221,14 @@ def test_short_or_laterally_missed_team_kick_does_not_arm_backpass_restriction()
         actor,
         release,
         jnp.asarray((-2.0, -1.36, 0.0), dtype=jnp.float32),
+        jnp.zeros(3, dtype=jnp.float32),
     )
     lateral_miss = targeted_own_goalkeeper_team(
         state,
         actor,
         release,
         jnp.asarray((-12.393, 8.463, 0.0), dtype=jnp.float32),
+        jnp.zeros(3, dtype=jnp.float32),
     )
     assert int(short) == NO_TEAM
     assert int(lateral_miss) == NO_TEAM

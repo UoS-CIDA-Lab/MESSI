@@ -1232,6 +1232,7 @@ def resolve_contact_step(
         ),
         release_position=release_position,
         outgoing_velocity=contact_velocity,
+        outgoing_spin=contact_spin,
         ball=ball_geometry,
         reach=reach,
         physics=ball_physics,

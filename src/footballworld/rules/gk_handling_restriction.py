@@ -64,16 +64,18 @@ def goalkeeper_hand_restricted_team(state: State) -> jax.Array:
 def _conservative_path_length(
     position: jax.Array,
     velocity: jax.Array,
+    spin: jax.Array,
     *,
     ball: Ball,
     physics: BallPhysics,
 ) -> jax.Array:
     """Bound a straight unopposed path without integrating a trajectory.
 
-    Ground range uses the rollout model's local rolling deceleration. Flight
-    uses a no-drag closed form with finitely many configured bounces and then
-    rolls at the attenuated horizontal speed. Magnus curvature is deliberately
-    outside this intent proxy.
+    Supported-ground range includes the rollout model's slide-to-roll phase
+    and its configured rolling deceleration. Flight uses a no-drag closed form
+    with finitely many configured bounces and then rolls at the attenuated
+    horizontal speed. Magnus curvature is deliberately outside this intent
+    proxy.
     """
 
     horizontal_speed = jnp.linalg.norm(velocity[:2])
@@ -117,7 +119,64 @@ def _conservative_path_length(
         post_bounce_speed,
         physics=physics,
     )
-    return horizontal_speed * (first_flight_s + later_bounce_s) + rolling_distance
+    airborne_path = (
+        horizontal_speed * (first_flight_s + later_bounce_s) + rolling_distance
+    )
+    supported_ground = (height <= GEOMETRY_EPS) & (
+        jnp.abs(vertical) <= physics.ground_settle_vz
+    )
+    ground_path = _supported_ground_path_length(
+        velocity[:2],
+        spin,
+        ball=ball,
+        physics=physics,
+    )
+    return jnp.where(supported_ground, ground_path, airborne_path)
+
+
+def _supported_ground_path_length(
+    horizontal_velocity: jax.Array,
+    spin: jax.Array,
+    *,
+    ball: Ball,
+    physics: BallPhysics,
+) -> jax.Array:
+    """Return straight-ray range through the existing slip-to-roll model.
+
+    The ground integrator first spends friction impulse bringing the contact
+    patch to rolling compatibility.  With constant Coulomb friction during
+    that phase, the required translational velocity delta and its duration
+    have closed forms.  The remaining compatible velocity then consumes the
+    same piecewise rolling integral as an already rolling ball.
+    """
+
+    dtype = horizontal_velocity.dtype
+    horizontal_speed = jnp.linalg.norm(horizontal_velocity)
+    direction = horizontal_velocity / jnp.maximum(horizontal_speed, DIV_EPS)
+    surface_velocity = jnp.asarray(
+        [-spin[1], spin[0]],
+        dtype=dtype,
+    ) * jnp.asarray(ball.radius, dtype=dtype)
+    slip = horizontal_velocity + surface_velocity
+    inertia = jnp.asarray(physics.ball_inertia_ratio, dtype=dtype)
+    sticking_delta = -(inertia / (1.0 + inertia)) * slip
+    friction_acceleration = jnp.maximum(
+        jnp.asarray(physics.ground_slide_friction * physics.g, dtype=dtype),
+        DIV_EPS,
+    )
+    slip_time = jnp.linalg.norm(sticking_delta) / friction_acceleration
+    slip_displacement = (horizontal_velocity + 0.5 * sticking_delta) * slip_time
+    compatible_velocity = horizontal_velocity + sticking_delta
+    compatible_speed = jnp.linalg.norm(compatible_velocity)
+    rolling_direction_fraction = jnp.maximum(
+        jnp.dot(compatible_velocity, direction)
+        / jnp.maximum(compatible_speed, DIV_EPS),
+        0.0,
+    )
+    return jnp.maximum(jnp.dot(slip_displacement, direction), 0.0) + (
+        _rolling_stop_distance(compatible_speed, physics=physics)
+        * rolling_direction_fraction
+    )
 
 
 def _rolling_stop_distance(
@@ -133,8 +192,9 @@ def _rolling_stop_distance(
     resistance falls as the ball slows.  For each linear knot interval this
     helper evaluates the closed-form distance integral ``integral(v / d(v))``.
 
-    The result remains a straight, unopposed intent proxy: ground slip, curl,
-    drag and player interception are deliberately outside this calculation.
+    The result remains the rolling part of a straight, unopposed intent proxy;
+    slide-to-roll motion is added by ``_supported_ground_path_length``. Curl,
+    drag and player interception remain deliberately outside this calculation.
     No new football coefficient or rollout loop is introduced.
     """
 
@@ -186,6 +246,7 @@ def targeted_own_goalkeeper_team(
     actor: jax.Array,
     release_position: jax.Array,
     outgoing_velocity: jax.Array,
+    outgoing_spin: jax.Array,
     *,
     ball: Ball = Ball(),
     reach: Reach = Reach(),
@@ -212,6 +273,7 @@ def targeted_own_goalkeeper_team(
     path_length = _conservative_path_length(
         release_position,
         outgoing_velocity,
+        outgoing_spin,
         ball=ball,
         physics=physics,
     )
@@ -256,6 +318,7 @@ def update_backpass_after_deliberate_attempt(
     arm_targeted_foot_release: jax.Array,
     release_position: jax.Array,
     outgoing_velocity: jax.Array,
+    outgoing_spin: jax.Array,
     ball: Ball = Ball(),
     reach: Reach = Reach(),
     physics: BallPhysics = BallPhysics(),
@@ -280,6 +343,7 @@ def update_backpass_after_deliberate_attempt(
             actor,
             release_position,
             outgoing_velocity,
+            outgoing_spin,
             ball=ball,
             reach=reach,
             physics=physics,

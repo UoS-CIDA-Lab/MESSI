@@ -413,6 +413,11 @@ deceleration interval. Reusing only the release-speed deceleration for the
 whole path was unsound: fast passes enter lower-speed intervals with less
 resistance, so that shortcut materially underestimated their finite range and
 could fail to arm the restriction for an intended moving goalkeeper receiver.
+Supported-ground releases also include the closed-form Coulomb-friction
+impulse required to reach rolling compatibility, using the existing outgoing
+spin, ball radius, inertia ratio, friction and gravity. Omitting that initial
+slip phase could shorten a 22.8 m/s zero-spin pass proxy from roughly 77 m to
+43 m even though the authoritative integrator continued carrying the ball.
 
 This remains an intent proxy, not trajectory truth. Do not tune authoritative
 flight/bounce/roll/GK reach to repair its labels. Audit false positives and
