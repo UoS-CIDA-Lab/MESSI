@@ -48,6 +48,7 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
                 "forward_pass_attempts": 40 + index,
                 "completed_forward_passes": 34 + index,
                 "attacking_third_pass_attempts": 20 + index,
+                "attacking_third_direction_known_pass_attempts": 18 + index,
                 "completed_attacking_third_passes": 15 + index,
                 "attacking_third_backward_pass_attempts": 12 + index,
                 "attacking_third_backward_without_forward_support": 8 + index,
@@ -61,7 +62,7 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
     _write_json(
         output / "report" / "report.json",
         {
-            "metrics_schema": "footballworld.match-metrics/12",
+            "metrics_schema": "footballworld.match-metrics/13",
             "quality": {
                 "hashes_verified": True,
                 "full_duration_complete": True,
@@ -151,6 +152,7 @@ def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
     assert alpha["forward_pass_attempts"] == 162
     assert alpha["completed_forward_passes"] == 138
     assert alpha["attacking_third_pass_attempts"] == 82
+    assert alpha["attacking_third_direction_known_pass_attempts"] == 74
     assert alpha["completed_attacking_third_passes"] == 62
     assert alpha["attacking_third_backward_pass_attempts"] == 50
     assert alpha["attacking_third_backward_without_forward_support"] == 34
@@ -158,6 +160,7 @@ def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
     assert "Shots (OT; box; mean distance)" in rendered
     assert "Forward passes (received)" in rendered
     assert "Att. third passes (received; back/unsupported)" in rendered
+    assert "67.6% back" in rendered
     assert "Cross signatures (received)" in rendered
     assert "Line breaks (received)" in rendered
 

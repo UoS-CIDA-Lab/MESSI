@@ -1074,3 +1074,29 @@ backward releases (76.43%) and 37 team-match warnings. Team-match shares had a
 76.84% median and a 58.62--100% range. This variable-length join remains in the
 host analysis path; the JAX policy and environment transition gain no output
 leaf or runtime work.
+
+Those first support figures used the submitted kick-force family. That is a
+useful low-level execution diagnostic but not the realized pass direction:
+ground-pass control can oppose incoming ball velocity while the resulting ball
+still travels forward. Match-metrics schema 13 therefore retains the submitted
+direction receipts unchanged in the detailed pass map and policy-alignment
+section, but defines team forward, attacking-third backward, and unsupported
+backward counts from the source contact to the next distinct-player contact.
+Attempts ended by a boundary or censored at capture end remain in total
+attacking-third attempts but are excluded from the explicit direction-share
+denominator and are exposed as direction-unknown.
+
+Reprocessing the same 25 loop-06 captures under this corrected host-only
+definition found 1,814 realized backward passes among 2,501 direction-known
+attacking-third passes (72.53%), plus 1,374 backward passes without a visible
+active onside teammate at least one metre ahead (75.74% of backward passes).
+The tactical totals were Catenaccio 262/352 (74.4%), Gegenpress 424/656
+(64.6%), Juego de Posicion 333/476 (70.0%), Salida Lavolpiana 421/533
+(79.0%), and Zona Mista 374/484 (77.3%). Thirty-two team-match support
+warnings and 44 direction-concentration warnings remained, so the policy
+defect is not an artifact of force-vector compensation. This realized-contact
+geometry is the closest available FootballWorld neighbor to DFL PlayAngle,
+not an identical provider statistic: interceptions determine the observed end
+point and sixteen attacking-third attempts had no classifiable next-contact
+direction. Policy selection, pass physics, and rollout trajectories are
+retained exactly; only report meaning and denominators change.

@@ -15,7 +15,7 @@ from filelock import FileLock
 
 MATRIX_SCHEMA = "footballworld.tactical-plan-matrix/1"
 MULTI_REPORT_SCHEMA = "footballworld.tactical-matrix-report/2"
-MATCH_METRICS_SCHEMA = "footballworld.match-metrics/12"
+MATCH_METRICS_SCHEMA = "footballworld.match-metrics/13"
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -67,6 +67,7 @@ def build_tactical_matrix_report(
             "forward_passes": 0,
             "completed_forward_passes": 0,
             "attacking_third_passes": 0,
+            "attacking_third_direction_known_passes": 0,
             "completed_attacking_third_passes": 0,
             "attacking_third_backward_passes": 0,
             "attacking_third_backward_without_forward_support": 0,
@@ -243,6 +244,7 @@ def build_tactical_matrix_report(
                 "forward_pass_attempts",
                 "completed_forward_passes",
                 "attacking_third_pass_attempts",
+                "attacking_third_direction_known_pass_attempts",
                 "completed_attacking_third_passes",
                 "attacking_third_backward_pass_attempts",
                 "attacking_third_backward_without_forward_support",
@@ -289,6 +291,9 @@ def build_tactical_matrix_report(
             )
             aggregate["attacking_third_passes"] += int(
                 team["attacking_third_pass_attempts"]
+            )
+            aggregate["attacking_third_direction_known_passes"] += int(
+                team["attacking_third_direction_known_pass_attempts"]
             )
             aggregate["completed_attacking_third_passes"] += int(
                 team["completed_attacking_third_passes"]
@@ -339,6 +344,9 @@ def build_tactical_matrix_report(
                 ),
                 "attacking_third_pass_attempts": int(
                     aggregate.pop("attacking_third_passes")
+                ),
+                "attacking_third_direction_known_pass_attempts": int(
+                    aggregate.pop("attacking_third_direction_known_passes")
                 ),
                 "completed_attacking_third_passes": int(
                     aggregate.pop("completed_attacking_third_passes")
@@ -483,7 +491,9 @@ def render_tactical_matrix_html(
         shot_distance_label = (
             "n/a" if shot_distance is None else f"{float(shot_distance):.1f} m"
         )
-        attacking_third_attempts = int(row["attacking_third_pass_attempts"])
+        attacking_third_attempts = int(
+            row["attacking_third_direction_known_pass_attempts"]
+        )
         attacking_third_backward_share = (
             None
             if not attacking_third_attempts

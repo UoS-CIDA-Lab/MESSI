@@ -14,7 +14,7 @@ import numpy as np
 from footballworld.analysis.dataset import MatchDataset
 
 REPORT_SCHEMA = "footballworld.match-report/9"
-METRICS_VERSION = "footballworld.match-metrics/12"
+METRICS_VERSION = "footballworld.match-metrics/13"
 INTENT_PASS = 2
 INTENT_SHOT = 3
 INTENT_CLEAR = 4
@@ -2639,6 +2639,7 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     team_forward_passes = np.zeros(2, dtype=np.int64)
     team_completed_forward_passes = np.zeros(2, dtype=np.int64)
     team_attacking_third_passes = np.zeros(2, dtype=np.int64)
+    team_attacking_third_direction_known_passes = np.zeros(2, dtype=np.int64)
     team_completed_attacking_third_passes = np.zeros(2, dtype=np.int64)
     team_attacking_third_backward_passes = np.zeros(2, dtype=np.int64)
     team_attacking_third_backward_without_forward_support = np.zeros(
@@ -2666,18 +2667,23 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         pass_time_bins[int(team), pass_window, 1] += int(completed)
         cross_signature = row.get("rule_policy_cross_control_signature") is True
         line_break = row.get("defensive_line_breaking_pass_proxy") is True
-        forward = row.get("applied_direction_family") == "forward"
+        receipt_direction = row.get("direction_family")
+        direction_known = receipt_direction in ("backward", "lateral", "forward")
+        forward = receipt_direction == "forward"
         attacking_third = row.get("source_third") == "attacking_third"
         team_cross_signatures[int(team)] += int(cross_signature)
         team_line_break_proxies[int(team)] += int(line_break)
         team_forward_passes[int(team)] += int(forward)
         team_attacking_third_passes[int(team)] += int(attacking_third)
+        team_attacking_third_direction_known_passes[int(team)] += int(
+            attacking_third and direction_known
+        )
         team_attacking_third_backward_passes[int(team)] += int(
-            attacking_third and row.get("applied_direction_family") == "backward"
+            attacking_third and receipt_direction == "backward"
         )
         team_attacking_third_backward_without_forward_support[int(team)] += int(
             attacking_third
-            and row.get("applied_direction_family") == "backward"
+            and receipt_direction == "backward"
             and row.get("onside_teammates_at_least_1m_ahead") == 0
         )
         if completed:
@@ -2790,17 +2796,18 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
 
     for team in (0, 1):
         attacking_third_attempts = int(team_attacking_third_passes[team])
+        directional_attempts = int(team_attacking_third_direction_known_passes[team])
         backward_attempts = int(team_attacking_third_backward_passes[team])
         backward_without_support = int(
             team_attacking_third_backward_without_forward_support[team]
         )
         backward_share = (
             0.0
-            if attacking_third_attempts == 0
-            else backward_attempts / attacking_third_attempts
+            if directional_attempts == 0
+            else backward_attempts / directional_attempts
         )
         if (
-            attacking_third_attempts >= POLICY_AUDIT_ATTACKING_THIRD_MIN_PASSES
+            directional_attempts >= POLICY_AUDIT_ATTACKING_THIRD_MIN_PASSES
             and backward_share >= POLICY_AUDIT_ATTACKING_THIRD_BACKWARD_SHARE
         ):
             policy_anomalies.append(
@@ -2815,6 +2822,7 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                     "observed": {
                         "team": team,
                         "attempts": attacking_third_attempts,
+                        "direction_known_attempts": directional_attempts,
                         "backward_attempts": backward_attempts,
                         "backward_share": round(backward_share, 6),
                     },
@@ -2961,6 +2969,9 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             "forward_pass_attempts": int(team_forward_passes[team]),
             "completed_forward_passes": int(team_completed_forward_passes[team]),
             "attacking_third_pass_attempts": int(team_attacking_third_passes[team]),
+            "attacking_third_direction_known_pass_attempts": int(
+                team_attacking_third_direction_known_passes[team]
+            ),
             "completed_attacking_third_passes": int(
                 team_completed_attacking_third_passes[team]
             ),
