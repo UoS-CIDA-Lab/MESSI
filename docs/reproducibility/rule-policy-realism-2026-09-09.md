@@ -1301,3 +1301,12 @@ backward passes increased from 1,431 to 1,447. Line-break proxies improved from
 89/22 received to 108/36, but that isolated gain cannot compensate for the
 large shot-volume and box-shot loss. The default is restored to 0.60; this is
 another case where a short fixed profile was insufficient acceptance evidence.
+
+Final validation on the restored accepted source passed all 280 public tests in
+448.51 seconds. The policy-session notice suite separately passed all 15
+kickoff/render-legibility, open-field marking, x64 randomness, and roster
+identity-refresh tests in 321.82 seconds. Twenty-nine focused policy tests also
+passed after the 0.60 restoration. Ruff, compileall, and diff whitespace checks
+were clean. The rejected 3.1 GB loop-09 output was deleted after its comparison
+was recorded; `output/policy-loop-08` remains the sole retained matrix artifact
+and its multi-report uses metrics `/14` and tactical matrix report `/3`.
