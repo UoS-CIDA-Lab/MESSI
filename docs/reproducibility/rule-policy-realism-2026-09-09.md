@@ -1236,3 +1236,16 @@ pattern resets the attack over a substantial distance. The behavioral policy
 is unchanged because the narrower suppression candidate already reduced
 forward progression and worsened shot distance; the safer next design target
 is creating a viable forward option rather than deleting successful service.
+
+One direct forward-support candidate was rejected on the fixed four-seed,
+4,500-step profiler before a matrix run. The current episode-stable CF/WF
+receives its attacking-pattern pocket only after it is already at least one
+metre ahead of the carrier. Removing that precondition appeared to address the
+missing-option mechanism while retaining the existing participant, non-carrier,
+pitch, and offside caps. Instead, realized pass count stayed at 578 while shots
+fell from five to three, same-team receipts fell from 545 to 537, realized
+backward passes rose from 207 to 220, and realized forward passes stayed at
+202 but their receipts fell from 188 to 180. Mean shot distance improved from
+16.21 m to 15.60 m only because two shots disappeared. The precondition is
+therefore retained: blindly moving the selected attacker from behind the ball
+changes too much team spacing and does not create a usable forward lane.
