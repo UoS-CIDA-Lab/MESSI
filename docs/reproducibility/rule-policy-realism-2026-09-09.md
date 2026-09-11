@@ -1100,3 +1100,32 @@ not an identical provider statistic: interceptions determine the observed end
 point and sixteen attacking-third attempts had no classifiable next-contact
 direction. Policy selection, pass physics, and rollout trajectories are
 retained exactly; only report meaning and denominators change.
+
+The clean `1b13931` loop-07 rerun then regenerated all 25 full-duration
+seed-29 ordered cells under schema 13 with no child failure. It reproduced the
+accepted trajectory totals exactly: 411 realized shots, 224 on target, 214
+from inside the penalty area, and 49,275 open-play passes. This confirms that
+the report-only definition change did not alter policy behavior. Realized
+attacking-third direction was known for 2,560/2,578 passes; 1,880 were
+backward (73.44%) and 1,431 of those had no visible active onside teammate at
+least one metre ahead (76.12%). The audit emitted 39 backward-concentration,
+37 no-forward-support, and five individual team-match 15-minute pass-trend
+warnings, with no liveness, repeated-event, dismissal, spatial-concentration,
+or pass-collapse warning. The clean full-duration captures are still labelled
+diagnostic because report-only publication deliberately does not claim video
+authority.
+
+Role reconstruction from each match's recorded opening formation shows where
+the remaining issue concentrates, while remaining approximate after later
+manager formation changes or substitutions. Centre forwards made 609 realized
+attacking-third backward passes and wide forwards 415; respectively 78.7% and
+82.7% lacked a teammate at least one metre ahead. Unsupported events occurred
+throughout the match rather than emerging from fatigue: the seven 15-minute
+or added-time buckets contained 229, 238, 215, 230, 235, 235, and 49. Of the
+1,431 unsupported events, 1,386 had a submitted backward direction, 1,235
+ended at a teammate, and 1,107 reached the intended receiver. The dominant
+mechanism is therefore a deliberate, usually successful layoff by the most
+advanced carrier, not a force-compensation artifact, interception artifact,
+or late-match policy collapse. Any next intervention should be restricted to
+this carrier/action context; pushing the entire formation forward already
+failed the full-matrix shot-quality acceptance test.
