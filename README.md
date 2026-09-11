@@ -14,7 +14,7 @@
   <img src="docs/assets/rendering/latest-match-10s.gif" alt="Ten-second MESSI passing move ending in a goal" width="760">
 </a>
 
-<sub>MESSI 0.1.0 · seed 29 · <code>catenaccio</code> vs <code>salida_lavolpiana</code>: a passing move and goal from an authoritative 90-minute simulation with 80 Hz physics, 10 Hz decisions, and exact 20 fps rendering. Select the animation for the 540p H.264 clip.</sub>
+<sub>MESSI 0.1.0 · seed 29 · <code>catenaccio</code> vs <code>salida_lavolpiana</code>: a passing move and goal from an authoritative 90-minute simulation with 80 Hz physics, 10 Hz decisions, and exact 20 fps rendering. The GIF and linked H.264 clip both use a 1,920×1,080 source.</sub>
 
 </div>
 
