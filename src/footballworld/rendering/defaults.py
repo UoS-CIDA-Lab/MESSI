@@ -52,7 +52,7 @@ class RenderStyle:
     width_px: int = 1920
     height_px: int = 1080
     dpi: int = 150
-    # One team-coloured compound figure is deliberately presentation-only.
+    # One spherical team-coloured marker is deliberately presentation-only.
     # This is the largest marker that stays legible without overrunning the
     # nearby intent/FOV cues.
     player_size: float = 185.0

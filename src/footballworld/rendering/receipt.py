@@ -73,7 +73,7 @@ def render_settings_receipt(
         "camera_distance_m": float(style.camera_distance_m),
         "camera_focal_length": float(style.camera_focal_length),
         "player_marker_area_points2": float(style.player_size),
-        "player_marker": "single_team_coloured_animated_chibi_figure",
+        "player_marker": "single_team_coloured_circle",
         "video_fps": float(video_fps),
         "width_px": int(style.width_px),
         "height_px": int(style.height_px),

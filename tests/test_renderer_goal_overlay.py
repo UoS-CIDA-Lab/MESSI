@@ -10,8 +10,6 @@ from footballworld.rendering.renderer import (
     _carry_adjudication,
     _goal_overlay_font_sizes,
     _insert_goal_presentation_holds,
-    _player_marker_geometry,
-    _player_walk_pose_indices,
     _VisualFrame,
 )
 
@@ -24,7 +22,6 @@ def _frame(control_tick: int, adjudication: _Adjudication | None) -> _VisualFram
         ball_position=np.zeros(3, dtype=np.float32),
         ball_live=True,
         player_position=np.zeros((2, 2), dtype=np.float32),
-        player_velocity=np.zeros((2, 2), dtype=np.float32),
         player_body_forward=np.zeros((2, 2), dtype=np.float32),
         player_gaze_yaw=np.zeros(2, dtype=np.float32),
         aerial_progress=np.zeros(2, dtype=np.float32),
@@ -53,34 +50,6 @@ def test_goal_overlay_typography_preserves_relative_size_at_1080p() -> None:
         40.0,
         17.0,
     )
-
-
-def test_player_marker_is_one_compound_head_and_body_path() -> None:
-    vertices, codes = _player_marker_geometry()
-    assert vertices.shape == (34, 2)
-    assert codes.shape == (34,)
-    assert np.count_nonzero(codes == 1) == 4
-    assert np.count_nonzero(codes == 79) == 4
-    assert np.max(np.abs(vertices[:, 0])) <= 0.5
-    assert np.min(vertices[:, 1]) <= -1.0
-    head = vertices[-13:]
-    assert np.allclose(np.linalg.norm(head, axis=1), 0.34)
-    assert np.max(head[:, 1]) > 0.3
-
-
-def test_player_legs_animate_only_while_moving() -> None:
-    velocity = np.asarray(((0.0, 0.0), (4.0, 0.0)), dtype=np.float32)
-    active = np.asarray((True, True))
-    still = _player_walk_pose_indices(velocity, active, video_seconds=0.0)
-    later = _player_walk_pose_indices(velocity, active, video_seconds=0.1)
-    assert still[0] == 3
-    assert later[0] == 3
-    assert still[1] != later[1]
-
-    hidden = _player_walk_pose_indices(
-        velocity, np.asarray((True, False)), video_seconds=0.1
-    )
-    assert hidden[1] == 3
 
 
 def test_goal_presentation_survives_adjudication_hold() -> None:

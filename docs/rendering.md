@@ -239,15 +239,11 @@ A tighter regulation-surface
 crop increases the pitch's screen occupancy while alternating grass, cropped
 sloped stands, regulation 3D goal frames and nets, the ball's real height, and
 the retained top-down minimap preserve spatial context. Each player uses one
-team-coloured chibi silhouette with a deliberately enlarged head, compressed
-torso, and the identifying number centred inside the head. A small prebuilt
-pose palette makes the two legs alternate from causal tracking velocity and
-video time while a stationary player holds the neutral pose. The figures
-remain one batched scatter collection rather than per-player body patches, and
-retain the existing team, goalkeeper, dismissal, number, and depth-scale
-semantics. The gait is host-only presentation state: it neither changes nor
-feeds back into player velocity. The aerial recovery countdown drives a
-bounded sine arc, so the silhouette visibly rises and returns after a high-ball
+team-coloured circular marker with its identifying number centred inside. The
+markers remain one batched scatter collection and retain the existing team,
+goalkeeper, dismissal, number, and depth-scale semantics. No player velocity
+is consumed merely for marker animation. The aerial recovery countdown drives a
+bounded sine arc, so the marker visibly rises and returns after a high-ball
 contact without requiring historical frames. Its ground-anchored recovery ring and shrinking shadow
 reinforce the jump without changing the player's physical position. The two stamina bars use full-capacity dark rails, which keep
 partly depleted bars legible against either grass stripe. FootballWorld avoids a stamina-dependent red gradient because red already identifies the
@@ -284,7 +280,7 @@ the resolved radii are recorded in render-settings `/3`.
 Requested intent is shown independently from realized contact. Each ring is a
 world-space circle projected onto the turf, so it foreshortens with the fixed
 camera. Every vertex remains on the turf plane, and the shared ring collections
-are painted before the elevated player-marker collection so a player figure
+are painted before the elevated player-marker collection so a player circle
 occludes the ring instead of the ring being composited over the player. Its
 radius comes from the configured horizontal reach plus the physical
 ball radius: 1.21 m for ordinary `CONTROL`, `PASS`, `SHOT`, and `CLEAR`; 1.51 m
