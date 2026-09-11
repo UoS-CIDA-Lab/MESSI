@@ -55,6 +55,10 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
                 "completed_attacking_third_backward_without_forward_support": 6 + index,
                 "mean_attacking_third_backward_without_forward_support_distance_m": 20.0
                 + index,
+                "attacking_third_low_pressure_long_backward_reset_attempts": 4
+                + index,
+                "completed_attacking_third_low_pressure_long_backward_resets": 3
+                + index,
                 "possession_s": 1_000.0 + index,
                 "penalty_area_entries": 3,
                 "corners": 2,
@@ -65,7 +69,7 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
     _write_json(
         output / "report" / "report.json",
         {
-            "metrics_schema": "footballworld.match-metrics/14",
+            "metrics_schema": "footballworld.match-metrics/15",
             "quality": {
                 "hashes_verified": True,
                 "full_duration_complete": True,
@@ -173,6 +177,10 @@ def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
     assert alpha["attacking_third_backward_pass_attempts"] == 50
     assert alpha["attacking_third_backward_without_forward_support"] == 34
     assert alpha["completed_attacking_third_backward_without_forward_support"] == 26
+    assert alpha["attacking_third_low_pressure_long_backward_reset_attempts"] == 18
+    assert alpha[
+        "completed_attacking_third_low_pressure_long_backward_resets"
+    ] == 14
     assert alpha[
         "mean_attacking_third_backward_without_forward_support_distance_m"
     ] == pytest.approx(698.0 / 34.0)
@@ -182,6 +190,7 @@ def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
     assert "Att. third passes (received; back/unsupported)" in rendered
     assert "67.6% back" in rendered
     assert "26 received; 20.5 m mean" in rendered
+    assert "18 long low-pressure resets (14 received)" in rendered
     assert "Cross signatures (received)" in rendered
     assert "Line breaks (received)" in rendered
     assert "Policy audit envelope" in rendered

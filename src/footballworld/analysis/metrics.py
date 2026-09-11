@@ -14,7 +14,7 @@ import numpy as np
 from footballworld.analysis.dataset import MatchDataset
 
 REPORT_SCHEMA = "footballworld.match-report/9"
-METRICS_VERSION = "footballworld.match-metrics/14"
+METRICS_VERSION = "footballworld.match-metrics/15"
 INTENT_PASS = 2
 INTENT_SHOT = 3
 INTENT_CLEAR = 4
@@ -55,6 +55,9 @@ POLICY_AUDIT_PASS_ACTIVITY_NEIGHBOR_MIN_ATTEMPTS = 20
 POLICY_AUDIT_ATTACKING_THIRD_MIN_PASSES = 20
 POLICY_AUDIT_ATTACKING_THIRD_BACKWARD_SHARE = 0.65
 POLICY_AUDIT_ATTACKING_THIRD_BACKWARD_NO_SUPPORT_SHARE = 0.70
+POLICY_AUDIT_BACKWARD_RESET_PRESSURE_DISTANCE_M = 5.0
+POLICY_AUDIT_LONG_BACKWARD_RESET_DISTANCE_M = 20.0
+POLICY_AUDIT_LOW_PRESSURE_LONG_RESET_MIN_COUNT = 20
 PLAYER_POSITION_WINDOW_S = 15.0
 PLAYER_POSITION_TARGET_CELL_M = 4.0
 SPACE_OCCUPANCY_WINDOW_S = 30.0
@@ -1006,6 +1009,40 @@ def _pass_map_rows(
             reverse=True,
         )
         defensive_line_x_m = opponent_x[1] if len(opponent_x) >= 2 else None
+        opponent_distances_m = [
+            float(
+                np.hypot(
+                    float(player["position"][0]) - float(start[0]),
+                    float(player["position"][1]) - float(start[1]),
+                )
+            )
+            for player in player_snapshots_by_tick.get(int(source["tick"]), [])
+            if player.get("team") == 1 - int(team)
+            and isinstance(player.get("position"), tuple)
+            and len(player["position"]) >= 2
+            and np.isfinite(player["position"][0])
+            and np.isfinite(player["position"][1])
+        ]
+        nearest_opponent_distance_m = (
+            min(opponent_distances_m) if opponent_distances_m else None
+        )
+        backward_context = None
+        if source_third == "attacking_third" and family == "backward":
+            if forward_support_count > 0:
+                backward_context = "supported_recycle"
+            elif (
+                nearest_opponent_distance_m is not None
+                and nearest_opponent_distance_m
+                <= POLICY_AUDIT_BACKWARD_RESET_PRESSURE_DISTANCE_M
+            ):
+                backward_context = "pressure_release"
+            elif (
+                distance_m is not None
+                and distance_m >= POLICY_AUDIT_LONG_BACKWARD_RESET_DISTANCE_M
+            ):
+                backward_context = "low_pressure_long_reset"
+            else:
+                backward_context = "low_pressure_short_layoff"
         progress_m = None if end is None else float(end[0]) - float(normalized_start[0])
         defensive_line_break = bool(
             defensive_line_x_m is not None
@@ -1050,6 +1087,12 @@ def _pass_map_rows(
                 "source_half": source_half,
                 "source_third": source_third,
                 "onside_teammates_at_least_1m_ahead": forward_support_count,
+                "nearest_opponent_distance_m_at_source": (
+                    None
+                    if nearest_opponent_distance_m is None
+                    else round(nearest_opponent_distance_m, 3)
+                ),
+                "attacking_third_backward_context": backward_context,
                 "outcome": outcome,
             }
         )
@@ -2654,6 +2697,12 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     team_attacking_third_backward_without_forward_support_distance_count = np.zeros(
         2, dtype=np.int64
     )
+    team_attacking_third_low_pressure_long_backward_resets = np.zeros(
+        2, dtype=np.int64
+    )
+    team_completed_attacking_third_low_pressure_long_backward_resets = np.zeros(
+        2, dtype=np.int64
+    )
     pass_time_bins = np.zeros((2, 6, 2), dtype=np.int64)
     control_fps = float(dataset.metadata["control_fps"])
     for row in pass_map_rows:
@@ -2695,6 +2744,16 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             and receipt_direction == "backward"
             and row.get("onside_teammates_at_least_1m_ahead") == 0
         )
+        low_pressure_long_reset = (
+            row.get("attacking_third_backward_context")
+            == "low_pressure_long_reset"
+        )
+        team_attacking_third_low_pressure_long_backward_resets[int(team)] += int(
+            low_pressure_long_reset
+        )
+        team_completed_attacking_third_low_pressure_long_backward_resets[
+            int(team)
+        ] += int(low_pressure_long_reset and completed)
         team_attacking_third_backward_without_forward_support[int(team)] += int(
             backward_without_support
         )
@@ -2907,6 +2966,33 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                 }
             )
 
+        low_pressure_long_resets = int(
+            team_attacking_third_low_pressure_long_backward_resets[team]
+        )
+        if low_pressure_long_resets >= POLICY_AUDIT_LOW_PRESSURE_LONG_RESET_MIN_COUNT:
+            policy_anomalies.append(
+                {
+                    "code": "attacking_third_low_pressure_long_backward_reset",
+                    "severity": "medium",
+                    "message": "Long attacking-third resets repeatedly occurred without a forward option or nearby opponent pressure.",
+                    "threshold": {
+                        "minimum_count": POLICY_AUDIT_LOW_PRESSURE_LONG_RESET_MIN_COUNT,
+                        "minimum_distance_m": POLICY_AUDIT_LONG_BACKWARD_RESET_DISTANCE_M,
+                        "pressure_distance_m": POLICY_AUDIT_BACKWARD_RESET_PRESSURE_DISTANCE_M,
+                        "ahead_margin_m": 1.0,
+                    },
+                    "observed": {
+                        "team": team,
+                        "attempts": low_pressure_long_resets,
+                        "completed": int(
+                            team_completed_attacking_third_low_pressure_long_backward_resets[
+                                team
+                            ]
+                        ),
+                    },
+                }
+            )
+
     dismissal_counts = Counter(record["team"] for record in dismissal_records)
     for team in (0, 1):
         if dismissal_counts[team] >= POLICY_AUDIT_DISMISSAL_WARN_COUNT:
@@ -3051,6 +3137,12 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                     ),
                     6,
                 )
+            ),
+            "attacking_third_low_pressure_long_backward_reset_attempts": int(
+                team_attacking_third_low_pressure_long_backward_resets[team]
+            ),
+            "completed_attacking_third_low_pressure_long_backward_resets": int(
+                team_completed_attacking_third_low_pressure_long_backward_resets[team]
             ),
             "penalty_area_entries": int(penalty_area_entries[team]),
             "corners": int(team_event_counts[team]["restart_corner"]),

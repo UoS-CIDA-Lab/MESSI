@@ -1310,3 +1310,35 @@ passed after the 0.60 restoration. Ruff, compileall, and diff whitespace checks
 were clean. The rejected 3.1 GB loop-09 output was deleted after its comparison
 was recorded; `output/policy-loop-08` remains the sole retained matrix artifact
 and its multi-report uses metrics `/14` and tactical matrix report `/3`.
+
+The final diagnostic-only refinement advances match metrics to
+`footballworld.match-metrics/15`. Every realized attacking-third backward pass
+is now assigned one mutually exclusive observed context: a supported recycle
+when an onside teammate is at least one metre ahead; otherwise a pressure
+release when the nearest opponent is within 5 m; otherwise a low-pressure long
+reset at 20 m or more realized contact-to-contact distance; or a low-pressure
+short layoff. The 5 m and 20 m boundaries are host-only review priors, not
+measured football constants. Nearest-opponent distance and the context label
+remain on each pass-map row, while team and matrix reports aggregate long-reset
+attempts and same-team receipts.
+
+Reprocessing the retained loop-08 artifacts without rerunning simulation found
+1,356 pressure releases, 449 supported recycles, 48 low-pressure long resets,
+and 27 low-pressure short layoffs. The 48 long resets were received by the
+same team 46 times; plan totals were Catenaccio 11/9, Gegenpress 9/9, Juego de
+Posicion 7/7, Salida Lavolpiana 5/5, and Zona Mista 16/16. No individual team
+crossed the 20-event review prior, so the existing 81 matrix warnings did not
+increase. This changes the diagnosis materially: most unsupported backward
+service occurred under nearby pressure rather than as an unpressured policy
+reset.
+
+Three one-midfielder fallback-support candidates were rejected before any full
+matrix. Reusing the existing 3.0 m third-man shift changed passes 578 to 579,
+shots five to seven, forward realized passes 202 to 213, but backward passes
+207 to 215 and mean shot distance 16.21 m to 16.61 m. A 1.5 m shift retained
+five shots and improved mean distance to 15.54 m, but forward receipts stayed
+188 and all same-team receipts fell 545 to 540. The intermediate 2.1 m shift
+reduced passes to 563, forward receipts to 186, and worsened mean shot distance
+to 18.12 m. Their non-monotonic effects and failure to reduce backward service
+show that forcing a central runner is not a robust fix. All policy behavior was
+restored; only the exact host-side context diagnostics remain.
