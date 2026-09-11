@@ -10,11 +10,11 @@
 
 [Why MESSI](#why-messi) · [Architecture](#architecture) · [Install](#installation) · [Quickstart](#quickstart) · [Contracts](#core-contracts) · [Rendering](#rendering-and-replays) · [Release status](#release-status) · [Documentation](#documentation) · [Citation](#citation)
 
-<a href="docs/assets/rendering/latest-kickoff-10s.mp4">
-  <img src="docs/assets/rendering/latest-kickoff-10s.gif" alt="Ten-second MESSI kickoff replay" width="760">
+<a href="docs/assets/rendering/latest-match-10s.mp4">
+  <img src="docs/assets/rendering/latest-match-10s.gif" alt="Ten-second MESSI passing move ending in a goal" width="760">
 </a>
 
-<sub>MESSI 0.1.0 · seed 3 · <code>salida_lavolpiana</code> vs <code>gegenpress</code>: 80 Hz physics, 10 Hz decisions, and exact 20 fps rendering. Select the animation for the 1080p H.264 clip.</sub>
+<sub>MESSI 0.1.0 · seed 29 · <code>catenaccio</code> vs <code>salida_lavolpiana</code>: a passing move and goal from an authoritative 90-minute simulation with 80 Hz physics, 10 Hz decisions, and exact 20 fps rendering. Select the animation for the 540p H.264 clip.</sub>
 
 </div>
 
