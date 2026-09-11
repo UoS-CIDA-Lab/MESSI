@@ -43,12 +43,12 @@ def _frame(control_tick: int, adjudication: _Adjudication | None) -> _VisualFram
 
 def test_goal_overlay_typography_preserves_relative_size_at_1080p() -> None:
     assert _goal_overlay_font_sizes(RenderStyle(width_px=960, height_px=540)) == (
-        20.0,
-        8.5,
+        30.0,
+        10.0,
     )
     assert _goal_overlay_font_sizes(RenderStyle(width_px=1920, height_px=1080)) == (
-        40.0,
-        17.0,
+        60.0,
+        20.0,
     )
 
 

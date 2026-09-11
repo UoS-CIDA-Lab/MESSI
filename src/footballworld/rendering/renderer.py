@@ -393,7 +393,7 @@ def _goal_overlay_font_sizes(style: RenderStyle) -> tuple[float, float]:
     """Scale celebration typography with output height, anchored at 540p."""
 
     scale = float(style.height_px) / 540.0
-    return 20.0 * scale, 8.5 * scale
+    return 30.0 * scale, 10.0 * scale
 
 
 @dataclass(frozen=True, slots=True)
@@ -1713,10 +1713,10 @@ class ReplayRenderer:
             visible=False,
         )
 
-        # A low-alpha team-colour flash plus large central typography keeps the
-        # celebration legible while preserving the exact scoring-team and
-        # score detail. Font sizes scale with output height so 540p and 1080p
-        # preserve the same composition.
+        # An open team-colour wash and large central typography keep the
+        # celebration light rather than boxing it into another dark HUD panel.
+        # A shallow text shadow preserves contrast over pitch lines while the
+        # exact scoring-team and score detail remain visible below.
         goal_title_size, goal_detail_size = _goal_overlay_font_sizes(style)
         goal_flash = Rectangle(
             (0.0, 0.0),
@@ -1728,38 +1728,30 @@ class ReplayRenderer:
             zorder=36,
             visible=False,
         )
-        goal_panel = Rectangle(
-            (0.320, 0.430),
-            0.360,
-            0.180,
-            transform=ax.transAxes,
-            facecolor="#071019",
-            edgecolor="#ffffff",
-            linewidth=1.4 * float(style.height_px) / 540.0,
-            alpha=0.94,
-            zorder=37,
-            visible=False,
-        )
-        goal_accent = Rectangle(
-            (0.320, 0.598),
-            0.360,
-            0.012,
-            transform=ax.transAxes,
-            color="#ffffff",
-            zorder=38,
-            visible=False,
-        )
-        ax.add_patch(goal_flash)
-        ax.add_patch(goal_panel)
-        ax.add_patch(goal_accent)
-        goal_title = ax.text(
-            0.5,
-            0.535,
+        goal_shadow = ax.text(
+            0.503,
+            0.543,
             "",
             transform=ax.transAxes,
             ha="center",
             va="center",
-            color="#ffffff",
+            color="#071019",
+            alpha=0.52,
+            fontsize=goal_title_size,
+            weight="bold",
+            family="sans-serif",
+            zorder=37,
+            visible=False,
+        )
+        ax.add_patch(goal_flash)
+        goal_title = ax.text(
+            0.5,
+            0.55,
+            "",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            color="#fff5c2",
             fontsize=goal_title_size,
             weight="bold",
             family="sans-serif",
@@ -1768,12 +1760,12 @@ class ReplayRenderer:
         )
         goal_detail = ax.text(
             0.5,
-            0.475,
+            0.485,
             "",
             transform=ax.transAxes,
             ha="center",
             va="center",
-            color="#e7eef5",
+            color="#ffffff",
             fontsize=goal_detail_size,
             weight="bold",
             family="monospace",
@@ -1960,8 +1952,7 @@ class ReplayRenderer:
             event_title,
             event_detail,
             goal_flash,
-            goal_panel,
-            goal_accent,
+            goal_shadow,
             goal_title,
             goal_detail,
         ]
@@ -2297,12 +2288,11 @@ class ReplayRenderer:
                         age_ticks = max(
                             0, frame.control_tick - caption.origin_control_tick
                         )
-                        pulse = 0.075 + 0.025 * abs(np.sin(age_ticks * 0.18))
+                        pulse = 0.14 + 0.06 * abs(np.sin(age_ticks * 0.18))
                         goal_flash.set_facecolor(caption.accent)
                         goal_flash.set_alpha(pulse)
-                        goal_panel.set_edgecolor(caption.accent)
-                        goal_accent.set_facecolor(caption.accent)
-                        goal_title.set_text("G O A L")
+                        goal_shadow.set_text("G O A L !")
+                        goal_title.set_text("G O A L !")
                         goal_detail.set_text(
                             f"{caption.title.removeprefix('GOAL — ')}  ·  "
                             f"{caption.detail}"
@@ -2313,8 +2303,7 @@ class ReplayRenderer:
                         event_detail.set_text(caption.detail)
                 for artist in (
                     goal_flash,
-                    goal_panel,
-                    goal_accent,
+                    goal_shadow,
                     goal_title,
                     goal_detail,
                 ):

@@ -324,11 +324,12 @@ offside. A same-frame substitution is appended to that decision
 rather than silently discarded; otherwise it receives its own `OUT → IN`
 banner with team and exact registered player ids. Ordinary contacts, passes,
 controls, period boundaries, and non-goal restarts stay out of the video. A
-goal uses the scoring team's low-alpha full-frame flash and a central dark
-panel with `G O A L`, team, and exact post-transition score. Its typography and
-border scale from a 540p layout with output height, so 1,080p does not shrink
-the message relative to the pitch. Other adjudications retain the compact
-upper banner. A
+goal uses the scoring team's translucent full-frame wash and open central
+`G O A L !` typography with a shallow text shadow, team, and exact
+post-transition score. It deliberately has no dark event panel. Its typography
+scales from a 540p layout with output height, so 1,080p does not shrink the
+message relative to the pitch. Other adjudications retain the compact upper
+banner. A
 foul names the pre-management player identities and
 one-based display slot labels for offender and victim, exact offence type,
 source, severity, tactical effect, discipline, restart or advantage. Offside
