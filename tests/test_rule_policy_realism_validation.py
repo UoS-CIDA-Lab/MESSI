@@ -1042,6 +1042,15 @@ def test_new_scalar_inputs_fail_closed_before_tracing():
             formation_anchor_y=jnp.zeros((1,), dtype=jnp.float32),
             **kwargs,
         )
+    with pytest.raises(ValueError, match="decision_due must be scalar"):
+        decide_possession(
+            context,
+            jnp.zeros((4,), dtype=jnp.bool_),
+            jnp.zeros((4,), dtype=jnp.bool_),
+            config,
+            decision_due=jnp.zeros((1,), dtype=jnp.bool_),
+            **kwargs,
+        )
 
     shape_context, state = _shape_fixture()
     player_count = shape_context.self_index.shape[0]

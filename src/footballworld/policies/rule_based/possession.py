@@ -529,6 +529,7 @@ def decide_possession(
     progressive_carry_commit_s = jnp.maximum(
         jnp.asarray(progressive_carry_commit_s, dtype=jnp.float32), 0.0
     )
+    decision_due = jnp.asarray(decision_due, dtype=jnp.bool_)
     for name, value in (
         ("possession_episode_seconds", possession_episode_seconds),
         ("formation_anchor_y", formation_anchor_y),
@@ -536,6 +537,7 @@ def decide_possession(
         ("attack_phase", attack_phase),
         ("run_behind_receiver", run_behind_receiver),
         ("progressive_carry_commit_s", progressive_carry_commit_s),
+        ("decision_due", decision_due),
     ):
         if value.shape != ():
             raise ValueError(f"{name} must be scalar")
@@ -1095,17 +1097,29 @@ def decide_possession(
     )
     dribble_direction = _safe_unit(dribble_target[dribble_lane] - source)
 
-    shot_plan = plan_shot(
-        source,
-        player_position,
-        opponent,
-        opponent_goalkeeper,
-        config,
-        half_length=hx,
-        goal_width=goal_width,
-        current_pressure=current_pressure,
-        decision_key=decision_key,
-        shot_launch_radians_per_action_unit=launch_radians_per_unit,
+    shot_plan = jax.lax.cond(
+        decision_due,
+        lambda _: plan_shot(
+            source,
+            player_position,
+            opponent,
+            opponent_goalkeeper,
+            config,
+            half_length=hx,
+            goal_width=goal_width,
+            current_pressure=current_pressure,
+            decision_key=decision_key,
+            shot_launch_radians_per_action_unit=launch_radians_per_unit,
+        ),
+        lambda _: ShotPlan(
+            direction=jnp.zeros((2,), dtype=jnp.float32),
+            power=jnp.float32(0.0),
+            launch=jnp.float32(-1.0),
+            spin=jnp.zeros((2,), dtype=jnp.float32),
+            value=jnp.float32(0.0),
+            quality=jnp.float32(0.0),
+        ),
+        operand=None,
     )
     # A newly won possession has no observed previous teammate. Discount only
     # low-quality shots during a short settle window; clear chances stay live.
@@ -1358,7 +1372,7 @@ def decide_possession(
         relative_depth_m=(target_xy[:, 0] - source[0]).astype(jnp.float32),
         receiver_forward_velocity_mps=receiver_forward_velocity.astype(jnp.float32),
         source_xy=source.astype(jnp.float32),
-        decision_due=jnp.asarray(decision_due, dtype=jnp.bool_),
+        decision_due=decision_due,
     )
 
 

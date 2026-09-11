@@ -1165,3 +1165,22 @@ stayed at 936,032. Cold time changed from 39.43 s to 39.57 s, while the warm
 median regressed from 2.656 s to 2.735 s (771.0 to 748.7 simulated match
 frames/s). The new public argument and integration plumbing were removed
 because they supplied no measured speed or memory benefit.
+
+The retained efficiency change instead skips shot planning only when the
+carrier's causal service cadence says no macro decision is due. Those frames
+already force the returned action to DRIBBLE, so shot quality, goalkeeper
+separation, target portion, shot noise, and shot controls cannot affect the
+action. Decision frames execute the original `plan_shot` function and keyed
+random streams unchanged; direct standalone calls default to a due decision.
+The fixed four-seed, 4,500-step profile exactly retained the accepted 571
+passes, five shots, 14.47 m mean shot distance, 211 realized forward passes,
+and thirteen submitted attacking-third backward releases.
+
+On the scalar CPU benchmark that models each of the 25 independent match
+workers, warm median time fell from 0.384 s to 0.352 s per 256 frames and
+throughput rose from 667.4 to 728.1 simulated match frames/s (9.1%). Cold
+compile plus first execution fell from 36.24 s to 34.92 s, executable text from
+33,973,399 to 33,906,991 characters, and compiler temporary bytes from 163,608
+to 160,792. These are same-host synthetic benchmark results, not a universal
+deployment speed constant. The change adds a scalar fail-closed
+`decision_due` shape check and keeps the output PyTree fixed.
