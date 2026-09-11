@@ -1714,10 +1714,10 @@ class ReplayRenderer:
             visible=False,
         )
 
-        # SoccerWorld's strongest goal cue was a low-alpha team-colour flash
-        # plus large central typography. Retain that legibility while keeping
-        # FootballWorld's exact scoring-team and score detail. Font sizes scale
-        # with output height so 540p and 1080p preserve the same composition.
+        # A low-alpha team-colour flash plus large central typography keeps the
+        # celebration legible while preserving the exact scoring-team and
+        # score detail. Font sizes scale with output height so 540p and 1080p
+        # preserve the same composition.
         goal_title_size, goal_detail_size = _goal_overlay_font_sizes(style)
         goal_flash = Rectangle(
             (0.0, 0.0),
