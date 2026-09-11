@@ -1061,3 +1061,16 @@ candidate and its extra hot-path conditional were removed. Pooled temporal
 pass changes remained between -0.46 and +0.20 percentage points and no other
 anomaly family appeared, so the rejection is specifically an attacking-output
 tradeoff rather than a liveness or late-match-quality failure.
+
+The host report now separates the consequence from one observable cause. For
+each exact attacking-third backward PASS it reads the verified pre-contact
+tracking snapshot and counts active, on-pitch, non-dismissed, currently onside
+teammates at least one metre ahead of the carrier. At 20 backward attempts and
+a 70% no-support share it emits a distinct medium-severity warning. Both
+thresholds are diagnostic DESIGN_PRIORS; the DFL event feed does not expose an
+equivalent synchronized onside-support opportunity denominator. Reprocessing
+all 25 loop-06 captures on CPU produced 1,427 unsupported releases among 1,867
+backward releases (76.43%) and 37 team-match warnings. Team-match shares had a
+76.84% median and a 58.62--100% range. This variable-length join remains in the
+host analysis path; the JAX policy and environment transition gain no output
+leaf or runtime work.

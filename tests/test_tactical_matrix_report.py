@@ -50,6 +50,7 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
                 "attacking_third_pass_attempts": 20 + index,
                 "completed_attacking_third_passes": 15 + index,
                 "attacking_third_backward_pass_attempts": 12 + index,
+                "attacking_third_backward_without_forward_support": 8 + index,
                 "possession_s": 1_000.0 + index,
                 "penalty_area_entries": 3,
                 "corners": 2,
@@ -152,10 +153,11 @@ def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
     assert alpha["attacking_third_pass_attempts"] == 82
     assert alpha["completed_attacking_third_passes"] == 62
     assert alpha["attacking_third_backward_pass_attempts"] == 50
+    assert alpha["attacking_third_backward_without_forward_support"] == 34
     rendered = render_tactical_matrix_html(report, output_dir=tmp_path / "report")
     assert "Shots (OT; box; mean distance)" in rendered
     assert "Forward passes (received)" in rendered
-    assert "Att. third passes (received; back share)" in rendered
+    assert "Att. third passes (received; back/unsupported)" in rendered
     assert "Cross signatures (received)" in rendered
     assert "Line breaks (received)" in rendered
 
