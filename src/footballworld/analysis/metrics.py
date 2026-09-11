@@ -48,8 +48,8 @@ POLICY_AUDIT_DENSITY_WARN_SHARE = 0.02
 POLICY_AUDIT_EVENT_REPEAT_WARN_S = 30.0
 POLICY_AUDIT_DISMISSAL_WARN_COUNT = 3
 POLICY_AUDIT_PASS_WINDOW_S = 15.0 * 60.0
-POLICY_AUDIT_PASS_HALF_MIN_ATTEMPTS = 10
-POLICY_AUDIT_PASS_COMPLETION_DROP = 0.05
+POLICY_AUDIT_PASS_WINDOW_MIN_ATTEMPTS = 10
+POLICY_AUDIT_PASS_COMPLETION_TREND_DROP = 0.05
 POLICY_AUDIT_PASS_ACTIVITY_MAX_ATTEMPTS = 5
 POLICY_AUDIT_PASS_ACTIVITY_NEIGHBOR_MIN_ATTEMPTS = 20
 PLAYER_POSITION_WINDOW_S = 15.0
@@ -2666,39 +2666,54 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                 }
             )
         pass_completion_by_team.append(time_rows)
-        early_attempts = int(pass_time_bins[team, :3, 0].sum())
-        early_completed = int(pass_time_bins[team, :3, 1].sum())
-        late_attempts = int(pass_time_bins[team, 3:, 0].sum())
-        late_completed = int(pass_time_bins[team, 3:, 1].sum())
-        if (
-            early_attempts >= POLICY_AUDIT_PASS_HALF_MIN_ATTEMPTS
-            and late_attempts >= POLICY_AUDIT_PASS_HALF_MIN_ATTEMPTS
-        ):
-            early_rate = early_completed / early_attempts
-            late_rate = late_completed / late_attempts
-            if early_rate - late_rate >= POLICY_AUDIT_PASS_COMPLETION_DROP:
+        valid_windows = [
+            window
+            for window in range(pass_time_bins.shape[1])
+            if pass_time_bins[team, window, 0] >= POLICY_AUDIT_PASS_WINDOW_MIN_ATTEMPTS
+        ]
+        if len(valid_windows) >= 4:
+            x_minutes = np.asarray(
+                [15.0 * window + 7.5 for window in valid_windows], dtype=float
+            )
+            weights = np.asarray(
+                [pass_time_bins[team, window, 0] for window in valid_windows],
+                dtype=float,
+            )
+            rates = np.asarray(
+                [
+                    pass_time_bins[team, window, 1] / pass_time_bins[team, window, 0]
+                    for window in valid_windows
+                ],
+                dtype=float,
+            )
+            mean_x = float(np.average(x_minutes, weights=weights))
+            mean_rate = float(np.average(rates, weights=weights))
+            denominator = float(np.sum(weights * np.square(x_minutes - mean_x)))
+            slope_per_minute = (
+                0.0
+                if denominator <= 0.0
+                else float(
+                    np.sum(weights * (x_minutes - mean_x) * (rates - mean_rate))
+                    / denominator
+                )
+            )
+            fitted_change = slope_per_minute * float(x_minutes[-1] - x_minutes[0])
+            if -fitted_change >= POLICY_AUDIT_PASS_COMPLETION_TREND_DROP:
                 policy_anomalies.append(
                     {
-                        "code": "second_half_pass_completion_drop",
+                        "code": "pass_completion_time_trend_drop",
                         "severity": "medium",
-                        "message": "Pass receipt rate fell sharply after halftime, suggesting late-match policy degradation.",
+                        "message": "The weighted 15-minute pass-receipt trend fell beyond the configured late-match degradation allowance.",
                         "threshold": {
-                            "minimum_attempts_per_half": POLICY_AUDIT_PASS_HALF_MIN_ATTEMPTS,
-                            "minimum_absolute_drop": POLICY_AUDIT_PASS_COMPLETION_DROP,
+                            "minimum_attempts_per_window": POLICY_AUDIT_PASS_WINDOW_MIN_ATTEMPTS,
+                            "minimum_fitted_drop": POLICY_AUDIT_PASS_COMPLETION_TREND_DROP,
                         },
                         "observed": {
                             "team": team,
-                            "first_half": {
-                                "attempts": early_attempts,
-                                "completed": early_completed,
-                                "completion": round(early_rate, 6),
-                            },
-                            "second_half": {
-                                "attempts": late_attempts,
-                                "completed": late_completed,
-                                "completion": round(late_rate, 6),
-                            },
-                            "absolute_drop": round(early_rate - late_rate, 6),
+                            "valid_window_indices": valid_windows,
+                            "slope_per_minute": round(slope_per_minute, 8),
+                            "fitted_first_to_last_change": round(fitted_change, 6),
+                            "windows": time_rows,
                         },
                     }
                 )
@@ -3373,13 +3388,12 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                 f"{float(observed['seconds']):.1f}s "
                 f"({100.0 * float(observed['share']):.1f}%) of observed live time."
             )
-        elif anomaly["code"] == "second_half_pass_completion_drop":
+        elif anomaly["code"] == "pass_completion_time_trend_drop":
             quality_warnings.append(
                 "Policy anomaly [medium]: Team "
-                f"{observed['team']} pass receipt rate fell from "
-                f"{100.0 * float(observed['first_half']['completion']):.1f}% "
-                f"to {100.0 * float(observed['second_half']['completion']):.1f}% "
-                "after halftime."
+                f"{observed['team']} weighted 15-minute pass receipt trend implies "
+                f"a {100.0 * -float(observed['fitted_first_to_last_change']):.1f}%p "
+                "fall across the observed match windows."
             )
         elif anomaly["code"] == "excessive_dismissals":
             quality_warnings.append(

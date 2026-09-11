@@ -879,9 +879,9 @@ Thresholds for these warnings are deliberately labelled diagnostic design
 priors rather than measured football constants: 5 seconds for a stationary
 live loose ball, 15 seconds for any live loose ball, at least 60 seconds and
 2% of live time in one density cell, 30 seconds for one consecutive event
-signature, and three dismissals for one team. A 5 percentage-point
-first-to-second-half pass-receipt fall is considered only when both halves
-have at least ten realized attempts. A full 15-minute window with no more
+signature, and three dismissals for one team. A 5 percentage-point fitted
+pass-receipt decline over the six 15-minute windows is considered only when at
+least four windows have ten realized attempts. A full 15-minute window with no more
 than five combined realized passes is flagged only when both neighboring
 windows contain at least twenty. All raw counts, times, coordinates, and
 thresholds remain in the JSON so reviewers can reject or revise a warning.
@@ -896,10 +896,12 @@ professional-match distributions.
 
 The temporal pass guard is informed by the hash-verified seven-match DFL
 receipt `calib/policy/artifacts/dfl-pass-completion-by-time-v1.json`. Pooled
-DFL open-play `Pass`/`Cross` rows fell from 81.03% provider completion in the
-first half (2,413/2,978) to 75.59% in the second (1,805/2,388), a 5.44
-percentage-point fall; the median paired match fall was 5.19 points. The user
-selected 5 percentage points as the FootballWorld degradation allowance.
+DFL open-play `Pass`/`Cross` rows fell from 81.05% provider completion in the
+first half (2,421/2,987) to 75.54% in the second (1,797/2,379), a 5.52
+percentage-point fall; the median paired match fall was 5.58 points. Its
+attempt-weighted six-window linear trend implies a 6.75-point first-to-last
+decline. The user selected 5 percentage points as the FootballWorld
+degradation allowance.
 This only informs the temporal-delta guard: DFL `Evaluation` and the report's
 same-team-next-distinct-contact receipt are different estimands, so their
 absolute percentages are not equated or fitted.
