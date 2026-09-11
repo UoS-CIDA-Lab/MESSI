@@ -1249,3 +1249,21 @@ backward passes rose from 207 to 220, and realized forward passes stayed at
 16.21 m to 15.60 m only because two shots disappeared. The precondition is
 therefore retained: blindly moving the selected attacker from behind the ball
 changes too much team spacing and does not create a usable forward lane.
+
+The multi-match report contract advances from
+`footballworld.tactical-matrix-report/2` to `/3` to retain the negative
+evidence from every child policy audit, not only threshold crossings. Its
+`policy_audit_envelope` records the match and complete observed child record
+for the maximum live loose-ball duration, nearly stationary loose-ball
+duration, dominant-cell seconds and share, and repeated-event duration, plus
+the total dismissal count. This is host-only information compression; the JAX
+transition, policy behavior, warning thresholds, and individual report facts
+are unchanged.
+
+For loop-08 the maxima are 9.0 s live loose ball, 2.4 s nearly stationary
+loose ball, 24.2 s and 0.46% dominant-cell occupancy, and 1.4 s repeated event
+signature. Two dismissals occurred across separate matches. These remain below
+the documented 15 s, 5 s, joint 60 s/2%, 30 s, and three-dismissals-per-team
+review priors respectively. The original 3-1 spatial spike therefore does not
+recur anywhere in this matrix, and the only active anomaly families remain
+attacking-third backward service and five individual pass-completion trends.

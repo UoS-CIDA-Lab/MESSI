@@ -70,6 +70,19 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
                 "hashes_verified": True,
                 "full_duration_complete": True,
                 "authoritative": False,
+                "policy_audit": {
+                    "anomalies": [],
+                    "longest_live_loose_ball_run": {"duration_s": 4.0 + index},
+                    "longest_stationary_live_loose_ball_run": {
+                        "duration_s": 0.5 + index
+                    },
+                    "dominant_ball_density_cell": {
+                        "seconds": 12.0 + index,
+                        "share": 0.002 + index * 0.001,
+                    },
+                    "dismissals": ([] if index == 0 else [{"team": index}]),
+                    "longest_repeated_event_run": {"duration_s": 1.0 + index},
+                },
             },
             "summary": {
                 "score": score,
@@ -137,7 +150,7 @@ def test_multi_report_writes_json_and_html_with_individual_links(tmp_path):
     assert "Policy league standings" in html_path.read_text(encoding="utf-8")
     assert "open match report" in html_path.read_text(encoding="utf-8")
     assert json.loads(json_path.read_text())["schema"] == (
-        "footballworld.tactical-matrix-report/2"
+        "footballworld.tactical-matrix-report/3"
     )
 
 
@@ -171,6 +184,9 @@ def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
     assert "26 received; 20.5 m mean" in rendered
     assert "Cross signatures (received)" in rendered
     assert "Line breaks (received)" in rendered
+    assert "Policy audit envelope" in rendered
+    assert "Longest live loose ball" in rendered
+    assert "Dismissals across all matches: 4" in rendered
 
 
 def test_multi_report_surfaces_child_policy_anomalies(tmp_path):

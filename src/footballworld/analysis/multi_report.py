@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -14,7 +15,7 @@ from pathlib import Path
 from filelock import FileLock
 
 MATRIX_SCHEMA = "footballworld.tactical-plan-matrix/1"
-MULTI_REPORT_SCHEMA = "footballworld.tactical-matrix-report/2"
+MULTI_REPORT_SCHEMA = "footballworld.tactical-matrix-report/3"
 MATCH_METRICS_SCHEMA = "footballworld.match-metrics/14"
 
 
@@ -99,6 +100,15 @@ def build_tactical_matrix_report(
     team_1_wins = 0
     draws = 0
     policy_anomalies: list[dict[str, object]] = []
+    policy_audit_match_count = 0
+    policy_audit_dismissal_count = 0
+    policy_audit_maxima: dict[str, dict[str, object] | None] = {
+        "live_loose_ball_duration_s": None,
+        "stationary_live_loose_ball_duration_s": None,
+        "dominant_ball_density_seconds": None,
+        "dominant_ball_density_share": None,
+        "repeated_event_duration_s": None,
+    }
 
     for index, raw in enumerate(raw_matches):
         _require(isinstance(raw, dict), f"match {index} is not an object")
@@ -180,6 +190,60 @@ def build_tactical_matrix_report(
         quality = report["quality"]
         authoritative_count += int(quality.get("authoritative") is True)
         policy_audit = quality.get("policy_audit", {})
+        if isinstance(policy_audit, dict) and policy_audit:
+            policy_audit_match_count += 1
+            dismissals = policy_audit.get("dismissals", [])
+            _require(
+                isinstance(dismissals, list),
+                f"invalid policy dismissal list: {report_path}",
+            )
+            policy_audit_dismissal_count += len(dismissals)
+            for source_name, source_value_name, aggregate_name in (
+                (
+                    "longest_live_loose_ball_run",
+                    "duration_s",
+                    "live_loose_ball_duration_s",
+                ),
+                (
+                    "longest_stationary_live_loose_ball_run",
+                    "duration_s",
+                    "stationary_live_loose_ball_duration_s",
+                ),
+                (
+                    "dominant_ball_density_cell",
+                    "seconds",
+                    "dominant_ball_density_seconds",
+                ),
+                (
+                    "dominant_ball_density_cell",
+                    "share",
+                    "dominant_ball_density_share",
+                ),
+                (
+                    "longest_repeated_event_run",
+                    "duration_s",
+                    "repeated_event_duration_s",
+                ),
+            ):
+                source_record = policy_audit.get(source_name)
+                if not isinstance(source_record, dict):
+                    continue
+                value = source_record.get(source_value_name)
+                if not (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(float(value))
+                ):
+                    continue
+                previous = policy_audit_maxima[aggregate_name]
+                if previous is None or float(value) > float(previous["value"]):
+                    policy_audit_maxima[aggregate_name] = {
+                        "value": float(value),
+                        "team_0_plan": team_0_plan,
+                        "team_1_plan": team_1_plan,
+                        "report_html": str(html_path),
+                        "observed": source_record,
+                    }
         child_anomalies = (
             policy_audit.get("anomalies", []) if isinstance(policy_audit, dict) else []
         )
@@ -497,6 +561,12 @@ def build_tactical_matrix_report(
             "standings": standings,
         },
         "policy_aggregates": policy_rows,
+        "policy_audit_envelope": {
+            "basis": "maximum observed child-match diagnostics; host-only design priors",
+            "matches_with_audit": policy_audit_match_count,
+            "dismissal_count": policy_audit_dismissal_count,
+            "maxima": policy_audit_maxima,
+        },
         "policy_anomalies": policy_anomalies,
         "matches": matches,
     }
@@ -621,6 +691,53 @@ def render_tactical_matrix_html(
             f"<tbody>{''.join(anomalies)}</tbody></table>"
         )
     )
+    audit_envelope = report.get("policy_audit_envelope", {})
+    audit_maxima = (
+        audit_envelope.get("maxima", {})
+        if isinstance(audit_envelope, dict)
+        else {}
+    )
+    audit_labels = (
+        ("Longest live loose ball", "live_loose_ball_duration_s", "s"),
+        (
+            "Longest nearly stationary live loose ball",
+            "stationary_live_loose_ball_duration_s",
+            "s",
+        ),
+        ("Highest dominant-cell occupancy", "dominant_ball_density_seconds", "s"),
+        ("Highest dominant-cell share", "dominant_ball_density_share", "%"),
+        ("Longest repeated event signature", "repeated_event_duration_s", "s"),
+    )
+    audit_rows = []
+    for label, key, unit in audit_labels:
+        record = audit_maxima.get(key) if isinstance(audit_maxima, dict) else None
+        if not isinstance(record, dict):
+            continue
+        value = float(record["value"])
+        value_label = f"{value:.2%}" if unit == "%" else f"{value:.1f} {unit}"
+        href = os.path.relpath(str(record["report_html"]), target)
+        audit_rows.append(
+            "<tr>"
+            f"<td>{html.escape(label)}</td>"
+            f"<td>{value_label}</td>"
+            f"<td>{html.escape(str(record['team_0_plan']))} vs {html.escape(str(record['team_1_plan']))}</td>"
+            f"<td><a href='{html.escape(href)}'>inspect match</a></td>"
+            "</tr>"
+        )
+    dismissal_count = (
+        int(audit_envelope.get("dismissal_count", 0))
+        if isinstance(audit_envelope, dict)
+        else 0
+    )
+    audit_envelope_section = (
+        "<h2>Policy audit envelope</h2>"
+        "<p>Worst observed values are shown even when they remain below warning thresholds. "
+        f"Dismissals across all matches: {dismissal_count}.</p>"
+        "<table><thead><tr><th>Diagnostic</th><th>Maximum</th><th>Match</th><th>Report</th></tr></thead>"
+        f"<tbody>{''.join(audit_rows)}</tbody></table>"
+        if audit_rows
+        else ""
+    )
     json_href = "report.json"
     matrix_label = (
         "complete ordered policy cells"
@@ -659,6 +776,7 @@ table{{width:100%;border-collapse:collapse;background:var(--white);border:1px so
 <table><thead><tr><th>Rank</th><th>Plan</th><th>P</th><th>W-D-L</th><th>GF-GA</th><th>GD</th><th>Pts</th></tr></thead><tbody>{"".join(standings)}</tbody></table>
 <h2>Policy aggregates</h2>
 <table><thead><tr><th>Plan</th><th>Apps</th><th>W-D-L</th><th>GF-GA</th><th>Shots (OT; box; mean distance)</th><th>Pass completion</th><th>Forward passes (received)</th><th>Att. third passes (received; back/unsupported)</th><th>Cross signatures (received)</th><th>Line breaks (received)</th><th>Avg controlled possession s</th></tr></thead><tbody>{"".join(policies)}</tbody></table>
+{audit_envelope_section}
 {anomaly_section}
 <h2>Every match</h2>
 <table><thead><tr><th>Team 0</th><th>Team 1</th><th>Score</th><th>Duration s</th><th>Frames</th><th>Individual report</th></tr></thead><tbody>{"".join(matches)}</tbody></table>
