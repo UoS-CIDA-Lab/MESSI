@@ -281,6 +281,65 @@ def test_pass_macro_scale_changes_only_macro_action_competition(monkeypatch):
     assert int(shot_favoured.kind) != POSSESSION_PASS
     assert int(shot_favoured.target) == 1
 
+
+def test_pass_macro_uses_the_service_that_would_actually_be_executed(monkeypatch):
+    """A weak sampled outlet must not borrow a stronger receiver's utility."""
+
+    import footballworld.policies.rule_based.possession as possession_module
+
+    _fixed_ranking_metrics(monkeypatch)
+    monkeypatch.setattr(
+        possession_module, "plan_shot", _fixed_shot(value=0.30, quality=0.30)
+    )
+    context = _carrier_context(teammate_available=True)
+    # Add a second teammate whose safe outlet is much stronger than the one
+    # deliberately selected below.
+    context = context._replace(
+        teammate=jnp.asarray((False, True, True, False), dtype=jnp.bool_),
+        opponent=jnp.asarray((False, False, False, True), dtype=jnp.bool_),
+        same_team=jnp.asarray((True, True, True, False), dtype=jnp.bool_),
+    )
+    pass_candidate = jnp.asarray((False, True, True, False), dtype=jnp.bool_)
+    kwargs = _possession_kwargs(teammate_available=True) | {
+        "pass_candidate": pass_candidate,
+        "pass_completion": jnp.asarray((0.0, 0.05, 0.95, 0.0), dtype=jnp.float32),
+        "pass_target_xy": jnp.asarray(
+            ((0.0, 0.0), (12.0, 1.0), (24.0, 5.0), (0.0, 0.0)),
+            dtype=jnp.float32,
+        ),
+    }
+
+    original_masked_categorical = possession_module._masked_categorical
+    calls = 0
+
+    def select_weak_service(values, eligible, key, temperature):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return jnp.int32(1), jnp.bool_(True)
+        return original_masked_categorical(values, eligible, key, temperature)
+
+    monkeypatch.setattr(
+        possession_module, "_masked_categorical", select_weak_service
+    )
+    decision = decide_possession(
+        context,
+        jnp.zeros((4,), dtype=jnp.bool_),
+        jnp.zeros((4,), dtype=jnp.bool_),
+        replace(
+            RulePolicyConfig(),
+            solo_carry_value_decay=0.0,
+            progressive_pass_value_gain=0.0,
+            attack_pattern_receiver_gain=0.0,
+            forward_pocket_receiver_gain=0.0,
+            continuation_value_gain=0.0,
+        ),
+        **kwargs,
+    )
+
+    assert int(decision.target) == 1
+    assert int(decision.kind) != POSSESSION_PASS
+
 def test_receiver_does_not_inherit_team_episode_carry_urgency(monkeypatch):
     """An observed previous teammate makes old team-episode age inert."""
 
@@ -966,7 +1025,7 @@ def test_new_scalar_inputs_fail_closed_before_tracing():
 
 
 @pytest.mark.parametrize("field", ("turnover_shot_settle_s", "kickoff_path_window_s"))
-def test_new_time_windows_must_be_positive(field):
+def test_positive_policy_controls_fail_closed_at_zero(field):
     with pytest.raises(ValueError, match=rf"{field} must be greater than zero"):
         replace(RulePolicyConfig(), **{field: 0.0})
 

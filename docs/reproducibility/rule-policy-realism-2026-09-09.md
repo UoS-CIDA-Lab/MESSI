@@ -905,3 +905,35 @@ degradation allowance.
 This only informs the temporal-delta guard: DFL `Evaluation` and the report's
 same-team-next-distinct-contact receipt are different estimands, so their
 absolute percentages are not equated or fitted.
+
+## 2026-09-11 target-aligned pass and shot-quality calibration
+
+Pass and cross legality, completion estimation, receiver sampling, moving
+targets, offside checks, physical execution, and the independent receiver and
+macro PRNG streams remain unchanged. The PASS macro utility now uses the
+unboosted value of the service that the policy would actually execute, rather
+than the maximum value of a possibly different eligible service. This prevents
+a weak sampled outlet from borrowing a phantom best receiver's score. The
+cross-selection multiplier still affects only which service is sampled. PASS
+is also explicitly unavailable when no service is eligible; the former clipped
+zero utility could otherwise leave a negligible but nonzero categorical path.
+
+The default shot range preference midpoint changes from 24 m to 20 m and the
+shot value multiplier from 0.92 to 1.15. These are DESIGN_PRIOR calibration
+values, not measured shot-conversion constants. On four fixed CPU seed pairs
+over 4,500 steps, the retained target-aligned rule plus these shot controls
+changed realized passes from 589 to 570, realized shots from 4 to 5, mean shot
+distance from 18.52 m to 14.84 m, and the same-team next-contact pass proxy
+from 92.15% to 94.16%. Forward pass share remained 37.2% versus 37.5%.
+The small shot sample establishes only a candidate direction; the full
+25-cell matrix is the acceptance test.
+
+A rejected nonlinear pass-utility exponent candidate reduced passes to 569
+but also reduced forward share to 36.0%, left shots at three, and increased
+mean shot distance to 21.78 m on the same short horizon. It was removed rather
+than accepting lower pass volume as sufficient evidence. To make this quality
+criterion visible in subsequent reviews, match reports now publish team shot
+distance and penalty-area origin counts plus forward and attacking-third pass
+attempt/receipt counts. Tactical matrix reports aggregate those exact-event
+and submitted-direction diagnostics alongside on-target shots, crosses, and
+line-break proxies.

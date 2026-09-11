@@ -2619,6 +2619,10 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     team_completed_cross_signatures = np.zeros(2, dtype=np.int64)
     team_line_break_proxies = np.zeros(2, dtype=np.int64)
     team_completed_line_break_proxies = np.zeros(2, dtype=np.int64)
+    team_forward_passes = np.zeros(2, dtype=np.int64)
+    team_completed_forward_passes = np.zeros(2, dtype=np.int64)
+    team_attacking_third_passes = np.zeros(2, dtype=np.int64)
+    team_completed_attacking_third_passes = np.zeros(2, dtype=np.int64)
     pass_time_bins = np.zeros((2, 6, 2), dtype=np.int64)
     control_fps = float(dataset.metadata["control_fps"])
     for row in pass_map_rows:
@@ -2641,12 +2645,18 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         pass_time_bins[int(team), pass_window, 1] += int(completed)
         cross_signature = row.get("rule_policy_cross_control_signature") is True
         line_break = row.get("defensive_line_breaking_pass_proxy") is True
+        forward = row.get("applied_direction_family") == "forward"
+        attacking_third = row.get("source_third") == "attacking_third"
         team_cross_signatures[int(team)] += int(cross_signature)
         team_line_break_proxies[int(team)] += int(line_break)
+        team_forward_passes[int(team)] += int(forward)
+        team_attacking_third_passes[int(team)] += int(attacking_third)
         if completed:
             team_completed_passes[int(team)] += 1
             team_completed_cross_signatures[int(team)] += int(cross_signature)
             team_completed_line_break_proxies[int(team)] += int(line_break)
+            team_completed_forward_passes[int(team)] += int(forward)
+            team_completed_attacking_third_passes[int(team)] += int(attacking_third)
 
     pass_completion_by_team: list[list[dict[str, Any]]] = []
     for team in (0, 1):
@@ -2782,10 +2792,24 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             }
         )
     team_shot_outcomes = [Counter(), Counter()]
+    team_shot_distances: list[list[float]] = [[], []]
+    team_shots_inside_penalty_area = np.zeros(2, dtype=np.int64)
+    half_length = 0.5 * length
     for row in shot_map_rows:
         team = row.get("team")
         if team in (0, 1):
-            team_shot_outcomes[int(team)][str(row.get("category", "unresolved"))] += 1
+            team_index = int(team)
+            team_shot_outcomes[team_index][
+                str(row.get("category", "unresolved"))
+            ] += 1
+            shot_x, shot_y = (float(value) for value in row["position_m"])
+            team_shot_distances[team_index].append(
+                float(np.hypot(half_length - shot_x, shot_y))
+            )
+            team_shots_inside_penalty_area[team_index] += int(
+                shot_x >= half_length - penalty_length
+                and abs(shot_y) <= 0.5 * penalty_width
+            )
 
     teams = []
     metric_receipts = []
@@ -2800,6 +2824,7 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         realized_shots = int(sum(shot_outcomes.values()))
         shot_goals = int(shot_outcomes["goal"])
         saved_on_target = int(shot_outcomes["on_target"])
+        shot_distances = team_shot_distances[team]
         team_row = {
             "team": team,
             "possession_s": round(float(possession_s[team]), 3),
@@ -2821,6 +2846,12 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             "saved_on_target_shots": saved_on_target,
             "off_target_shots": int(shot_outcomes["off_target"]),
             "unresolved_shots": int(shot_outcomes["unresolved"]),
+            "mean_shot_distance_m": (
+                None
+                if not shot_distances
+                else round(float(np.mean(shot_distances)), 6)
+            ),
+            "shots_inside_penalty_area": int(team_shots_inside_penalty_area[team]),
             "open_play_pass_attempts": realized_passes,
             "open_play_completed_passes": completed_passes,
             "open_play_pass_completion": (
@@ -2837,6 +2868,12 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             ),
             "defensive_line_breaking_pass_proxies": line_break_proxies,
             "completed_defensive_line_breaking_pass_proxies": completed_line_break_proxies,
+            "forward_pass_attempts": int(team_forward_passes[team]),
+            "completed_forward_passes": int(team_completed_forward_passes[team]),
+            "attacking_third_pass_attempts": int(team_attacking_third_passes[team]),
+            "completed_attacking_third_passes": int(
+                team_completed_attacking_third_passes[team]
+            ),
             "penalty_area_entries": int(penalty_area_entries[team]),
             "corners": int(team_event_counts[team]["restart_corner"]),
             "fouls_committed": int(team_event_counts[team]["fouls_committed"]),
@@ -2882,6 +2919,20 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                     team_row["shots_on_target"],
                     "shots",
                     "Realized shots ending in a confirmed goal for the shooting team or an opponent contact labelled by physics as a deliberate save.",
+                    quality="derived_from_exact_events",
+                ),
+                _metric(
+                    f"team.{team}.mean_shot_distance_m",
+                    team_row["mean_shot_distance_m"],
+                    "m",
+                    "Euclidean distance from each normalized realized-shot contact to the attacking goal centre.",
+                    quality="derived_from_exact_events",
+                ),
+                _metric(
+                    f"team.{team}.shots_inside_penalty_area",
+                    team_row["shots_inside_penalty_area"],
+                    "shots",
+                    "Realized-shot contacts inside the configured attacking penalty-area rectangle.",
                     quality="derived_from_exact_events",
                 ),
                 _metric(
@@ -2932,6 +2983,20 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                     "passes",
                     "Defensive-line-breaking pass proxies followed by a same-team next distinct-actor contact before a boundary.",
                     quality="geometry_receipt_proxy",
+                ),
+                _metric(
+                    f"team.{team}.forward_pass_attempts",
+                    team_row["forward_pass_attempts"],
+                    "passes",
+                    "Realized open-play passes whose submitted direction is forward in the attacking frame.",
+                    quality="submitted_direction_fact",
+                ),
+                _metric(
+                    f"team.{team}.attacking_third_pass_attempts",
+                    team_row["attacking_third_pass_attempts"],
+                    "passes",
+                    "Realized open-play passes released from the attacking third.",
+                    quality="derived_from_exact_events",
                 ),
                 _metric(
                     f"team.{team}.penalty_area_entries",

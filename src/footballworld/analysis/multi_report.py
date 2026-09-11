@@ -56,12 +56,18 @@ def build_tactical_matrix_report(
             "goals_against": 0,
             "realized_shots": 0,
             "shots_on_target": 0,
+            "shots_inside_penalty_area": 0,
+            "shot_distance_sum_m": 0.0,
             "pass_attempts": 0,
             "passes_completed": 0,
             "cross_signatures": 0,
             "completed_cross_signatures": 0,
             "line_break_proxies": 0,
             "completed_line_break_proxies": 0,
+            "forward_passes": 0,
+            "completed_forward_passes": 0,
+            "attacking_third_passes": 0,
+            "completed_attacking_third_passes": 0,
             "possession_s": 0.0,
             "penalty_area_entries": 0,
             "corners": 0,
@@ -231,6 +237,11 @@ def build_tactical_matrix_report(
                 "completed_rule_policy_cross_control_signatures",
                 "defensive_line_breaking_pass_proxies",
                 "completed_defensive_line_breaking_pass_proxies",
+                "shots_inside_penalty_area",
+                "forward_pass_attempts",
+                "completed_forward_passes",
+                "attacking_third_pass_attempts",
+                "completed_attacking_third_passes",
             ):
                 metric_value = team.get(metric_name)
                 _require(
@@ -247,6 +258,13 @@ def build_tactical_matrix_report(
             aggregate["goals_against"] += other
             aggregate["realized_shots"] += int(team["realized_shots"])
             aggregate["shots_on_target"] += int(team["shots_on_target"])
+            aggregate["shots_inside_penalty_area"] += int(
+                team["shots_inside_penalty_area"]
+            )
+            if team["mean_shot_distance_m"] is not None:
+                aggregate["shot_distance_sum_m"] += float(
+                    team["mean_shot_distance_m"]
+                ) * int(team["realized_shots"])
             aggregate["pass_attempts"] += int(team["open_play_pass_attempts"])
             aggregate["passes_completed"] += int(team["open_play_completed_passes"])
             aggregate["cross_signatures"] += int(
@@ -260,6 +278,16 @@ def build_tactical_matrix_report(
             )
             aggregate["completed_line_break_proxies"] += int(
                 team["completed_defensive_line_breaking_pass_proxies"]
+            )
+            aggregate["forward_passes"] += int(team["forward_pass_attempts"])
+            aggregate["completed_forward_passes"] += int(
+                team["completed_forward_passes"]
+            )
+            aggregate["attacking_third_passes"] += int(
+                team["attacking_third_pass_attempts"]
+            )
+            aggregate["completed_attacking_third_passes"] += int(
+                team["completed_attacking_third_passes"]
             )
             aggregate["possession_s"] += float(team["possession_s"])
             for name in (
@@ -280,6 +308,8 @@ def build_tactical_matrix_report(
         appearances = int(aggregate["appearances"])
         attempts = int(aggregate.pop("pass_attempts"))
         possession_s = float(aggregate.pop("possession_s"))
+        realized_shots = int(aggregate["realized_shots"])
+        shot_distance_sum_m = float(aggregate.pop("shot_distance_sum_m"))
         aggregate.update(
             {
                 "plan": plan,
@@ -289,6 +319,19 @@ def build_tactical_matrix_report(
                 "open_play_pass_attempts": attempts,
                 "open_play_pass_completion": (
                     int(aggregate["passes_completed"]) / attempts if attempts else None
+                ),
+                "mean_shot_distance_m": (
+                    shot_distance_sum_m / realized_shots if realized_shots else None
+                ),
+                "forward_pass_attempts": int(aggregate.pop("forward_passes")),
+                "completed_forward_passes": int(
+                    aggregate.pop("completed_forward_passes")
+                ),
+                "attacking_third_pass_attempts": int(
+                    aggregate.pop("attacking_third_passes")
+                ),
+                "completed_attacking_third_passes": int(
+                    aggregate.pop("completed_attacking_third_passes")
                 ),
                 "rule_policy_cross_control_signatures": int(
                     aggregate.pop("cross_signatures")
@@ -420,14 +463,20 @@ def render_tactical_matrix_html(
     for row in report["policy_aggregates"]:
         completion = row["open_play_pass_completion"]
         completion_label = "n/a" if completion is None else f"{completion:.1%}"
+        shot_distance = row["mean_shot_distance_m"]
+        shot_distance_label = (
+            "n/a" if shot_distance is None else f"{float(shot_distance):.1f} m"
+        )
         policies.append(
             "<tr>"
             f"<td>{html.escape(str(row['plan']))}</td>"
             f"<td>{row['appearances']}</td>"
             f"<td>{row['wins']}-{row['draws']}-{row['losses']}</td>"
             f"<td>{row['goals_for']}-{row['goals_against']}</td>"
-            f"<td>{row['realized_shots']} ({row['shots_on_target']})</td>"
+            f"<td>{row['realized_shots']} ({row['shots_on_target']} OT; {row['shots_inside_penalty_area']} box; {shot_distance_label})</td>"
             f"<td>{completion_label}</td>"
+            f"<td>{row['forward_pass_attempts']} ({row['completed_forward_passes']})</td>"
+            f"<td>{row['attacking_third_pass_attempts']} ({row['completed_attacking_third_passes']})</td>"
             f"<td>{row['rule_policy_cross_control_signatures']} ({row['completed_rule_policy_cross_control_signatures']})</td>"
             f"<td>{row['defensive_line_breaking_pass_proxies']} ({row['completed_defensive_line_breaking_pass_proxies']})</td>"
             f"<td>{row['average_controlled_possession_s']:.1f}</td>"
@@ -508,7 +557,7 @@ table{{width:100%;border-collapse:collapse;background:var(--white);border:1px so
 <p>Distinct-plan fixtures only; 3 points for a win, 1 for a draw. Ties: goal difference, goals for, plan name.</p>
 <table><thead><tr><th>Rank</th><th>Plan</th><th>P</th><th>W-D-L</th><th>GF-GA</th><th>GD</th><th>Pts</th></tr></thead><tbody>{"".join(standings)}</tbody></table>
 <h2>Policy aggregates</h2>
-<table><thead><tr><th>Plan</th><th>Apps</th><th>W-D-L</th><th>GF-GA</th><th>Shots (on target)</th><th>Pass completion</th><th>Cross signatures (received)</th><th>Line breaks (received)</th><th>Avg controlled possession s</th></tr></thead><tbody>{"".join(policies)}</tbody></table>
+<table><thead><tr><th>Plan</th><th>Apps</th><th>W-D-L</th><th>GF-GA</th><th>Shots (OT; box; mean distance)</th><th>Pass completion</th><th>Forward passes (received)</th><th>Att. third passes (received)</th><th>Cross signatures (received)</th><th>Line breaks (received)</th><th>Avg controlled possession s</th></tr></thead><tbody>{"".join(policies)}</tbody></table>
 {anomaly_section}
 <h2>Every match</h2>
 <table><thead><tr><th>Team 0</th><th>Team 1</th><th>Score</th><th>Duration s</th><th>Frames</th><th>Individual report</th></tr></thead><tbody>{"".join(matches)}</tbody></table>

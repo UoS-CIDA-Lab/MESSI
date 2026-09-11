@@ -922,11 +922,17 @@ def decide_possession(
     player_count = player_position.shape[0]
     selected_cross = best_service >= player_count
     best_pass = jnp.mod(best_service, player_count).astype(jnp.int32)
-    # The macro PASS utility is a deterministic property of the available
-    # pass family. The cross gain conditions only the later service draw; it
-    # must not leak through the sampled target into PASS-vs-SHOT/DRIBBLE/CLEAR.
+    # Score PASS from the service that would actually be executed.  Using the
+    # family maximum here lets a mediocre sampled outlet borrow a different
+    # candidate's value and creates low-purpose passes.  Keep the unboosted
+    # base value so ``cross_value_gain`` chooses a service without inflating
+    # PASS relative to SHOT/DRIBBLE/CLEAR.
     service_base_value = jnp.concatenate((pass_value, cross_base_value), axis=0)
-    best_pass_value = jnp.max(jnp.where(service_eligible, service_base_value, -1.0))
+    best_pass_value = jnp.where(
+        has_pass,
+        service_base_value[best_service],
+        jnp.float32(-1.0),
+    )
     service_completion = jnp.concatenate((pass_lane, cross_completion), axis=0)
     best_pass_lane = jnp.where(has_pass, service_completion[best_service], 0.0)
     selected_service_target = jnp.where(
@@ -1216,7 +1222,7 @@ def decide_possession(
     values = jnp.stack(
         (shot_macro_value, best_pass_value, best_dribble_value, clear_value)
     )
-    macro_available = values >= 0.0
+    macro_available = (values >= 0.0).at[POSSESSION_PASS].set(has_pass)
     fallback_kind = jnp.argmax(values).astype(jnp.int32)
     macro_key = (
         None

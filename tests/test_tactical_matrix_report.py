@@ -37,12 +37,18 @@ def _cell(root: Path, team_0: str, team_1: str, score: list[int]) -> dict:
             {
                 "realized_shots": 4 + index,
                 "shots_on_target": 2 + index,
+                "mean_shot_distance_m": 18.0 + index,
+                "shots_inside_penalty_area": 3 + index,
                 "open_play_pass_attempts": 100,
                 "open_play_completed_passes": 90,
                 "rule_policy_cross_control_signatures": 8 + index,
                 "completed_rule_policy_cross_control_signatures": 5 + index,
                 "defensive_line_breaking_pass_proxies": 6 + index,
                 "completed_defensive_line_breaking_pass_proxies": 4 + index,
+                "forward_pass_attempts": 40 + index,
+                "completed_forward_passes": 34 + index,
+                "attacking_third_pass_attempts": 20 + index,
+                "completed_attacking_third_passes": 15 + index,
                 "possession_s": 1_000.0 + index,
                 "penalty_area_entries": 3,
                 "corners": 2,
@@ -137,7 +143,17 @@ def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
     assert alpha["completed_rule_policy_cross_control_signatures"] == 22
     assert alpha["defensive_line_breaking_pass_proxies"] == 26
     assert alpha["completed_defensive_line_breaking_pass_proxies"] == 18
+    assert alpha["realized_shots"] == 18
+    assert alpha["shots_inside_penalty_area"] == 14
+    assert alpha["mean_shot_distance_m"] == pytest.approx(334.0 / 18.0)
+    assert alpha["forward_pass_attempts"] == 162
+    assert alpha["completed_forward_passes"] == 138
+    assert alpha["attacking_third_pass_attempts"] == 82
+    assert alpha["completed_attacking_third_passes"] == 62
     rendered = render_tactical_matrix_html(report, output_dir=tmp_path / "report")
+    assert "Shots (OT; box; mean distance)" in rendered
+    assert "Forward passes (received)" in rendered
+    assert "Att. third passes (received)" in rendered
     assert "Cross signatures (received)" in rendered
     assert "Line breaks (received)" in rendered
 

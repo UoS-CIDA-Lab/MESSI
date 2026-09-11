@@ -60,7 +60,7 @@ class RulePolicyConfig:
     pressure_distance_m: float = 5.0
     pass_min_progress_m: float = 4.0
     # Characteristic midpoint of the smooth range preference, not a hard gate.
-    shoot_distance_m: float = 24.0
+    shoot_distance_m: float = 20.0
 
     # Readable tactical scoring.
     pass_lateral_penalty: float = 0.20
@@ -82,7 +82,7 @@ class RulePolicyConfig:
     # The defaults are conservative tuning responses to the seed-29 matrix's
     # high pass cadence and low shot cadence, not measured football constants.
     pass_macro_value_scale: float = 0.80
-    shot_value_gain: float = 0.92
+    shot_value_gain: float = 1.15
     cross_value_gain: float = 1.75
     # Arrival-point targeting controls are policy design priors. They expose
     # the existing FootballWorld-compatible moving-receiver mechanism without
