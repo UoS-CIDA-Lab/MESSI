@@ -1154,3 +1154,14 @@ throughput fell from 771.0 to 740.8 simulated match frames/s. Compiler
 temporary bytes also rose from 936,032 to 936,224. The dynamic branch was
 removed; the existing unconditional fixed-shape calculation is faster on this
 CPU workload.
+
+A second behavior-preserving candidate passed the already-computed carrier
+pressure scalar from the quick-relay calculation into possession scoring
+instead of spelling out the same reduction twice. Forty-seven focused tests,
+including exact supplied-versus-local pressure output equality, passed. XLA
+already removed nearly all of the duplicated expression: executable text fell
+only from 36,552,278 to 36,525,240 characters and compiler temporary bytes
+stayed at 936,032. Cold time changed from 39.43 s to 39.57 s, while the warm
+median regressed from 2.656 s to 2.735 s (771.0 to 748.7 simulated match
+frames/s). The new public argument and integration plumbing were removed
+because they supplied no measured speed or memory benefit.
