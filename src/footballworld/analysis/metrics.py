@@ -38,6 +38,20 @@ SPEED_OVERFLOW_BIN_MPS = 12
 BALL_TERRITORY_BINS = 6
 BALL_DENSITY_TARGET_CELL_M = 2.0
 BALL_DENSITY_WINDOW_S = 30.0
+# Host-only diagnostic priors. These identify simulation pathologies for review;
+# they are not presented as measured football constants.
+POLICY_AUDIT_STATIONARY_BALL_SPEED_MPS = 0.05
+POLICY_AUDIT_STATIONARY_LOOSE_WARN_S = 5.0
+POLICY_AUDIT_LOOSE_BALL_WARN_S = 15.0
+POLICY_AUDIT_DENSITY_WARN_S = 60.0
+POLICY_AUDIT_DENSITY_WARN_SHARE = 0.02
+POLICY_AUDIT_EVENT_REPEAT_WARN_S = 30.0
+POLICY_AUDIT_DISMISSAL_WARN_COUNT = 3
+POLICY_AUDIT_PASS_WINDOW_S = 15.0 * 60.0
+POLICY_AUDIT_PASS_HALF_MIN_ATTEMPTS = 10
+POLICY_AUDIT_PASS_COMPLETION_DROP = 0.05
+POLICY_AUDIT_PASS_ACTIVITY_MAX_ATTEMPTS = 5
+POLICY_AUDIT_PASS_ACTIVITY_NEIGHBOR_MIN_ATTEMPTS = 20
 PLAYER_POSITION_WINDOW_S = 15.0
 PLAYER_POSITION_TARGET_CELL_M = 4.0
 SPACE_OCCUPANCY_WINDOW_S = 30.0
@@ -327,6 +341,15 @@ def _iter_event_frames(dataset: MatchDataset) -> Iterator[dict[str, Any]]:
             yield from stream
         return
     yield from dataset.events["frames"]
+
+
+def _integer_event_field(fields: dict[str, Any], name: str) -> int:
+    value = fields.get(name)
+    return (
+        int(value)
+        if isinstance(value, (int, np.integer)) and not isinstance(value, bool)
+        else -1
+    )
 
 
 def _collect_policy_contact_facts(
@@ -1605,6 +1628,10 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     density_out_of_pitch_s = 0.0
     ball_density_window_s: defaultdict[tuple[int, int, int], float] = defaultdict(float)
     ball_density_windows: dict[int, dict[str, Any]] = {}
+    current_loose_run: dict[str, Any] | None = None
+    longest_loose_run: dict[str, Any] | None = None
+    current_stationary_loose_run: dict[str, Any] | None = None
+    longest_stationary_loose_run: dict[str, Any] | None = None
     player_density_x_bins = max(1, int(np.ceil(length / PLAYER_POSITION_TARGET_CELL_M)))
     player_density_y_bins = max(1, int(np.ceil(width / PLAYER_POSITION_TARGET_CELL_M)))
     player_density_x_edges = np.linspace(
@@ -1626,6 +1653,7 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         float
     )
     space_windows: dict[int, dict[str, Any]] = {}
+    dismissal_records: list[dict[str, Any]] = []
 
     def chart_window(index: int) -> dict[str, Any]:
         while len(chart_windows) <= index:
@@ -1758,6 +1786,65 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                 and int(previous.get("period", 1)) == int(row.get("period", 1))
                 and tick not in discontinuity_ticks
             )
+            interval_is_live_loose = (
+                continuous_interval
+                and bool(previous["ball"]["live"])
+                and int(previous["possession"]["team"]) not in (0, 1)
+            )
+            if interval_is_live_loose:
+                ball_position_3d = np.asarray(previous["ball"]["position"], dtype=float)
+                ball_velocity_3d = np.asarray(
+                    previous["ball"].get("velocity", [0.0, 0.0, 0.0]), dtype=float
+                )
+                if current_loose_run is None:
+                    current_loose_run = {
+                        "start_clock_s": float(previous["clock_s"]),
+                        "start_control_tick": int(previous["control_tick"]),
+                        "duration_s": 0.0,
+                    }
+                current_loose_run["duration_s"] += dt
+                current_loose_run["end_clock_s"] = clock
+                current_loose_run["end_control_tick"] = tick
+                current_loose_run["position_m"] = [
+                    round(float(value), 3) for value in ball_position_3d
+                ]
+                if (
+                    longest_loose_run is None
+                    or current_loose_run["duration_s"] > longest_loose_run["duration_s"]
+                ):
+                    longest_loose_run = dict(current_loose_run)
+
+                stationary = bool(
+                    np.all(np.isfinite(ball_velocity_3d))
+                    and np.linalg.norm(ball_velocity_3d)
+                    <= POLICY_AUDIT_STATIONARY_BALL_SPEED_MPS
+                )
+                if stationary:
+                    if current_stationary_loose_run is None:
+                        current_stationary_loose_run = {
+                            "start_clock_s": float(previous["clock_s"]),
+                            "start_control_tick": int(previous["control_tick"]),
+                            "duration_s": 0.0,
+                        }
+                    current_stationary_loose_run["duration_s"] += dt
+                    current_stationary_loose_run["end_clock_s"] = clock
+                    current_stationary_loose_run["end_control_tick"] = tick
+                    current_stationary_loose_run["position_m"] = [
+                        round(float(value), 3) for value in ball_position_3d
+                    ]
+                    if (
+                        longest_stationary_loose_run is None
+                        or current_stationary_loose_run["duration_s"]
+                        > longest_stationary_loose_run["duration_s"]
+                    ):
+                        longest_stationary_loose_run = dict(
+                            current_stationary_loose_run
+                        )
+                else:
+                    current_stationary_loose_run = None
+            else:
+                current_loose_run = None
+                current_stationary_loose_run = None
             if continuous_interval:
                 previous_team = int(previous["possession"]["team"])
                 if bool(previous["ball"]["live"]):
@@ -2038,6 +2125,28 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                     if not previous_inside and crosses_penalty_area:
                         penalty_area_entries[team] += 1
 
+            previous_players_by_slot = {
+                int(player["slot"]): player for player in previous["players"]
+            }
+            for player in players:
+                prior = previous_players_by_slot.get(int(player["slot"]))
+                if (
+                    prior is not None
+                    and player["sent_off"]
+                    and not prior["sent_off"]
+                    and int(player["player_id"]) == int(prior["player_id"])
+                    and int(player["slot_generation"]) == int(prior["slot_generation"])
+                ):
+                    dismissal_records.append(
+                        {
+                            "team": int(player["team"]),
+                            "player_id": int(player["player_id"]),
+                            "slot_generation": int(player["slot_generation"]),
+                            "clock_s": round(clock, 3),
+                            "control_tick": tick,
+                        }
+                    )
+
         period = current_period
         current_live = bool(row["ball"]["live"])
         period_changed = sequence_period is not None and period != sequence_period
@@ -2122,6 +2231,77 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         else last_clock - first_clock + 1.0 / float(dataset.metadata["control_fps"])
     )
     live_s = float(possession_s.sum() + loose_s)
+    observed_density_s = float(ball_density_s.sum())
+    dominant_density: dict[str, Any] | None = None
+    if observed_density_s > 0.0:
+        dominant_flat_index = int(np.argmax(ball_density_s))
+        dominant_y_index, dominant_x_index = np.unravel_index(
+            dominant_flat_index, ball_density_s.shape
+        )
+        dominant_seconds = float(ball_density_s[dominant_y_index, dominant_x_index])
+        dominant_density = {
+            "seconds": round(dominant_seconds, 3),
+            "share": round(dominant_seconds / observed_density_s, 6),
+            "x_index": int(dominant_x_index),
+            "y_index": int(dominant_y_index),
+            "x_bounds_m": [
+                round(float(density_x_edges[dominant_x_index]), 3),
+                round(float(density_x_edges[dominant_x_index + 1]), 3),
+            ],
+            "y_bounds_m": [
+                round(float(density_y_edges[dominant_y_index]), 3),
+                round(float(density_y_edges[dominant_y_index + 1]), 3),
+            ],
+        }
+
+    policy_anomalies: list[dict[str, Any]] = []
+    if (
+        longest_stationary_loose_run is not None
+        and float(longest_stationary_loose_run["duration_s"])
+        >= POLICY_AUDIT_STATIONARY_LOOSE_WARN_S
+    ):
+        policy_anomalies.append(
+            {
+                "code": "stationary_live_loose_ball",
+                "severity": "high",
+                "message": "Live loose ball remained nearly stationary long enough to suggest a policy recovery failure.",
+                "threshold": {
+                    "duration_s": POLICY_AUDIT_STATIONARY_LOOSE_WARN_S,
+                    "maximum_speed_mps": POLICY_AUDIT_STATIONARY_BALL_SPEED_MPS,
+                },
+                "observed": longest_stationary_loose_run,
+            }
+        )
+    if (
+        longest_loose_run is not None
+        and float(longest_loose_run["duration_s"]) >= POLICY_AUDIT_LOOSE_BALL_WARN_S
+    ):
+        policy_anomalies.append(
+            {
+                "code": "prolonged_live_loose_ball",
+                "severity": "medium",
+                "message": "Live ball remained uncontrolled long enough to require policy review.",
+                "threshold": {"duration_s": POLICY_AUDIT_LOOSE_BALL_WARN_S},
+                "observed": longest_loose_run,
+            }
+        )
+    if (
+        dominant_density is not None
+        and float(dominant_density["seconds"]) >= POLICY_AUDIT_DENSITY_WARN_S
+        and float(dominant_density["share"]) >= POLICY_AUDIT_DENSITY_WARN_SHARE
+    ):
+        policy_anomalies.append(
+            {
+                "code": "ball_position_overconcentration",
+                "severity": "medium",
+                "message": "One 2 m ball-position cell contains an unusually large share of live time.",
+                "threshold": {
+                    "seconds": POLICY_AUDIT_DENSITY_WARN_S,
+                    "share": POLICY_AUDIT_DENSITY_WARN_SHARE,
+                },
+                "observed": dominant_density,
+            }
+        )
     possession_share = [
         (float(possession_s[team] / live_s) if live_s else None) for team in (0, 1)
     ]
@@ -2155,6 +2335,8 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     intent_action_rows: list[dict[str, Any]] = []
     timeline: list[dict[str, Any]] = []
     substitution_records: list[dict[str, Any]] = []
+    repeated_event_runs: dict[tuple[Any, ...], dict[str, Any]] = {}
+    longest_repeated_event: dict[str, Any] | None = None
     identities = _initial_identities(dataset)
     for frame in chain(pre_frame_management, _iter_event_frames(dataset)):
         tick = int(frame["control_tick"])
@@ -2247,6 +2429,44 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                 if kind == "contest" and fields.get("occurred") is not True:
                     continue
                 event_counts[kind] += 1
+                if kind in {"contact", "deliberate_contact"} and (
+                    kind != "contact" or fields.get("occurred") is True
+                ):
+                    signature = (
+                        kind,
+                        _integer_event_field(fields, "actor"),
+                        _integer_event_field(fields, "intent"),
+                        _integer_event_field(fields, "mechanism"),
+                        _integer_event_field(fields, "law11_effect"),
+                        bool(fields.get("kick_applied", False)),
+                    )
+                    prior_run = repeated_event_runs.get(signature)
+                    if (
+                        prior_run is None
+                        or tick - int(prior_run["last_control_tick"]) > 1
+                    ):
+                        prior_run = {
+                            "event_type": kind,
+                            "actor_slot": signature[1],
+                            "intent": signature[2],
+                            "mechanism": signature[3],
+                            "law11_effect": signature[4],
+                            "kick_applied": signature[5],
+                            "start_clock_s": round(clock, 3),
+                            "start_control_tick": tick,
+                            "occurrences": 0,
+                        }
+                    prior_run["occurrences"] += 1
+                    prior_run["last_clock_s"] = round(clock, 3)
+                    prior_run["last_control_tick"] = tick
+                    prior_run["duration_s"] = round(
+                        max(0.0, clock - float(prior_run["start_clock_s"])), 3
+                    )
+                    repeated_event_runs[signature] = prior_run
+                    if longest_repeated_event is None or float(
+                        prior_run["duration_s"]
+                    ) > float(longest_repeated_event["duration_s"]):
+                        longest_repeated_event = dict(prior_run)
                 actor_slot = (
                     fields.get("offender", event.get("slot"))
                     if kind == "foul"
@@ -2399,12 +2619,26 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
     team_completed_cross_signatures = np.zeros(2, dtype=np.int64)
     team_line_break_proxies = np.zeros(2, dtype=np.int64)
     team_completed_line_break_proxies = np.zeros(2, dtype=np.int64)
+    pass_time_bins = np.zeros((2, 6, 2), dtype=np.int64)
+    control_fps = float(dataset.metadata["control_fps"])
     for row in pass_map_rows:
         team = row.get("team")
         if team not in (0, 1):
             continue
         team_realized_passes[int(team)] += 1
         completed = row.get("outcome") == "same_team_next_contact"
+        pass_window = min(
+            pass_time_bins.shape[1] - 1,
+            max(
+                0,
+                int(
+                    (float(row["control_tick"]) / control_fps)
+                    // POLICY_AUDIT_PASS_WINDOW_S
+                ),
+            ),
+        )
+        pass_time_bins[int(team), pass_window, 0] += 1
+        pass_time_bins[int(team), pass_window, 1] += int(completed)
         cross_signature = row.get("rule_policy_cross_control_signature") is True
         line_break = row.get("defensive_line_breaking_pass_proxy") is True
         team_cross_signatures[int(team)] += int(cross_signature)
@@ -2413,6 +2647,125 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             team_completed_passes[int(team)] += 1
             team_completed_cross_signatures[int(team)] += int(cross_signature)
             team_completed_line_break_proxies[int(team)] += int(line_break)
+
+    pass_completion_by_team: list[list[dict[str, Any]]] = []
+    for team in (0, 1):
+        time_rows: list[dict[str, Any]] = []
+        for window in range(pass_time_bins.shape[1]):
+            attempts = int(pass_time_bins[team, window, 0])
+            completed = int(pass_time_bins[team, window, 1])
+            time_rows.append(
+                {
+                    "start_minute": 15 * window,
+                    "end_minute": 15 * (window + 1),
+                    "attempts": attempts,
+                    "completed": completed,
+                    "completion": (
+                        None if attempts == 0 else round(completed / attempts, 6)
+                    ),
+                }
+            )
+        pass_completion_by_team.append(time_rows)
+        early_attempts = int(pass_time_bins[team, :3, 0].sum())
+        early_completed = int(pass_time_bins[team, :3, 1].sum())
+        late_attempts = int(pass_time_bins[team, 3:, 0].sum())
+        late_completed = int(pass_time_bins[team, 3:, 1].sum())
+        if (
+            early_attempts >= POLICY_AUDIT_PASS_HALF_MIN_ATTEMPTS
+            and late_attempts >= POLICY_AUDIT_PASS_HALF_MIN_ATTEMPTS
+        ):
+            early_rate = early_completed / early_attempts
+            late_rate = late_completed / late_attempts
+            if early_rate - late_rate >= POLICY_AUDIT_PASS_COMPLETION_DROP:
+                policy_anomalies.append(
+                    {
+                        "code": "second_half_pass_completion_drop",
+                        "severity": "medium",
+                        "message": "Pass receipt rate fell sharply after halftime, suggesting late-match policy degradation.",
+                        "threshold": {
+                            "minimum_attempts_per_half": POLICY_AUDIT_PASS_HALF_MIN_ATTEMPTS,
+                            "minimum_absolute_drop": POLICY_AUDIT_PASS_COMPLETION_DROP,
+                        },
+                        "observed": {
+                            "team": team,
+                            "first_half": {
+                                "attempts": early_attempts,
+                                "completed": early_completed,
+                                "completion": round(early_rate, 6),
+                            },
+                            "second_half": {
+                                "attempts": late_attempts,
+                                "completed": late_completed,
+                                "completion": round(late_rate, 6),
+                            },
+                            "absolute_drop": round(early_rate - late_rate, 6),
+                        },
+                    }
+                )
+
+    combined_pass_attempts = pass_time_bins[:, :, 0].sum(axis=0)
+    for window in range(1, pass_time_bins.shape[1] - 1):
+        if (window + 1) * POLICY_AUDIT_PASS_WINDOW_S > captured_duration + 1.0e-6:
+            continue
+        attempts = int(combined_pass_attempts[window])
+        prior_attempts = int(combined_pass_attempts[window - 1])
+        next_attempts = int(combined_pass_attempts[window + 1])
+        if (
+            attempts <= POLICY_AUDIT_PASS_ACTIVITY_MAX_ATTEMPTS
+            and prior_attempts >= POLICY_AUDIT_PASS_ACTIVITY_NEIGHBOR_MIN_ATTEMPTS
+            and next_attempts >= POLICY_AUDIT_PASS_ACTIVITY_NEIGHBOR_MIN_ATTEMPTS
+        ):
+            policy_anomalies.append(
+                {
+                    "code": "mid_match_pass_activity_collapse",
+                    "severity": "high",
+                    "message": "Realized passing nearly vanished for a full 15-minute window despite active neighboring windows.",
+                    "threshold": {
+                        "maximum_combined_attempts": POLICY_AUDIT_PASS_ACTIVITY_MAX_ATTEMPTS,
+                        "minimum_neighbor_attempts": POLICY_AUDIT_PASS_ACTIVITY_NEIGHBOR_MIN_ATTEMPTS,
+                    },
+                    "observed": {
+                        "start_minute": 15 * window,
+                        "end_minute": 15 * (window + 1),
+                        "combined_attempts": attempts,
+                        "previous_window_attempts": prior_attempts,
+                        "next_window_attempts": next_attempts,
+                    },
+                }
+            )
+
+    dismissal_counts = Counter(record["team"] for record in dismissal_records)
+    for team in (0, 1):
+        if dismissal_counts[team] >= POLICY_AUDIT_DISMISSAL_WARN_COUNT:
+            policy_anomalies.append(
+                {
+                    "code": "excessive_dismissals",
+                    "severity": "high",
+                    "message": "A team accumulated enough dismissals to suggest discipline or challenge-policy instability.",
+                    "threshold": {"dismissals": POLICY_AUDIT_DISMISSAL_WARN_COUNT},
+                    "observed": {
+                        "team": team,
+                        "dismissals": int(dismissal_counts[team]),
+                        "records": [
+                            row for row in dismissal_records if row["team"] == team
+                        ],
+                    },
+                }
+            )
+    if (
+        longest_repeated_event is not None
+        and float(longest_repeated_event["duration_s"])
+        >= POLICY_AUDIT_EVENT_REPEAT_WARN_S
+    ):
+        policy_anomalies.append(
+            {
+                "code": "repeated_event_pattern",
+                "severity": "medium",
+                "message": "The same actor/event signature repeated on consecutive control ticks for an unusually long interval.",
+                "threshold": {"duration_s": POLICY_AUDIT_EVENT_REPEAT_WARN_S},
+                "observed": longest_repeated_event,
+            }
+        )
     team_shot_outcomes = [Counter(), Counter()]
     for row in shot_map_rows:
         team = row.get("team")
@@ -2460,6 +2813,7 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
                 if not realized_passes
                 else round(completed_passes / realized_passes, 6)
             ),
+            "pass_completion_by_15m": pass_completion_by_team[team],
             "rule_policy_cross_control_signatures": (
                 cross_signatures if action_controls_available else None
             ),
@@ -2995,6 +3349,57 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
         quality_warnings.append(
             "Submitted action controls are unavailable; submitted action counts are not observable."
         )
+    for anomaly in policy_anomalies:
+        observed = anomaly["observed"]
+        if anomaly["code"] == "stationary_live_loose_ball":
+            quality_warnings.append(
+                "Policy anomaly [high]: stationary live loose ball for "
+                f"{float(observed['duration_s']):.1f}s from match clock "
+                f"{float(observed['start_clock_s']):.1f}s to "
+                f"{float(observed['end_clock_s']):.1f}s near "
+                f"{observed['position_m']}."
+            )
+        elif anomaly["code"] == "prolonged_live_loose_ball":
+            quality_warnings.append(
+                "Policy anomaly [medium]: live ball remained loose for "
+                f"{float(observed['duration_s']):.1f}s from match clock "
+                f"{float(observed['start_clock_s']):.1f}s to "
+                f"{float(observed['end_clock_s']):.1f}s."
+            )
+        elif anomaly["code"] == "ball_position_overconcentration":
+            quality_warnings.append(
+                "Policy anomaly [medium]: one 2 m ball-position cell "
+                f"({observed['x_bounds_m']} x {observed['y_bounds_m']}) contains "
+                f"{float(observed['seconds']):.1f}s "
+                f"({100.0 * float(observed['share']):.1f}%) of observed live time."
+            )
+        elif anomaly["code"] == "second_half_pass_completion_drop":
+            quality_warnings.append(
+                "Policy anomaly [medium]: Team "
+                f"{observed['team']} pass receipt rate fell from "
+                f"{100.0 * float(observed['first_half']['completion']):.1f}% "
+                f"to {100.0 * float(observed['second_half']['completion']):.1f}% "
+                "after halftime."
+            )
+        elif anomaly["code"] == "excessive_dismissals":
+            quality_warnings.append(
+                "Policy anomaly [high]: Team "
+                f"{observed['team']} accumulated {observed['dismissals']} dismissals."
+            )
+        elif anomaly["code"] == "repeated_event_pattern":
+            quality_warnings.append(
+                "Policy anomaly [medium]: repeated "
+                f"{observed['event_type']} signature persisted for "
+                f"{float(observed['duration_s']):.1f}s "
+                f"({observed['occurrences']} occurrences)."
+            )
+        elif anomaly["code"] == "mid_match_pass_activity_collapse":
+            quality_warnings.append(
+                "Policy anomaly [high]: only "
+                f"{observed['combined_attempts']} realized passes occurred from "
+                f"minute {observed['start_minute']} to {observed['end_minute']}, "
+                "despite active neighboring 15-minute windows."
+            )
     report = {
         "schema": REPORT_SCHEMA,
         "metrics_schema": METRICS_VERSION,
@@ -3028,6 +3433,18 @@ def build_match_report(dataset: MatchDataset) -> dict[str, Any]:
             "event_budget_exhausted_count": int(
                 dataset.replay.completion.get("event_budget_exhausted_count", 0)
             ),
+            "policy_audit": {
+                "basis": "host-only diagnostic priors, not measured football constants",
+                "anomalies": policy_anomalies,
+                "longest_live_loose_ball_run": longest_loose_run,
+                "longest_stationary_live_loose_ball_run": (
+                    longest_stationary_loose_run
+                ),
+                "dominant_ball_density_cell": dominant_density,
+                "dismissals": dismissal_records,
+                "longest_repeated_event_run": longest_repeated_event,
+                "pass_completion_by_15m": pass_completion_by_team,
+            },
             "warnings": quality_warnings,
         },
         "summary": {

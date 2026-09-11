@@ -87,6 +87,7 @@ def build_tactical_matrix_report(
     team_0_wins = 0
     team_1_wins = 0
     draws = 0
+    policy_anomalies: list[dict[str, object]] = []
 
     for index, raw in enumerate(raw_matches):
         _require(isinstance(raw, dict), f"match {index} is not an object")
@@ -167,6 +168,27 @@ def build_tactical_matrix_report(
         draws += int(score[0] == score[1])
         quality = report["quality"]
         authoritative_count += int(quality.get("authoritative") is True)
+        policy_audit = quality.get("policy_audit", {})
+        child_anomalies = (
+            policy_audit.get("anomalies", []) if isinstance(policy_audit, dict) else []
+        )
+        _require(
+            isinstance(child_anomalies, list),
+            f"invalid policy anomaly list: {report_path}",
+        )
+        for anomaly in child_anomalies:
+            _require(
+                isinstance(anomaly, dict),
+                f"invalid policy anomaly record: {report_path}",
+            )
+            policy_anomalies.append(
+                {
+                    "team_0_plan": team_0_plan,
+                    "team_1_plan": team_1_plan,
+                    "report_html": str(html_path),
+                    **anomaly,
+                }
+            )
         match_row = {
             "team_0_plan": team_0_plan,
             "team_1_plan": team_1_plan,
@@ -316,6 +338,7 @@ def build_tactical_matrix_report(
             "authoritative_match_count": authoritative_count,
             "diagnostic_match_count": len(matches) - authoritative_count,
             "failure_count": 0,
+            "policy_anomaly_count": len(policy_anomalies),
             "warnings": (
                 (
                     []
@@ -327,6 +350,13 @@ def build_tactical_matrix_report(
                     if authoritative_count == len(matches)
                     else [
                         "One or more full-duration reports are diagnostic because their source worktree was not authoritative."
+                    ]
+                )
+                + (
+                    []
+                    if not policy_anomalies
+                    else [
+                        f"Policy audit found {len(policy_anomalies)} suspicious match condition(s); inspect the anomaly table before interpreting policy rankings."
                     ]
                 )
             ),
@@ -355,6 +385,7 @@ def build_tactical_matrix_report(
             "standings": standings,
         },
         "policy_aggregates": policy_rows,
+        "policy_anomalies": policy_anomalies,
         "matches": matches,
     }
 
@@ -415,6 +446,31 @@ def render_tactical_matrix_html(
             f"<td><a href='{html.escape(href)}'>open match report</a></td>"
             "</tr>"
         )
+    anomalies = []
+    for row in report.get("policy_anomalies", []):
+        href = os.path.relpath(str(row["report_html"]), target)
+        observed = row.get("observed", {})
+        anomalies.append(
+            "<tr>"
+            f"<td>{html.escape(str(row.get('severity', 'unknown')))}</td>"
+            f"<td>{html.escape(str(row.get('code', 'unknown')))}</td>"
+            f"<td>{html.escape(str(row['team_0_plan']))} vs {html.escape(str(row['team_1_plan']))}</td>"
+            f"<td>{html.escape(str(row.get('message', '')))}</td>"
+            f"<td><code>{html.escape(json.dumps(observed, ensure_ascii=False, sort_keys=True))}</code></td>"
+            f"<td><a href='{html.escape(href)}'>inspect match</a></td>"
+            "</tr>"
+        )
+    anomaly_section = (
+        "<h2>Policy anomaly audit</h2>"
+        "<p>No configured liveness or spatial-concentration anomaly was detected.</p>"
+        if not anomalies
+        else (
+            "<h2>Policy anomaly audit</h2>"
+            "<p>Host-only diagnostic priors; each item is a review lead, not proof of a policy defect.</p>"
+            "<table><thead><tr><th>Severity</th><th>Code</th><th>Match</th><th>Reason</th><th>Observed</th><th>Report</th></tr></thead>"
+            f"<tbody>{''.join(anomalies)}</tbody></table>"
+        )
+    )
     json_href = "report.json"
     matrix_label = (
         "complete ordered policy cells"
@@ -453,6 +509,7 @@ table{{width:100%;border-collapse:collapse;background:var(--white);border:1px so
 <table><thead><tr><th>Rank</th><th>Plan</th><th>P</th><th>W-D-L</th><th>GF-GA</th><th>GD</th><th>Pts</th></tr></thead><tbody>{"".join(standings)}</tbody></table>
 <h2>Policy aggregates</h2>
 <table><thead><tr><th>Plan</th><th>Apps</th><th>W-D-L</th><th>GF-GA</th><th>Shots (on target)</th><th>Pass completion</th><th>Cross signatures (received)</th><th>Line breaks (received)</th><th>Avg controlled possession s</th></tr></thead><tbody>{"".join(policies)}</tbody></table>
+{anomaly_section}
 <h2>Every match</h2>
 <table><thead><tr><th>Team 0</th><th>Team 1</th><th>Score</th><th>Duration s</th><th>Frames</th><th>Individual report</th></tr></thead><tbody>{"".join(matches)}</tbody></table>
 <footer>Host-only aggregation from verified single-match reports. <a href="{json_href}">Machine-readable JSON</a>.</footer>

@@ -20,6 +20,7 @@ import numpy as np
 from footballworld import FootballWorld, Player, PlayerProfile, initialize_policy_state
 from footballworld.core.constants import NO_PLAYER, NO_TEAM, RK_NONE
 from footballworld.core.contact import (
+    INTENT_CHALLENGE,
     INTENT_CONTROL,
     INTENT_MOVE,
     INTENT_PASS,
@@ -614,3 +615,54 @@ def test_loose_chaser_inside_control_reach_is_not_replaced_by_second_teammate():
     )
     replacement_move = np.asarray(decoded.move.direction[replacement])
     assert float(np.dot(replacement_move, replacement_ball_delta)) < 0.0
+
+
+def test_stationary_loose_ball_is_challenged_only_when_opponent_can_contest():
+    """Prior opponent contact alone must not strand an uncontested loose ball."""
+
+    env = FootballWorld()
+    reset, actor, _ = _controlled_open_play(env)
+    state = reset.rollout.state
+    actor_team = int(np.asarray(state.players.team_id[actor]))
+    opponent_team = 1 - actor_team
+    opponent = int(
+        np.flatnonzero(
+            (np.asarray(state.players.team_id) == opponent_team)
+            & (~np.asarray(state.players.is_goalkeeper, dtype=bool))
+        )[0]
+    )
+    loose = state._replace(
+        possession=state.possession._replace(
+            team=jnp.int32(NO_TEAM),
+            player=jnp.int32(NO_PLAYER),
+            previous_team=jnp.int32(opponent_team),
+            control_ticks=jnp.int32(0),
+        )
+    )
+
+    def actor_intent(candidate_state):
+        rollout = reset.rollout._replace(state=candidate_state)
+        roster = env.roster_metadata_si(rollout)
+        policy = make_rule_based_policy(env)
+        policy_state = initialize_policy_state(env, policy, rollout, roster)
+        return int(
+            np.asarray(
+                policy.step(
+                    env.observe_all_si(rollout),
+                    roster,
+                    policy_state,
+                    jax.random.key(6110),
+                ).action.intent[actor]
+            )
+        )
+
+    assert actor_intent(loose) == INTENT_CONTROL
+
+    positions = np.array(loose.players.position, copy=True)
+    positions[opponent] = positions[actor] + np.asarray((0.2, 0.0), dtype=np.float32)
+    contested = loose._replace(
+        players=loose.players._replace(
+            position=jnp.asarray(positions, dtype=jnp.float32)
+        )
+    )
+    assert actor_intent(contested) == INTENT_CHALLENGE

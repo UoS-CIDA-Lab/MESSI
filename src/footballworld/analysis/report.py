@@ -1487,6 +1487,34 @@ def _reference_chart(report: dict[str, Any]) -> str:
     )
 
 
+def _pass_completion_timeline(report: dict[str, Any]) -> str:
+    """Render the audit's fixed 15-minute pass-receipt windows."""
+
+    team_rows = [team.get("pass_completion_by_15m", []) for team in report["teams"]]
+    if len(team_rows) != 2 or not any(team_rows):
+        return "<p class='empty'>Time-binned pass completion is unavailable.</p>"
+    rows = []
+    for index in range(max(len(team_rows[0]), len(team_rows[1]))):
+        cells = []
+        label = f"{15 * index}–{15 * (index + 1)}"
+        for team in (0, 1):
+            row = team_rows[team][index] if index < len(team_rows[team]) else {}
+            attempts = int(row.get("attempts", 0))
+            completed = int(row.get("completed", 0))
+            completion = row.get("completion")
+            cells.append(
+                "n/a"
+                if completion is None
+                else f"{100.0 * float(completion):.1f}% ({completed}/{attempts})"
+            )
+        rows.append(f"<tr><td>{label}</td><td>{cells[0]}</td><td>{cells[1]}</td></tr>")
+    return (
+        "<table><thead><tr><th>Minute</th><th><span class='team-dot t0'></span>Team 0</th>"
+        "<th><span class='team-dot t1'></span>Team 1</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def render_html(
     dataset: MatchDataset,
     report: dict[str, Any],
@@ -1568,6 +1596,7 @@ details {{margin-top:28px}} summary {{cursor:pointer;font-weight:700;padding:12p
 <section><div class="section-head"><h2>Realized pass maps</h2><p>Actual next-contact paths, policy-intended receiver locations, and submitted shot directions; both teams attack right</p></div><div class="viz-grid">{_pass_map_chart(report, 0)}{_pass_map_chart(report, 1)}</div></section>
 <section><div class="section-head"><h2>Movement and exact events</h2><p>Active on-pitch tracking samples and confirmed event counts</p></div><div class="dashboard-pair"><div>{_speed_histogram(report)}</div><div class="event-grid">{_event_bars(report)}</div></div></section>
 <section><div class="section-head"><h2>Team comparison</h2><p><span class="team-dot t0"></span>Team 0 &nbsp;&nbsp; <span class="team-dot t1"></span>Team 1</p></div><div class="team-comparison">{_comparison_rows(report)}</div></section>
+<section><div class="section-head"><h2>Pass completion over time</h2><p>15-minute realized open-play pass windows; completion means same-team next distinct contact</p></div>{_pass_completion_timeline(report)}</section>
 {reference_section}
 <section><div class="section-head"><h2>Player workload</h2><p>Distance accumulated while identity-continuous, active, and on pitch</p></div><div class="workload-grid">{_workload_charts(report)}</div></section>
 <details><summary>Detailed metrics and match timeline</summary>

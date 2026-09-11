@@ -142,6 +142,36 @@ def test_multi_report_aggregates_cross_and_line_break_receipts(tmp_path):
     assert "Line breaks (received)" in rendered
 
 
+def test_multi_report_surfaces_child_policy_anomalies(tmp_path):
+    summary = _matrix(tmp_path)
+    matrix = json.loads(summary.read_text())
+    child = Path(matrix["matches"][1]["output"]) / "report" / "report.json"
+    report = json.loads(child.read_text())
+    report["quality"]["policy_audit"] = {
+        "anomalies": [
+            {
+                "code": "stationary_live_loose_ball",
+                "severity": "high",
+                "message": "A stationary loose ball needs review.",
+                "observed": {"duration_s": 42.0},
+            }
+        ]
+    }
+    _write_json(child, report)
+
+    aggregate = build_tactical_matrix_report(summary)
+    rendered = render_tactical_matrix_html(
+        aggregate, output_dir=tmp_path / "multi-report"
+    )
+
+    assert aggregate["quality"]["policy_anomaly_count"] == 1
+    assert aggregate["policy_anomalies"][0]["team_0_plan"] == "alpha"
+    assert aggregate["policy_anomalies"][0]["team_1_plan"] == "beta"
+    assert "Policy anomaly audit" in rendered
+    assert "stationary_live_loose_ball" in rendered
+    assert "inspect match" in rendered
+
+
 def test_multi_report_rejects_duplicate_ordered_cells(tmp_path):
     summary = _matrix(tmp_path)
     value = json.loads(summary.read_text())

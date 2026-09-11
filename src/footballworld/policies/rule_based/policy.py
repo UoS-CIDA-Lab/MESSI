@@ -3176,10 +3176,18 @@ def make_rule_based_policy(
             & contact_available
         ) | aerial_control
         previous_team_known = observations.possession.previous_team != NO_TEAM
+        loose_contest_radius = jnp.float32(env.reach.challenge_radius_m + ball_radius)
+        visible_opponent_can_contest = jnp.any(
+            opponent
+            & context.participating
+            & (player_to_ball_squared <= jnp.square(loose_contest_radius)),
+            axis=-1,
+        )
         opponent_loose_challenge = (
             loose_control
             & previous_team_known
             & (observations.possession.previous_team != self_team)
+            & visible_opponent_can_contest
         )
         defensive_loose_clear = opponent_loose_challenge & deep_clear_zone
         opponent_loose_challenge = opponent_loose_challenge & (~defensive_loose_clear)

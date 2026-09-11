@@ -851,3 +851,55 @@ approach contract without an in-flight formation mutation. This is a
 correctness restriction on command timing, not a change to formation scoring;
 score, phase, fitness, tactic, hysteresis, and keyed choice remain active at
 the safe boundaries.
+
+The first complete v2 matrix also exposed a separate open-play liveness defect
+in the 3-1 Gegenpress--Zona Mista cell. A single live, stationary loose ball
+occupied the same 2 m density cell for 993.7 seconds from match clock 1783.4
+to 2776.1. The assigned Team-0 claimant remained about 4 cm from the ball while
+the nearest opponent stayed 3.7--5.0 m away. The policy nevertheless converted
+CONTROL to CHALLENGE solely because the previous contact team was the
+opponent; repeated passive deflections never established possession.
+
+Previous-team provenance remains part of contested-loose-ball intent, but it
+now selects CHALLENGE only when an observed participating opponent is also
+within the environment's existing physical challenge envelope of the ball.
+An uncontested claimant uses CONTROL, while a genuinely co-located opponent
+retains CHALLENGE and the deep defensive clearance override remains unchanged.
+This adds one reduction over an already-computed player-to-ball distance
+matrix and no new fitted coefficient.
+
+The host-only match report now audits every capture for policy-pathology
+signals before a tactical result is interpreted. It records the longest live
+loose-ball run, the longest nearly stationary live loose-ball run, the
+dominant 2 m ball-density cell, dismissal transitions, consecutive repeated
+contact signatures, and realized pass receipt in fixed 15-minute windows.
+The multi-match report carries every child anomaly into a linked review table.
+
+Thresholds for these warnings are deliberately labelled diagnostic design
+priors rather than measured football constants: 5 seconds for a stationary
+live loose ball, 15 seconds for any live loose ball, at least 60 seconds and
+2% of live time in one density cell, 30 seconds for one consecutive event
+signature, and three dismissals for one team. A 5 percentage-point
+first-to-second-half pass-receipt fall is considered only when both halves
+have at least ten realized attempts. A full 15-minute window with no more
+than five combined realized passes is flagged only when both neighboring
+windows contain at least twenty. All raw counts, times, coordinates, and
+thresholds remain in the JSON so reviewers can reject or revise a warning.
+
+Recomputing the original defective 3-1 capture produces stationary-loose,
+prolonged-loose, spatial-overconcentration, and 30--45-minute pass-activity
+collapse findings. Recomputing the same full-match fixture after the policy
+fix produces none of those warnings; its longest loose and stationary-loose
+runs are 6.6 and 0.2 seconds respectively. These comparisons validate anomaly
+detection against a known simulation defect, not against a claim about normal
+professional-match distributions.
+
+The temporal pass guard is informed by the hash-verified seven-match DFL
+receipt `calib/policy/artifacts/dfl-pass-completion-by-time-v1.json`. Pooled
+DFL open-play `Pass`/`Cross` rows fell from 81.03% provider completion in the
+first half (2,413/2,978) to 75.59% in the second (1,805/2,388), a 5.44
+percentage-point fall; the median paired match fall was 5.19 points. The user
+selected 5 percentage points as the FootballWorld degradation allowance.
+This only informs the temporal-delta guard: DFL `Evaluation` and the report's
+same-team-next-distinct-contact receipt are different estimands, so their
+absolute percentages are not equated or fitted.
