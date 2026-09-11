@@ -1290,3 +1290,14 @@ to 214, so the candidate is not accepted as a direct backward-service fix; it
 is promoted because it creates more completed forward service and more,
 slightly closer shots without a material receipt decline. Full-matrix results
 remain the acceptance authority.
+
+The clean `de1bb0f` loop-09 matrix rejected that 0.80 candidate. All 25
+full-duration cells completed with zero child failures, but total shots fell
+from 411 to 355, on-target shots from 224 to 182, and box-origin shots from 214
+to 152. Although realized forward passes rose from 19,285 to 19,745 and their
+same-team receipts from 17,286 to 17,654, all passes also rose from 49,275 to
+49,678. Attacking-third passes fell from 2,578 to 2,532, while unsupported
+backward passes increased from 1,431 to 1,447. Line-break proxies improved from
+89/22 received to 108/36, but that isolated gain cannot compensate for the
+large shot-volume and box-shot loss. The default is restored to 0.60; this is
+another case where a short fixed profile was insufficient acceptance evidence.
