@@ -116,6 +116,39 @@ def test_fast_ground_pass_path_uses_the_whole_rolling_table_and_arms_law_12():
     assert int(compiled) == team
 
 
+def test_goalkeeper_movement_can_reach_the_end_of_a_targeted_pass_ray():
+    """A moving receiver must not make a deliberate back-pass hand-legal."""
+
+    _, _, state = _open_play_state()
+    team = 0
+    team_slots = np.flatnonzero(np.asarray(state.players.team_id) == team)
+    goalkeeper = int(team_slots[np.asarray(state.players.is_goalkeeper)[team_slots]][0])
+    actor = int(team_slots[team_slots != goalkeeper][0])
+    positions = np.asarray(state.players.position).copy()
+    positions[actor] = (-5.998, 3.245)
+    positions[goalkeeper] = (-49.640, 0.260)
+    state = state._replace(
+        players=state.players._replace(
+            position=jnp.asarray(positions, dtype=jnp.float32)
+        )
+    )
+    release = jnp.asarray((-5.998, 3.245, 0.11), dtype=jnp.float32)
+    velocity = jnp.asarray((-19.744, -1.438, 0.0), dtype=jnp.float32)
+
+    # The stationary projection is roughly 5.2 m beyond the finite proxy path,
+    # while the goalkeeper can cover that gap before the decelerating ball.
+    path_length = float(
+        _conservative_path_length(
+            release,
+            velocity,
+            ball=Ball(),
+            physics=BallPhysics(),
+        )
+    )
+    assert 38.0 < path_length < 39.0
+    assert int(targeted_own_goalkeeper_team(state, actor, release, velocity)) == team
+
+
 def test_short_or_laterally_missed_team_kick_does_not_arm_backpass_restriction():
     _, _, state = _open_play_state()
     team = 0

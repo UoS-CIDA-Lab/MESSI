@@ -191,7 +191,7 @@ def targeted_own_goalkeeper_team(
     reach: Reach = Reach(),
     physics: BallPhysics = BallPhysics(),
 ) -> jax.Array:
-    """Infer a foot play whose finite outgoing ray enters own-GK reach."""
+    """Infer a foot play whose finite outgoing ray is reachable by the own GK."""
 
     players = state.players
     player_count = players.position.shape[0]
@@ -219,15 +219,29 @@ def targeted_own_goalkeeper_team(
     along = jnp.sum(to_goalkeeper * direction, axis=-1)
     closest_along = jnp.clip(along, 0.0, path_length)
     closest = to_goalkeeper - closest_along[:, None] * direction
+    # A goalkeeper receiving a back-pass is not stationary.  The earliest a
+    # constant-release-speed ball can reach the closest point is a strict lower
+    # bound on the actual decelerating path time, so max_speed * earliest_time
+    # adds only movement that the player model can physically cover.  An
+    # intermediate player's touch clears the latch in the ordinary contact
+    # reducer; this remains a direct, unopposed intent proxy rather than a
+    # simulated pass trajectory.
+    earliest_arrival_s = closest_along / jnp.maximum(horizontal_speed, DIV_EPS)
     claim_radius = jnp.asarray(
         reach.goalkeeper_radius_m + ball.radius,
         dtype=players.position.dtype,
+    )
+    moving_claim_radius = claim_radius + jnp.maximum(players.max_speed, 0.0) * (
+        earliest_arrival_s
     )
     intersects = (
         own_goalkeeper
         & (horizontal_speed > GEOMETRY_EPS)
         & (along > GEOMETRY_EPS)
-        & (jnp.sum(closest * closest, axis=-1) <= claim_radius * claim_radius)
+        & (
+            jnp.sum(closest * closest, axis=-1)
+            <= moving_claim_radius * moving_claim_radius
+        )
     )
     targeted = valid_actor & jnp.any(intersects)
     return jnp.where(targeted, actor_team, NO_TEAM).astype(jnp.int32)

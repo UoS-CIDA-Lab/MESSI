@@ -402,9 +402,12 @@ the field would increase inconsistency risk.
 
 No independent coefficient was added. The finite outgoing-ray proxy reuses
 `goalkeeper_radius_m + Ball.radius = 2.11 m`, `g`, `e_rest`,
-`bounce_h_keep`, `ground_settle_vz`, and all roll knots. Bounce count is
-analytically derived from impact speed, restitution, and settle speed; there
-is no configured horizon, bounce cap, intent angle, or new tolerance radius.
+`bounce_h_keep`, `ground_settle_vz`, all roll knots, and the receiving
+goalkeeper's existing `max_speed`. Bounce count is analytically derived from
+impact speed, restitution, and settle speed; there is no configured horizon,
+bounce cap, intent angle, or new tolerance radius. Goalkeeper movement uses
+the release-speed lower bound on arrival time, not a separately tuned chase
+horizon.
 Rolling distance integrates `v / d(v)` across every configured piecewise-linear
 deceleration interval. Reusing only the release-speed deceleration for the
 whole path was unsound: fast passes enter lower-speed intervals with less
