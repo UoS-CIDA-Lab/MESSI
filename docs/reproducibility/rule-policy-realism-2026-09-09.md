@@ -1129,3 +1129,16 @@ advanced carrier, not a force-compensation artifact, interception artifact,
 or late-match policy collapse. Any next intervention should be restricted to
 this carrier/action context; pushing the entire formation forward already
 failed the full-matrix shot-quality acceptance test.
+
+A narrower forward-layoff macro candidate was also rejected before a matrix
+run. It retained full pass eligibility and receiver ranking, but multiplied
+only a low-pressure CF/WF's selected backward service after entering the
+attacking third by a 0.75-to-1.0 pressure-dependent scale. On the fixed four
+seed, 4,500-step profile it reduced all passes from 570 to 564 and submitted
+attacking-third backward releases from 12 to 10, but forward realized passes
+also fell from 210 to 207 and the same five shots moved from 14.84 m to
+16.29 m mean distance. Removing two short-sample layoffs does not justify that
+progression and shot-quality loss, so the coefficient, scalar branch, and
+carrier-role argument were all removed. Existing pass macro behavior is
+retained pending a candidate that creates a credible forward option rather
+than suppressing a safe one.
