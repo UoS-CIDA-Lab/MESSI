@@ -751,7 +751,7 @@ def _propagate_adjudications(
 def _insert_goal_presentation_holds(
     frames: list[_VisualFrame], *, video_fps: float, duration_seconds: float
 ) -> list[_VisualFrame]:
-    """Replace each carried goal interval with one exact frozen video hold.
+    """Insert an exact goal freeze and strip its later carried overlays.
 
     The source rollout remains untouched and may restart immediately. Reusing
     the immutable goal frame delays only the presentation timeline, preventing

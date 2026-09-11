@@ -284,7 +284,7 @@ the resolved radii are recorded in render-settings `/3`.
 Requested intent is shown independently from realized contact. Each ring is a
 world-space circle projected onto the turf, so it foreshortens with the fixed
 camera. Every vertex remains on the turf plane, and the shared ring collections
-are painted before the elevated player-marker collection so a player sphere
+are painted before the elevated player-marker collection so a player figure
 occludes the ring instead of the ring being composited over the player. Its
 radius comes from the configured horizontal reach plus the physical
 ball radius: 1.21 m for ordinary `CONTROL`, `PASS`, `SHOT`, and `CLEAR`; 1.51 m
@@ -320,10 +320,11 @@ because its environment exposes distinct carry, challenge, goalkeeper, and ball
 radii that can be configured independently.
 
 There is no historical event feed or scrolling event window. One transient
-adjudication may show for 2.5 seconds when an exact
-`step_with_events` transition reports a goal, foul, offside, or committed
-substitution. Deterministic sporting priority is goal, red-card foul, other
-foul, then offside. A same-frame substitution is appended to that decision
+non-goal adjudication may show for 2.5 seconds when an exact
+`step_with_events` transition reports a foul, offside, or committed
+substitution; goals follow the separate two-second frozen-frame contract below.
+Deterministic sporting priority is goal, red-card foul, other foul, then
+offside. A same-frame substitution is appended to that decision
 rather than silently discarded; otherwise it receives its own `OUT → IN`
 banner with team and exact registered player ids. Ordinary contacts, passes,
 controls, period boundaries, and non-goal restarts stay out of the video. A
