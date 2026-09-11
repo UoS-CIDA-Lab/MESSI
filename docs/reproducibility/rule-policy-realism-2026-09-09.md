@@ -954,17 +954,13 @@ therefore add a host-only warning at at least 20 attacking-third passes and a
 65% backward share. This review threshold is a diagnostic DESIGN_PRIOR, not a
 provider-derived football constant, and raw attempts remain in the JSON.
 
-The existing wide-ball box support, distinct central/far-post/cutback roles,
-formation shape, and observable Law-11 cap are retained. Central final-third
-progression now activates the existing central and far-post runner lanes once
-the ball is within 6 m of the penalty area; previously those two roles could
-retreat to formation anchors unless the ball was also wide. The wide trigger
-keeps its earlier two-box-length/cross-origin conditions, and central support
-does not change the cutback role. On the four fixed 4,500-step CPU seed pairs,
-this structural candidate increased realized shots from 5 to 8, retained 211
-versus 210 forward passes, and produced a 16.85 m mean shot distance versus
-14.84 m for the preceding candidate and 18.52 m for the original baseline.
-The next full matrix remains the acceptance test.
+An attempted central final-third box-support rule was removed after the full
+25-cell matrix contradicted its short-profile signal. Although four 4,500-step
+seed pairs increased shots from five to eight, the full matrix reduced total
+shots from 368 to 364, on-target shots from 216 to 200, and penalty-area
+entries from 104 to 99. Box-origin shots increased only from 195 to 202. The
+existing wide-ball central/far-post/cutback support, formation shape, and
+observable Law-11 cap therefore remain unchanged.
 
 Three additional coefficient-only candidates were rejected. Increasing shot
 gain from 1.15 to 1.35 left shots at five and worsened mean distance from
@@ -973,3 +969,29 @@ reducing it to 0.50 raised shots to six but removed 14.8% of forward passes and
 worsened mean shot distance to 19.60 m. Increasing only the advanced backward
 penalty reduced pass volume but did not create an attacking-third forward pass
 in the short sample. None of those defaults was changed.
+
+The DFL attacking-third check joins each open-play Pass/Cross leaf to its
+event's `X-Source-Position`, actual `EventTime`, the latest chronological
+GameSection kickoff, and that kickoff's TeamLeft/TeamRight attacking direction.
+Each qualifying EventId is counted once. Across the same seven hash-verified
+event files, 921 attacking-third passes were 335 backward (36.37%), 259 lateral
+(28.12%), and 327 forward (35.50%); provider completion was 607/921 (65.91%).
+FootballWorld's 72--82% backward share is therefore a material directional
+departure, while its much higher receipt percentage remains a different
+estimand. The ignored private-data extractor
+`calib/policy/extract_dfl_attacking_third_passes.py` publishes the complete
+per-match counts and source hashes to
+`calib/policy/artifacts/dfl-attacking-third-pass-direction-v1.json`. It also
+fails closed unless every file's 5,366 total open-play attempts and 4,218
+provider completions agree with the independently generated 15-minute receipt.
+
+A new macro control applies only when the actually selected service starts in
+the attacking third and points backward. At its 0.75 default it retains 75% of
+the PASS utility when unpressured and fades continuously to full value under
+maximum pressure, preserving emergency exits. It changes neither candidate
+legality nor receiver ranking and leaves forward/lateral services untouched.
+On four fixed 4,500-step seed pairs it reduced attacking-third backward passes
+from 12 to 8 and all passes from 570 to 560, while retaining 206/210 forward
+passes and all five shots. A stronger 0.60 value produced the identical short
+trajectory and was rejected as needless extra strength. The complete matrix
+is still required for acceptance.

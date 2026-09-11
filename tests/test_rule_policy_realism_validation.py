@@ -340,6 +340,61 @@ def test_pass_macro_uses_the_service_that_would_actually_be_executed(monkeypatch
     assert int(decision.target) == 1
     assert int(decision.kind) != POSSESSION_PASS
 
+
+def test_attacking_third_backward_macro_scale_preserves_forward_pass(monkeypatch):
+    """The final-third control changes only the selected backward service."""
+
+    import footballworld.policies.rule_based.possession as possession_module
+
+    _fixed_ranking_metrics(monkeypatch)
+    monkeypatch.setattr(
+        possession_module, "plan_shot", _fixed_shot(value=0.20, quality=0.20)
+    )
+    config = replace(
+        RulePolicyConfig(),
+        attacking_third_backward_macro_scale=0.01,
+        pass_macro_value_scale=1.0,
+        solo_carry_value_decay=0.0,
+        progressive_pass_value_gain=0.0,
+        attack_pattern_receiver_gain=0.0,
+        forward_pocket_receiver_gain=0.0,
+        continuation_value_gain=0.0,
+    )
+    context = _carrier_context(teammate_available=True)._replace(
+        self_position=jnp.asarray((30.0, 0.0), dtype=jnp.float32),
+        ball_position=jnp.asarray((30.0, 0.0, 0.11), dtype=jnp.float32),
+    )
+    backward = _possession_kwargs(teammate_available=True) | {
+        "pass_completion": jnp.asarray((0.0, 0.95, 0.0, 0.0), dtype=jnp.float32),
+        "pass_target_xy": jnp.asarray(
+            ((0.0, 0.0), (18.0, 1.0), (0.0, 0.0), (0.0, 0.0)),
+            dtype=jnp.float32,
+        )
+    }
+    forward = backward | {
+        "pass_target_xy": backward["pass_target_xy"].at[1].set(
+            jnp.asarray((42.0, 1.0), dtype=jnp.float32)
+        )
+    }
+
+    backward_decision = decide_possession(
+        context,
+        jnp.zeros((4,), dtype=jnp.bool_),
+        jnp.zeros((4,), dtype=jnp.bool_),
+        config,
+        **backward,
+    )
+    forward_decision = decide_possession(
+        context,
+        jnp.zeros((4,), dtype=jnp.bool_),
+        jnp.zeros((4,), dtype=jnp.bool_),
+        config,
+        **forward,
+    )
+
+    assert int(backward_decision.kind) != POSSESSION_PASS
+    assert int(forward_decision.kind) == POSSESSION_PASS
+
 def test_receiver_does_not_inherit_team_episode_carry_urgency(monkeypatch):
     """An observed previous teammate makes old team-episode age inert."""
 
@@ -766,37 +821,6 @@ def _shape_call(
         kickoff_path_phase=phase,
         kickoff_path_lateral_shift_m=lateral_shift,
     )
-
-
-def test_central_final_third_attack_keeps_two_forwards_in_box_lanes():
-    """Central progression must not make both box runners retreat to anchors."""
-
-    context, state = _shape_fixture()
-    player_count = context.self_index.shape[0]
-    ball = jnp.broadcast_to(
-        jnp.asarray((32.0, 0.0, 0.11), dtype=jnp.float32),
-        (player_count, 3),
-    )
-    context = context._replace(
-        ball_position=ball,
-        ball_visible=jnp.ones((player_count,), dtype=jnp.bool_),
-    )
-    own_possession = np.asarray(context.self_team) == 1
-
-    result = _shape_call(
-        context,
-        state,
-        phase=jnp.float32(0.0),
-        own_possession=own_possession,
-    )
-
-    # Slots 4 and 5 are the centre and wide forward for team 1. The visible
-    # ball defines the Law-11 line here, so both remain just behind it rather
-    # than falling back to their negative-x formation anchors.
-    assert float(result.target[4, 0]) > 30.0
-    assert float(result.target[5, 0]) > 30.0
-    assert bool(result.urgent[4])
-    assert bool(result.urgent[5])
 
 
 def test_kickoff_waypoint_is_bounded_role_diverse_and_endpoint_inert():
