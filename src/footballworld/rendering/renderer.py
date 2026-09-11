@@ -1760,7 +1760,7 @@ class ReplayRenderer:
         )
         goal_detail = ax.text(
             0.5,
-            0.485,
+            0.42,
             "",
             transform=ax.transAxes,
             ha="center",
