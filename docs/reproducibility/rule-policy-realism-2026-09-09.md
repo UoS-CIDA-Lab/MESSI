@@ -985,13 +985,21 @@ per-match counts and source hashes to
 fails closed unless every file's 5,366 total open-play attempts and 4,218
 provider completions agree with the independently generated 15-minute receipt.
 
-A new macro control applies only when the actually selected service starts in
-the attacking third and points backward. At its 0.75 default it retains 75% of
-the PASS utility when unpressured and fades continuously to full value under
-maximum pressure, preserving emergency exits. It changes neither candidate
-legality nor receiver ranking and leaves forward/lateral services untouched.
-On four fixed 4,500-step seed pairs it reduced attacking-third backward passes
-from 12 to 8 and all passes from 570 to 560, while retaining 206/210 forward
-passes and all five shots. A stronger 0.60 value produced the identical short
-trajectory and was rejected as needless extra strength. The complete matrix
-is still required for acceptance.
+A backward-service macro candidate retained 75% of PASS utility when an
+unpressured carrier started in the attacking third, fading continuously to the
+original value under maximum pressure. On four fixed 4,500-step seed pairs it
+reduced attacking-third backward passes from 12 to 8 and all passes from 570
+to 560, while retaining 206/210 forward passes and all five shots. A stronger
+0.60 value produced the identical short trajectory.
+
+The full 25-cell seed-29 matrix rejected the candidate. Relative to the prior
+full matrix, attacking-third backward share improved only from 1,953/2,538
+(76.95%) to 1,852/2,481 (74.65%). Total shots fell from 364 to 361, on-target
+shots from 200 to 185, and box-origin shots from 202 to 198. Relative to the
+last accepted pre-central-support matrix, the on-target deficit was 31
+(185 versus 216). The result indicates suppressed attacking actions rather
+than replacement with purposeful progression, so the macro control and its
+hot-path operations were removed. The report produced no liveness, repeated
+event, dismissal, spatial-concentration, pass-collapse, or temporal pass-trend
+warnings; all 38 warnings were the still-unresolved attacking-third backward
+concentration diagnostic.

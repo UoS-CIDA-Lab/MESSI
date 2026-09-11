@@ -341,60 +341,6 @@ def test_pass_macro_uses_the_service_that_would_actually_be_executed(monkeypatch
     assert int(decision.kind) != POSSESSION_PASS
 
 
-def test_attacking_third_backward_macro_scale_preserves_forward_pass(monkeypatch):
-    """The final-third control changes only the selected backward service."""
-
-    import footballworld.policies.rule_based.possession as possession_module
-
-    _fixed_ranking_metrics(monkeypatch)
-    monkeypatch.setattr(
-        possession_module, "plan_shot", _fixed_shot(value=0.20, quality=0.20)
-    )
-    config = replace(
-        RulePolicyConfig(),
-        attacking_third_backward_macro_scale=0.01,
-        pass_macro_value_scale=1.0,
-        solo_carry_value_decay=0.0,
-        progressive_pass_value_gain=0.0,
-        attack_pattern_receiver_gain=0.0,
-        forward_pocket_receiver_gain=0.0,
-        continuation_value_gain=0.0,
-    )
-    context = _carrier_context(teammate_available=True)._replace(
-        self_position=jnp.asarray((30.0, 0.0), dtype=jnp.float32),
-        ball_position=jnp.asarray((30.0, 0.0, 0.11), dtype=jnp.float32),
-    )
-    backward = _possession_kwargs(teammate_available=True) | {
-        "pass_completion": jnp.asarray((0.0, 0.95, 0.0, 0.0), dtype=jnp.float32),
-        "pass_target_xy": jnp.asarray(
-            ((0.0, 0.0), (18.0, 1.0), (0.0, 0.0), (0.0, 0.0)),
-            dtype=jnp.float32,
-        )
-    }
-    forward = backward | {
-        "pass_target_xy": backward["pass_target_xy"].at[1].set(
-            jnp.asarray((42.0, 1.0), dtype=jnp.float32)
-        )
-    }
-
-    backward_decision = decide_possession(
-        context,
-        jnp.zeros((4,), dtype=jnp.bool_),
-        jnp.zeros((4,), dtype=jnp.bool_),
-        config,
-        **backward,
-    )
-    forward_decision = decide_possession(
-        context,
-        jnp.zeros((4,), dtype=jnp.bool_),
-        jnp.zeros((4,), dtype=jnp.bool_),
-        config,
-        **forward,
-    )
-
-    assert int(backward_decision.kind) != POSSESSION_PASS
-    assert int(forward_decision.kind) == POSSESSION_PASS
-
 def test_receiver_does_not_inherit_team_episode_carry_urgency(monkeypatch):
     """An observed previous teammate makes old team-episode age inert."""
 

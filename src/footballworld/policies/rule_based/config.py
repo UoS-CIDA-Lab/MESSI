@@ -82,10 +82,6 @@ class RulePolicyConfig:
     # The defaults are conservative tuning responses to the seed-29 matrix's
     # high pass cadence and low shot cadence, not measured football constants.
     pass_macro_value_scale: float = 0.80
-    # Applied only to an actually selected backward service from the attacking
-    # third, and faded out under pressure. This remains a policy DESIGN_PRIOR;
-    # the DFL receipt identifies the directional imbalance, not this strength.
-    attacking_third_backward_macro_scale: float = 0.75
     shot_value_gain: float = 1.15
     cross_value_gain: float = 1.75
     # Arrival-point targeting controls are policy design priors. They expose
@@ -312,7 +308,6 @@ class RulePolicyConfig:
             "advanced_backward_pass_penalty_gain",
             "progressive_pass_value_gain",
             "pass_macro_value_scale",
-            "attacking_third_backward_macro_scale",
             "solo_carry_value_decay",
             "dribble_shape_drift_penalty",
             "turnover_shot_value_scale",

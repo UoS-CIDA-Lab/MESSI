@@ -1078,22 +1078,6 @@ def decide_possession(
     # ordering. Scale only the macro utility so abundant safe outlets do not
     # suppress every viable shot or carry in settled possession.
     best_pass_value = best_pass_value * jnp.float32(config.pass_macro_value_scale)
-    selected_attacking_third_reset = (
-        has_pass
-        & (source[0] >= hx / jnp.float32(3.0))
-        & (pass_direction[0] <= jnp.float32(-0.34))
-    )
-    attacking_third_retention = jnp.float32(
-        config.attacking_third_backward_macro_scale
-    ) + (
-        jnp.float32(1.0 - config.attacking_third_backward_macro_scale)
-        * current_pressure
-    )
-    best_pass_value = best_pass_value * jnp.where(
-        selected_attacking_third_reset,
-        attacking_third_retention,
-        jnp.float32(1.0),
-    )
     dribble_key = (
         None
         if decision_key is None
