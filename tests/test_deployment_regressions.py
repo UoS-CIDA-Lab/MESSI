@@ -170,6 +170,36 @@ def test_managed_runners_accept_an_external_player_policy():
     assert batched.player_policy is policy
 
 
+def test_managed_runner_delegates_external_tactical_state_updates():
+    class TacticalPolicy:
+        initialize = staticmethod(lambda *_args: jnp.int32(0))
+        step = staticmethod(lambda *_args: None)
+        apply_management_tactics = staticmethod(
+            lambda _env, _rollout, _management, _roster, state: state + 7)
+
+    runner = managed.make_managed_runner(
+        FootballWorld(), TacticalPolicy(), chunk_steps=1)
+
+    assert int(runner._apply_tactics(None, None, None, jnp.int32(3))) == 10
+
+
+def test_managed_runner_rejects_noncallable_external_state_hook():
+    malformed = SimpleNamespace(
+        initialize=lambda *_args: jnp.int32(0),
+        step=lambda *_args: None,
+        apply_management_tactics=0,
+    )
+    with np.testing.assert_raises_regex(
+        TypeError, "apply_management_tactics must be callable"
+    ):
+        managed.make_managed_runner(FootballWorld(), malformed, chunk_steps=1)
+    with np.testing.assert_raises_regex(
+        TypeError, "apply_management_tactics must be callable"
+    ):
+        managed_batch.make_managed_batch_runner(
+            FootballWorld(), malformed, chunk_steps=1)
+
+
 def test_functional_manager_adapters_reject_noncallable_functions():
     with np.testing.assert_raises_regex(TypeError, "initialize_fn must be callable"):
         FunctionalManagerPolicy(

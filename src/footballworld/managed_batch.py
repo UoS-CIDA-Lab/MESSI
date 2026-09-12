@@ -470,6 +470,12 @@ def make_managed_batch_runner(
         selected_player = make_rule_based_policy(env)
     validate_player_policy(selected_player)
     using_rule_player = isinstance(selected_player, RuleBasedPolicy)
+    custom_roster_refresh = getattr(selected_player, "refresh_roster_state", None)
+    custom_tactics = getattr(selected_player, "apply_management_tactics", None)
+    if custom_roster_refresh is not None and not callable(custom_roster_refresh):
+        raise TypeError("player_policy.refresh_roster_state must be callable")
+    if custom_tactics is not None and not callable(custom_tactics):
+        raise TypeError("player_policy.apply_management_tactics must be callable")
     selected_manager = manager_policy
     manager_default = env.policies.rule_based_match_manager
     taker_default = env.policies.rule_based_set_piece_taker
@@ -588,6 +594,9 @@ def make_managed_batch_runner(
                     roster,
                     policy_state,
                 )
+            elif custom_roster_refresh is not None:
+                refreshed_state = custom_roster_refresh(
+                    env, rollout, old_roster, roster, policy_state)
             return _RosterRefreshResult(
                 roster,
                 refreshed_state,
@@ -608,6 +617,9 @@ def make_managed_batch_runner(
                 return apply_management_tactics(
                     env, selected_player, rollout, management, roster, policy_state
                 )
+            if custom_tactics is not None:
+                return custom_tactics(
+                    env, rollout, management, roster, policy_state)
             return policy_state
 
         return jax.lax.cond(
