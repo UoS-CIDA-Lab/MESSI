@@ -21,9 +21,9 @@ INTENT_CONTROL = 1
 INTENT_PASS = 2
 INTENT_SHOT = 3
 INTENT_CLEAR = 4
-# The public action calls this broad contest request CHALLENGE; interception is
-# a realized outcome within that intent, not a seventh requested action.
-# TACKLE remains an event-schema alias so existing logs retain code 5.
+# CHALLENGE is a tackle request against a physically controlled opponent.
+# Ownerless-ball interception is requested through CONTROL and remains a
+# realized outcome, not a seventh action. TACKLE stays an event-schema alias.
 INTENT_CHALLENGE = 5
 INTENT_TACKLE = INTENT_CHALLENGE
 ACTION_INTENT_COUNT = 6

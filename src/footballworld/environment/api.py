@@ -1499,6 +1499,7 @@ class FootballWorld:
         reconciled_state, taker_repaired = reconcile_restart_after_roster_change(
             event.state,
             event.applied,
+            ball=self.ball,
             body=self.body,
             stadium=self.stadium,
         )

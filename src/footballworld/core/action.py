@@ -34,7 +34,7 @@ from footballworld.core.contact import (
     INTENT_SHOT,
 )
 
-ACTION_SCHEMA_VERSION = 2
+ACTION_SCHEMA_VERSION = 3
 ACTION_SCHEMA = f"footballworld.intent-action/{ACTION_SCHEMA_VERSION}"
 
 

@@ -632,6 +632,7 @@ def step_episode(
     def advance(_):
         entry_state, _ = repair_broken_restart_taker(
             state,
+            ball=ball_geometry,
             body=body,
             stadium=stadium,
         )

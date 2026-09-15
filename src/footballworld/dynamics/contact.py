@@ -74,7 +74,6 @@ from footballworld.dynamics.ball import advance_smooth
 from footballworld.dynamics.contact_predicates import (
     evaluate_contact_predicates,
     fresh_trap_control_grace,
-    opponent_control_continuation,
 )
 from footballworld.dynamics.contact_response import resolve_control_response
 from footballworld.dynamics.contest import (
@@ -358,24 +357,8 @@ def _detect_active_contact_requested(
     opposing_carrier = carrier_valid & (
         players.team_id != players.team_id[safe_carrier]
     )
+    ordinary_requested = ordinary_requested & (~opposing_carrier)
 
-    last_actor = state.possession.last_contact.actor
-    last_actor_valid = (last_actor >= 0) & (last_actor < player_count)
-    safe_last_actor = jnp.clip(last_actor, 0, player_count - 1)
-    opponent_release = (
-        last_actor_valid
-        & (state.possession.last_contact.outcome == OUTCOME_RELEASE)
-        & (
-            (state.possession.last_contact.intent == INTENT_PASS)
-            | (state.possession.last_contact.intent == INTENT_SHOT)
-            | (state.possession.last_contact.intent == INTENT_CLEAR)
-        )
-        & state.ball.live
-        & (_norm(state.ball.velocity) > STATIONARY_SPEED_EPS)
-        & (players.team_id != players.team_id[safe_last_actor])
-    )
-    control_continuation = opponent_control_continuation(state, carrier_valid)
-    opponent_interceptable_play = opponent_release | control_continuation
     challenge_requested = selected_structural & (safe_intent == INTENT_CHALLENGE)
     challenge_recovery = base_recovery & (players.challenge_recovery_substeps <= 0)
 
@@ -424,12 +407,8 @@ def _detect_active_contact_requested(
             jnp.broadcast_to(carrier_entry, (player_count,)),
             jnp.broadcast_to(carrier_exit, (player_count,)),
         )
-        release_branch = opponent_interceptable_play & challenge_requested & interval[0]
         carrier_branch = challenge_requested & opposing_carrier & carrier_overlap[0]
-        entry = jnp.minimum(
-            jnp.where(release_branch, interval[1], jnp.inf),
-            jnp.where(carrier_branch, carrier_overlap[1], jnp.inf),
-        )
+        entry = jnp.where(carrier_branch, carrier_overlap[1], jnp.inf)
         valid = (
             active_row & challenge_recovery & mechanism_recovery & jnp.isfinite(entry)
         )
@@ -439,7 +418,7 @@ def _detect_active_contact_requested(
         active_row
         & challenge_recovery
         & challenge_requested
-        & (opponent_interceptable_play | opposing_carrier)
+        & opposing_carrier
     )
     challenge_foot_time = challenge_time(
         challenge_foot,
@@ -587,17 +566,6 @@ def active_contact_possible(
     explicit_request = active_row & (action.requested_intent != INTENT_MOVE)
     requested = jnp.asarray(search_enabled, dtype=jnp.bool_) & jnp.any(explicit_request)
 
-    # A goalkeeper hold releases at time zero and therefore must not depend on
-    # reconstructed spatial coherence. The exact detector remains authoritative
-    # for designated actor, recovery, intent, and restart legality.
-    release_allowed = jnp.broadcast_to(
-        jnp.asarray(restart_release_allowed, dtype=jnp.bool_),
-        (player_count,),
-    )
-    goalkeeper_hold_release = (state.restart.kind == RK_GK_HOLD) & jnp.any(
-        explicit_request & release_allowed
-    )
-
     maximum_radius = jnp.asarray(
         max(
             reach.carry_radius_m,
@@ -633,7 +601,7 @@ def active_contact_possible(
     spatial_candidate = jnp.any(
         explicit_request & horizontal_overlap & vertical_overlap
     )
-    return requested & (goalkeeper_hold_release | (~finite) | spatial_candidate)
+    return requested & ((~finite) | spatial_candidate)
 
 
 def detect_active_contact(
@@ -921,7 +889,7 @@ def resolve_contact_step(
         contest_override,
         goalkeeper_clear=predicates.goalkeeper_hand_clear,
         challenge_request=predicates.challenge_context,
-        challenge_interception=predicates.challenge_interception,
+        interception_request=predicates.control_interception,
         challenge_lunge_fraction=challenge_lunge_fraction,
         regulation_elapsed_fraction=regulation_elapsed_fraction,
         config=contest_config,
@@ -1246,7 +1214,11 @@ def resolve_contact_step(
 
     outcome = jnp.where(
         chest_control_success,
-        OUTCOME_TRAP,
+        jnp.where(
+            raw_outcome == OUTCOME_INTERCEPTION,
+            OUTCOME_INTERCEPTION,
+            OUTCOME_TRAP,
+        ),
         jnp.where(
             chest_control_failure | head_control_failure,
             OUTCOME_MISCONTROL,

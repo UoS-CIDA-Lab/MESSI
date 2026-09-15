@@ -3167,39 +3167,47 @@ def make_rule_based_policy(
             context.ball_position[:, 0]
             <= -config.defensive_clear_depth_fraction * half_length
         )
-        aerial_control = aerial_contact & (~opponent_aerial_service)
         defensive_aerial_clear = (
             aerial_contact
             & opponent_aerial_service
             & deep_clear_zone
             & (ball_distance <= env.reach.carry_radius_m + ball_radius)
         )
-        aerial_challenge = (
-            aerial_contact & opponent_aerial_service & (~defensive_aerial_clear)
-        )
+        # A pass/shot in flight is ownerless: receive or intercept it through
+        # CONTROL unless the deep defensive safety branch selects CLEAR.
+        aerial_control = aerial_contact & (~defensive_aerial_clear)
         loose_control = (
             (~restart_active)
             & loose_chaser
             & foot_contact_reachable
             & contact_available
         ) | aerial_control
+        availability = intent_availability_hint(
+            observations,
+            roster,
+            ball=env.ball,
+            stadium=env.stadium,
+            reach=env.reach,
+            scale=env.action_scale,
+            body=env.body,
+        )
         previous_team_known = observations.possession.previous_team != NO_TEAM
-        loose_contest_radius = jnp.float32(env.reach.challenge_radius_m + ball_radius)
+        loose_pressure_radius = jnp.float32(
+            env.reach.challenge_radius_m + ball_radius
+        )
         visible_opponent_can_contest = jnp.any(
             opponent
             & context.participating
-            & (player_to_ball_squared <= jnp.square(loose_contest_radius)),
+            & (player_to_ball_squared <= jnp.square(loose_pressure_radius)),
             axis=-1,
         )
-        opponent_loose_challenge = (
+        pressured_opponent_loose_ball = (
             loose_control
             & previous_team_known
             & (observations.possession.previous_team != self_team)
             & visible_opponent_can_contest
         )
-        defensive_loose_clear = opponent_loose_challenge & deep_clear_zone
-        opponent_loose_challenge = opponent_loose_challenge & (~defensive_loose_clear)
-        loose_control = loose_control & (~opponent_loose_challenge)
+        defensive_loose_clear = pressured_opponent_loose_ball & deep_clear_zone
         loose_control = loose_control & (~defensive_loose_clear)
 
         # The last-contact fact is part of each public observation row and is
@@ -3207,7 +3215,6 @@ def make_rule_based_policy(
         # therefore fails closed to ordinary loose control; no engine state is
         # reconstructed here. Only the selected attacking loose-ball chaser
         # may convert a hand parry or passive save into a first-time shot.
-        availability = intent_availability_hint(observations)
         last_contact = observations.possession.last_contact
         last_actor_opponent_goalkeeper = jnp.any(
             observations.players.last_actor & opponent & roster.is_goalkeeper[None, :],
@@ -3386,9 +3393,7 @@ def make_rule_based_policy(
             & challenge_due
             & challenge_selected
         )
-        challenge_contact = (
-            controlled_challenge_contact | aerial_challenge | opponent_loose_challenge
-        ) & (~self_booked)
+        challenge_contact = controlled_challenge_contact & (~self_booked)
         # The environment owns the ordinary restart taker's legal approach and
         # projects every player's minimum IFAB separation.  It does not own
         # tactical positioning.  FootballWorld likewise keeps non-takers moving

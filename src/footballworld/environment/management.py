@@ -544,6 +544,7 @@ def reconcile_restart_after_roster_change(
     state: State,
     changed: jax.Array,
     *,
+    ball: Ball = Ball(),
     body: BodyContact = BodyContact(),
     stadium: Stadium = Stadium(),
 ) -> tuple[State, jax.Array]:
@@ -562,6 +563,7 @@ def reconcile_restart_after_roster_change(
         changed,
         lambda current: repair_broken_restart_taker(
             current,
+            ball=ball,
             body=body,
             stadium=stadium,
         ),
@@ -1181,6 +1183,7 @@ def apply_manager_substitution(
     reconciled_state, taker_repaired = reconcile_restart_after_roster_change(
         event.state,
         applied,
+        ball=ball,
         body=body,
         stadium=stadium,
     )
@@ -2232,6 +2235,7 @@ def apply_manager_command(
     next_state, restart_taker_repaired = reconcile_restart_after_roster_change(
         next_state,
         roster_identity_changed,
+        ball=ball,
         body=body,
         stadium=stadium,
     )

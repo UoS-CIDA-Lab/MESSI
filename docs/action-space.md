@@ -4,6 +4,10 @@ FootballWorld uses exactly six selectable player intents:
 
 `MOVE`, `CONTROL`, `PASS`, `SHOT`, `CLEAR`, and `CHALLENGE`.
 
+The current semantic wire contract is `footballworld.intent-action/3`.
+Version 3 assigns ownerless-ball interception to `CONTROL` and reserves
+`CHALLENGE` for tackles against a physically verified opposing carrier.
+
 This vocabulary is deliberately small. A football phrase describes an intent
 only when it answers **why the player is acting**. The body part that contacts
 the ball is an execution mechanism, what actually happens is an outcome, and
@@ -52,6 +56,34 @@ contact intent, `force_to_ball` remains solely the ball-force direction and the
 body keeps its previously prepared target, preserving backheel and lateral
 contact geometry. Movement, body direction, contact force, and view centre are
 therefore distinct without adding another categorical intent.
+
+## Intent availability
+
+`intent_availability_hint` returns a set of concurrently selectable intents,
+not a one-hot decision. `MOVE` remains available for every active observer even
+when contact intents are also available, so a policy may deliberately delay a
+touch and continue its run.
+
+Contact availability is strict and observation-causal. Ordinary contact needs
+the ball inside the configured XY reach and compatible height/speed envelope.
+A goalkeeper may receive `CONTROL` or `CLEAR` through the larger hand envelope
+only in their own penalty area when handling is known to be legal.
+`CONTROL` covers own control, a neutral loose-ball trap, an interception of an
+opponent pass/shot/clear or loosened trap, and a legal goalkeeper claim.
+`CHALLENGE` instead requires a visible, physically verified opponent carrier
+and uses its own tackle reach with no active challenge-recovery cooldown.
+While that opposing carrier remains verified,
+`CONTROL`, `PASS`, `SHOT`, and `CLEAR` cannot bypass the tackle resolver.
+Restart intents retain their separate law constraints but still require XY
+reach; the attached `GK_HOLD` ball is not spatially exempt.
+
+The mask excludes impossibility, not tactical quality. A poor long-range shot
+remains available when striking the ball is physically and legally possible;
+the policy's conditional intent distribution must learn not to select it.
+If roster metadata is omitted and a different visible slot is the possessor,
+all contact intents fail closed because that slot's team cannot be identified.
+The observer's own possession and a state with no visible possessor remain
+causally distinguishable without roster metadata.
 
 There is no selectable `UNKNOWN` action. Invalid explicit integers fail closed
 to `MOVE`. `INTENT_TACKLE` is an event-schema alias for `CHALLENGE`, and
@@ -162,7 +194,7 @@ The engine records one of these results independently of the requested intent:
 | `NONE` | No resolved effect. |
 | `RELEASE` | A deliberate release of the ball. |
 | `TRAP` | Control succeeded. |
-| `INTERCEPTION` | A challenge intercepted a released opponent ball or continued onto an opponent `CONTROL/TRAP` that had already become physically loose. |
+| `INTERCEPTION` | `CONTROL` intercepted a released opponent ball or continued onto an opponent `CONTROL/TRAP` that had already become physically loose. |
 | `TACKLE_WON` | A challenge won against a controlled carrier. |
 | `DEFLECTION` | Contact redirected the ball without controlled possession. |
 | `CATCH` | The goalkeeper gained hand control. |
@@ -170,9 +202,10 @@ The engine records one of these results independently of the requested intent:
 | `FOUL` | An eligible `CHALLENGE` against a verified carrier resolved as a direct-contact foul fact. Its occurrence rate is an explicit prior; discipline is sampled conditionally and adjudicated by Law 12. |
 | `MISCONTROL` | A control attempt failed. |
 
-Thus `CHALLENGE` is the request, `FOOT` or another height-selected body part is
-the mechanism, and `TACKLE_WON`, `INTERCEPTION`, `DEFLECTION`, `FOUL`, or
-`NONE` is the result. These labels are not interchangeable. Law 11 effect is
+Thus `CHALLENGE` is the tackle request, `CONTROL` is the interception request,
+and `FOOT` or another height-selected body part is the mechanism.
+`TACKLE_WON`, `INTERCEPTION`, `DEFLECTION`, `FOUL`, and `NONE` are realized
+results. These labels are not interchangeable. Law 11 effect is
 also recorded separately because a deliberate play, deflection, save, or
 direct-restart exemption can have different offside consequences.
 
@@ -275,10 +308,15 @@ selectable actions. `step_with_events` retains one compact requested-intent
 trace per control frame while each realized contact retains its own provenance.
 The lean `step` path does not materialize that trace.
 
+While `GK_HOLD` is active, the ball centre follows the goalkeeper one configured
+ball radius ahead along `body_forward`, at torso-top height. The ordinary XY
+reach gate still applies to release; only the held-pose to foot-punt height and
+speed conversion is a release-specific physical exception.
+
 `step_with_events` additionally returns a fixed-shape per-player
 `ActionReceipt` under schema `footballworld.action-receipt/1`. Policy agency
 and realized action remain separate. Instead of one ambiguous mask, sanitized
-input, structural availability,
+input, strict observation-causal availability,
 independent contact predicates seen during the frame, attempted and realized
 contact, parameter use, forced release, referee projection, environment
 overwrite, and terminal suppression remain separate flags. `primary_reason` is

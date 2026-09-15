@@ -30,6 +30,9 @@ from footballworld.core.constants import (
 )
 from footballworld.core.randomness import RandomEvent, event_random_key
 from footballworld.core.state import State
+from footballworld.rules.goalkeeper_hold_position import (
+    goalkeeper_held_ball_position,
+)
 
 RESTART_TAKER_RANDOM_STREAM = int(RandomEvent.RESTART_TAKER)
 RESTART_TAKER_TEMPERATURE = 12.0
@@ -321,6 +324,7 @@ def select_restart_taker(
 def repair_broken_restart_taker(
     state: State,
     *,
+    ball: Ball = Ball(),
     body: BodyContact = BodyContact(),
     stadium: Stadium = Stadium(),
 ) -> tuple[State, jax.Array]:
@@ -378,13 +382,11 @@ def repair_broken_restart_taker(
         )
         synchronize_hold = (kind == jnp.int32(RK_GK_HOLD)) & replacement_valid
         unserviceable_hold = (kind == jnp.int32(RK_GK_HOLD)) & (~replacement_valid)
-        held_position = jnp.asarray(
-            [
-                state.players.position[safe_replacement, 0],
-                state.players.position[safe_replacement, 1],
-                body.torso_top_height(state.players.height[safe_replacement]),
-            ],
-            dtype=state.ball.position.dtype,
+        held_position = goalkeeper_held_ball_position(
+            state,
+            safe_replacement,
+            ball=ball,
+            body=body,
         )
         return (
             state._replace(

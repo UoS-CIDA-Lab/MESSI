@@ -20,7 +20,6 @@ import numpy as np
 from footballworld import FootballWorld, Player, PlayerProfile, initialize_policy_state
 from footballworld.core.constants import NO_PLAYER, NO_TEAM, RK_NONE
 from footballworld.core.contact import (
-    INTENT_CHALLENGE,
     INTENT_CONTROL,
     INTENT_MOVE,
     INTENT_PASS,
@@ -612,8 +611,8 @@ def test_loose_chaser_is_recomputed_from_current_frame_not_stale_claimant():
     assert np.count_nonzero(intents[np.asarray(team_rows)] == INTENT_CONTROL) == 1
 
 
-def test_stationary_loose_ball_is_challenged_only_when_opponent_can_contest():
-    """Prior opponent contact alone must not strand an uncontested loose ball."""
+def test_stationary_loose_ball_without_opponent_contact_context_is_controlled():
+    """A nearby opponent alone must not request an inapplicable CHALLENGE."""
 
     env = FootballWorld()
     reset, actor, _ = _controlled_open_play(env)
@@ -660,4 +659,4 @@ def test_stationary_loose_ball_is_challenged_only_when_opponent_can_contest():
             position=jnp.asarray(positions, dtype=jnp.float32)
         )
     )
-    assert actor_intent(contested) == INTENT_CHALLENGE
+    assert actor_intent(contested) == INTENT_CONTROL

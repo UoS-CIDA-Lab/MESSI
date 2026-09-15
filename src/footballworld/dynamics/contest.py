@@ -5,9 +5,10 @@ and ``goalkeeper_claim`` masks must be produced by the authoritative reach and
 rule gates.  Forced replay values replace stochastic draws only; they can
 never add an actor outside those masks or turn an ordinary play into a
 challenge or goalkeeper claim. Policies select one of six intents separately
-from eight continuous controls. The contest still produces tackle,
-interception, deflection, catch, and parry as outcomes rather than
-requested-action categories.
+from eight continuous controls. The contest produces a tackle outcome only for
+``CHALLENGE`` against a verified carrier, and an interception outcome only for
+``CONTROL`` of an ownerless opponent release. Deflection, catch, and parry also
+remain outcomes rather than requested-action categories.
 """
 
 from typing import NamedTuple
@@ -562,7 +563,7 @@ def resolve_contest(
     *,
     goalkeeper_clear: jax.Array | None = None,
     challenge_request: jax.Array | None = None,
-    challenge_interception: jax.Array | None = None,
+    interception_request: jax.Array | None = None,
     challenge_lunge_fraction: jax.Array | None = None,
     regulation_elapsed_fraction: jax.Array = 0.0,
     config: Contest = Contest(),
@@ -597,10 +598,10 @@ def resolve_contest(
         if challenge_request is None
         else jnp.asarray(challenge_request, dtype=jnp.bool_)
     )
-    challenge_interception = (
+    interception_request = (
         jnp.zeros_like(candidate)
-        if challenge_interception is None
-        else jnp.asarray(challenge_interception, dtype=jnp.bool_)
+        if interception_request is None
+        else jnp.asarray(interception_request, dtype=jnp.bool_)
     )
     challenge_lunge_fraction = (
         jnp.full_like(distance_xy, 0.5)
@@ -650,7 +651,7 @@ def resolve_contest(
         # requested a challenge. Proximity to an opposing carrier must never
         # promote CONTROL/PASS/SHOT/CLEAR into a tackle.
         challenge_context = verified_carrier_challenge & challenge_request[safe_actor]
-        interception_context = selected & challenge_interception[safe_actor]
+        interception_context = selected & interception_request[safe_actor]
 
         horizontal_speed = jnp.linalg.norm(state.ball.velocity[:2])
         goalkeeper_outcome, goalkeeper_override_valid = _goalkeeper_outcome(

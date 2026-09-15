@@ -57,7 +57,7 @@ class ContactPredicates(NamedTuple):
     goalkeeper_claim: jax.Array
     goalkeeper_hand_clear: jax.Array
     intent_allowed: jax.Array
-    challenge_interception: jax.Array
+    control_interception: jax.Array
     designated_restart: jax.Array
     phase_allowed: jax.Array
     horizontal_reach: jax.Array
@@ -179,12 +179,11 @@ def opponent_control_continuation(
     state: State,
     has_verified_carrier: jax.Array,
 ) -> jax.Array:
-    """Return per-player eligibility to challenge a just-loosened trap.
+    """Return per-player eligibility to control a just-loosened opponent trap.
 
     A physically retained carrier remains a tackle context. This predicate
-    covers only the narrow continuation where an opponent's latest deliberate
-    ``CONTROL/TRAP`` has already become physically loose, without promoting
-    passive deflections or other historical possession into challenges.
+    covers only the narrow interception continuation where an opponent's
+    latest deliberate ``CONTROL/TRAP`` has already become physically loose.
     """
 
     player_count = state.players.position.shape[0]
@@ -309,16 +308,16 @@ def evaluate_contact_predicates(
     )
     control_continuation = opponent_control_continuation(state, carrier_controls)
     opponent_interceptable_play = opponent_deliberate_release | control_continuation
-    challenge_interception = (
+    control_interception = (
         (~restart_active)
-        & (safe_intent == INTENT_CHALLENGE)
+        & (safe_intent == INTENT_CONTROL)
         & opponent_interceptable_play
-        & (~opposing_carrier)
+        & (~carrier_controls)
     )
     challenge_context = (
         (~restart_active)
         & (safe_intent == INTENT_CHALLENGE)
-        & (opposing_carrier | opponent_interceptable_play)
+        & opposing_carrier
         & (~goalkeeper_hand)
     )
 
@@ -392,7 +391,7 @@ def evaluate_contact_predicates(
         intent_in_range
         & structural_intents[jnp.arange(player_count, dtype=jnp.int32), safe_intent]
     )
-    mechanism_allowed = (
+    ordinary_mechanism_allowed = (
         (
             (safe_intent == INTENT_CONTROL)
             & (
@@ -405,19 +404,26 @@ def evaluate_contact_predicates(
         | (safe_intent == INTENT_PASS)
         | (safe_intent == INTENT_SHOT)
         | (safe_intent == INTENT_CLEAR)
-        | ((safe_intent == INTENT_CHALLENGE) & challenge_context)
+    )
+    # A controlled opponent cannot be dispossessed by relabelling the touch as
+    # CONTROL/PASS/SHOT/CLEAR. Only CHALLENGE enters the tackle resolver.
+    mechanism_allowed = (ordinary_mechanism_allowed & (~opposing_carrier)) | (
+        (safe_intent == INTENT_CHALLENGE) & challenge_context
     )
     intent_allowed = selected_structural_intent & mechanism_allowed
     phase_allowed = intent_allowed
-    release_without_reach = (
+    held_release_height_speed_exception = (
         designated_restart
         & restart_release_allowed
         & players.is_goalkeeper
         & (state.restart.kind == RK_GK_HOLD)
     )
-    horizontal_reach = horizontal_reach | release_without_reach
-    height_allowed = height_allowed | release_without_reach
-    speed_allowed = speed_allowed | release_without_reach
+    # A held ball remains attached at the goalkeeper's x/y and must therefore
+    # satisfy the ordinary horizontal reach gate.  Only height and speed are
+    # exempted because contact decoding maps the torso-height held pose to the
+    # separate foot-punt release height.
+    height_allowed = height_allowed | held_release_height_speed_exception
+    speed_allowed = speed_allowed | held_release_height_speed_exception
 
     recovery_ready = (
         (players.aerial_recovery_substeps <= 0)
@@ -440,7 +446,7 @@ def evaluate_contact_predicates(
         goalkeeper_claim=goalkeeper_hand,
         goalkeeper_hand_clear=goalkeeper_hand & (safe_intent == INTENT_CLEAR),
         intent_allowed=intent_allowed,
-        challenge_interception=challenge_interception,
+        control_interception=control_interception,
         designated_restart=designated_restart,
         phase_allowed=phase_allowed,
         horizontal_reach=horizontal_reach,

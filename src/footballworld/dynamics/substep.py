@@ -66,6 +66,9 @@ from footballworld.rules.ball_boundary import (
     BoundaryCrossing,
     detect_boundary_crossing,
 )
+from footballworld.rules.goalkeeper_hold_position import (
+    goalkeeper_held_ball_position,
+)
 from footballworld.rules.restart_legality import restart_actor_mask
 from footballworld.rules.restart_positioning import (
     prepare_restart_positioning,
@@ -203,18 +206,16 @@ def _empty_deliberate_step(
     )
 
 
-def _attach_held_ball(state: State, *, body: BodyContact) -> State:
+def _attach_held_ball(state: State, *, ball_geometry: Ball, body: BodyContact) -> State:
     player_count = state.players.position.shape[0]
     taker = jnp.clip(state.restart.taker, 0, player_count - 1)
     valid_taker = restart_actor_mask(state)[taker]
     held = (state.restart.kind == RK_GK_HOLD) & valid_taker
-    held_position = jnp.array(
-        [
-            state.players.position[taker, 0],
-            state.players.position[taker, 1],
-            body.torso_top_height(state.players.height[taker]),
-        ],
-        dtype=state.ball.position.dtype,
+    held_position = goalkeeper_held_ball_position(
+        state,
+        taker,
+        ball=ball_geometry,
+        body=body,
     )
     held_ball = BallState(
         position=jnp.where(held, held_position, state.ball.position),
@@ -1139,7 +1140,7 @@ def _step_ball_events_chronological(
     # necessarily dead and ``advance_smooth`` is an identity. The former final
     # call therefore evaluated one full ground/air branch with either dt=0 or
     # live=False on every physics substep without changing any leaf.
-    final_state = _attach_held_ball(final.state, body=body)
+    final_state = _attach_held_ball(final.state, ball_geometry=ball_geometry, body=body)
     deliberate = DeliberateContactStep(
         state=final_state,
         occurred=final.deliberate_occurred,
