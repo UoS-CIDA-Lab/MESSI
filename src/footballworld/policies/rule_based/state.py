@@ -102,8 +102,8 @@ def _player_count(
         raise ValueError("observations must have leading observer and roster axes")
     if observations.restart.kind.shape != (player_count,):
         raise ValueError("restart observations must have an observer axis")
-    if observations.possession.team.shape != (player_count,):
-        raise ValueError("possession observations must have an observer axis")
+    if observations.players.possessor.shape != (player_count, player_count):
+        raise ValueError("possessor flags must have observer and roster axes")
     if observations.match.control_tick.shape != (player_count,):
         raise ValueError("match observations must have an observer axis")
     if roster.team_id.shape != (player_count,):
@@ -111,6 +111,19 @@ def _player_count(
     if roster.is_goalkeeper.shape != (player_count,):
         raise ValueError("roster goalkeeper flags must match the roster axis")
     return player_count
+
+
+def _observed_possession_team(
+    observations: Observation,
+    roster: RosterMetadata,
+) -> jax.Array:
+    """Derive the unique controlled team from per-player possessor tags."""
+
+    flags = jnp.asarray(observations.players.possessor, dtype=jnp.bool_)
+    unique = observations.valid & (jnp.sum(flags, axis=-1) == 1)
+    actor = jnp.argmax(flags, axis=-1).astype(jnp.int32)
+    team = roster.team_id[actor].astype(jnp.int32)
+    return jnp.where(unique, team, jnp.int32(NO_TEAM)).astype(jnp.int32)
 
 
 def _classify_roles(
@@ -205,12 +218,8 @@ def initialize_rule_policy_state(
     team_slots = build_team_slot_table(roster.team_id)
     restart_kind = jnp.asarray(observations.restart.kind, dtype=jnp.int32)
     restart_active = restart_kind != RK_NONE
-    possession_known = jnp.asarray(observations.possession.known, dtype=jnp.bool_)
-    possession_team = jnp.where(
-        possession_known,
-        observations.possession.team,
-        jnp.int32(NO_TEAM),
-    ).astype(jnp.int32)
+    possession_known = jnp.asarray(observations.valid, dtype=jnp.bool_)
+    possession_team = _observed_possession_team(observations, roster)
     controlled = possession_known & (possession_team != NO_TEAM)
     possessor_flag = jnp.asarray(observations.players.possessor, dtype=jnp.bool_)
     has_possessor = controlled & jnp.any(possessor_flag, axis=-1)
@@ -281,8 +290,8 @@ def observation_only_rule_policy_state(
         team_tactical_plan=static_state.team_tactical_plan,
     )
     player_count = _player_count(observations, roster)
-    known = jnp.asarray(observations.possession.known, dtype=jnp.bool_)
-    possession_team = jnp.asarray(observations.possession.team, dtype=jnp.int32)
+    known = jnp.asarray(observations.valid, dtype=jnp.bool_)
+    possession_team = _observed_possession_team(observations, roster)
     controlled = known & (possession_team != NO_TEAM)
     control_age = jnp.maximum(
         jnp.asarray(observations.possession.control_ticks, dtype=jnp.int32)
@@ -303,7 +312,7 @@ def observation_only_rule_policy_state(
         & (~controlled)
         & observations.ball.live
         & (observations.restart.kind == RK_NONE)
-        & last_contact.known
+        & observations.valid
         & (last_contact.intent == INTENT_PASS)
         & (last_contact.outcome == OUTCOME_RELEASE)
         & last_contact.kick_applied
@@ -315,7 +324,7 @@ def observation_only_rule_policy_state(
         & (~controlled)
         & observations.ball.live
         & (observations.restart.kind == RK_NONE)
-        & last_contact.known
+        & observations.valid
         & (last_contact.intent == INTENT_CONTROL)
         & (last_contact.outcome == OUTCOME_TRAP)
         & (~last_contact.kick_applied)
@@ -426,8 +435,8 @@ def update_rule_policy_state(
         jnp.int32(INACTIVE_AGE),
     )
 
-    known = jnp.asarray(observations.possession.known, dtype=jnp.bool_)
-    current_possession = jnp.asarray(observations.possession.team, dtype=jnp.int32)
+    known = jnp.asarray(observations.valid, dtype=jnp.bool_)
+    current_possession = _observed_possession_team(observations, roster)
     current_controlled = known & (current_possession != NO_TEAM)
     last_contact = observations.possession.last_contact
     last_actor_flag = jnp.asarray(observations.players.last_actor, dtype=jnp.bool_)
@@ -444,7 +453,7 @@ def update_rule_policy_state(
         & (~current_controlled)
         & observations.ball.live
         & (observations.restart.kind == RK_NONE)
-        & last_contact.known
+        & observations.valid
         & (last_contact.intent == INTENT_PASS)
         & (last_contact.outcome == OUTCOME_RELEASE)
         & last_contact.kick_applied
@@ -473,7 +482,7 @@ def update_rule_policy_state(
         & (~current_controlled)
         & observations.ball.live
         & (observations.restart.kind == RK_NONE)
-        & last_contact.known
+        & observations.valid
         & (last_contact.intent == INTENT_CONTROL)
         & (last_contact.outcome == OUTCOME_TRAP)
         & (~last_contact.kick_applied)
@@ -609,12 +618,10 @@ def update_rule_policy_state(
     planned_state_valid = (
         planned_slot_present
         & observations.valid
-        & observations.ball.visible
         & (roster.player_id[safe_planned_receiver] == state.planned_receiver_id)
         & (roster.team_id[safe_planned_receiver] == own_team)
         & observations.players.on_pitch[plan_row, safe_planned_receiver]
         & (~observations.players.sent_off[plan_row, safe_planned_receiver])
-        & observations.players.visible[plan_row, safe_planned_receiver]
     )
     retain_planned_pass = (
         reliable_pass_flight & planned_state_valid & (state.planned_eta_ticks > 0)
@@ -653,7 +660,7 @@ def update_rule_policy_state(
     # decision, so acquisition can be identified without engine-private state.
     acquired_from_loose = (
         actor_known
-        & observations.ball.visible
+        & observations.valid
         & open_play
         & (
             (planned_state_valid & (observed_actor == state.planned_receiver))

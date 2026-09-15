@@ -35,9 +35,9 @@ revision the versions are:
 
 | Contract | Version |
 | --- | ---: |
-| SI player observation | 10 |
-| normalized player observation | 7 |
-| normalized global state | 6 |
+| SI player observation | 13 |
+| normalized player observation | 10 |
+| normalized global state | 7 |
 | SI manager observation | 12 |
 | normalized manager observation | 10 |
 | SI roster metadata | 2 |
@@ -119,7 +119,7 @@ authoritative checkpoint. Finite physical channels are not blanket-clipped or
 rejected at `[-1, 1]`: that older check contradicted the reversible global-view
 contract and rejected valid positions and velocities outside the ordinary scale
 envelope. Intrinsic domains remain strict: normalized roster attributes and
-stamina lie in `[0, 1]`, gaze stays in its configured interval, facing vectors
+stamina lie in `[0, 1]`, facing vectors
 remain unit length, causal counters must fit their int32 tick representation,
 and nested contact/restart provenance must use valid enum and address domains.
 Validation and its batched device-to-host transfers happen once before
@@ -143,22 +143,11 @@ extended kick.
 
 ## Information boundary
 
-`Perception.limit_by_view_angle=False` is the default. It returns full player
-and ball visibility and canonicalizes the unused angle so it cannot create
-extra JAX compilation keys.
-
-When view limiting is enabled, the horizontal field of view defaults to 160
-degrees. Hidden kinematics and actor-linked history are zeroed or replaced by
-sentinels; visibility and `known` leaves distinguish hidden facts from real
-zeros. For persistent actor-linked facts, `known` means that the causal actor
-is currently resolvable in the observer's view. It does not claim that the
-observer saw the original event; causal perceptual memory belongs to the
-policy's recurrent state rather than the environment carry.
-`gk_handling_restriction_known` makes an unseen opponent restriction
-distinct from a genuine `NO_TEAM` value. A visible free ball is known to have no current possessor, but the
-previous team remains hidden unless its causal actor is visible. Restart
-release provenance is hidden when its actor is hidden. The centralized
-`global_state_view` is always global and is never filtered by a player's view.
+The player observation is always full-information. A single top-level `valid`
+bit marks an invalid finite sentinel. Per-player and ball `visible` leaves and
+possession, last-contact, restart-release, and goalkeeper-handling `known` leaves
+are omitted because they are constant for every valid observer. The centralized
+`global_state_view` remains a separate API rather than an actor input.
 
 Invalid observer or manager indices return a completely masked finite view;
 non-integer and boolean subject identifiers do the same. Eager host inputs are
@@ -190,9 +179,9 @@ Manager resources are not decoded through policy-owned default caps:
 the exact remaining and maximum counts travel together so custom competition
 profiles cannot silently change meaning.
 
-The causal goalkeeper-hand restriction remains explicit. Under optional partial
-observability, every global relation adds a known bit instead of conflating a
-hidden value with no relation.
+The causal goalkeeper-hand restriction remains explicit. Full-view player
+observations carry its team sentinel directly; the top-level `valid` bit handles
+the invalid-observer case.
 
 ## Host schemas and lossless flattening
 

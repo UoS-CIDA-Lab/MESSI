@@ -3,11 +3,19 @@ from __future__ import annotations
 import jax
 
 from footballworld import (
+    ACTION_RECEIPT_SCHEMA,
     FootballWorld,
     IntentAction,
     Player,
     PlayerProfile,
     StepWithActionReceiptResult,
+    flatten_action_receipt,
+    schema_versions,
+    unflatten_action_receipt,
+)
+from footballworld.dynamics.action import (
+    ACTION_RECEIPT_SCHEMA_VERSION,
+    trace_action_receipt,
 )
 
 _FORMATION = (
@@ -36,6 +44,29 @@ def _team(team: int) -> tuple[Player, ...]:
         )
         for slot, position in enumerate(_FORMATION)
     )
+
+
+def test_action_receipt_layout_matches_public_v2_schema_and_round_trips() -> None:
+    receipt = trace_action_receipt(IntentAction.neutral(3))
+    flat, layout = flatten_action_receipt(receipt)
+
+    assert ACTION_RECEIPT_SCHEMA == (
+        f"footballworld.action-receipt/{ACTION_RECEIPT_SCHEMA_VERSION}"
+    )
+    assert schema_versions()["action_receipt"] == ACTION_RECEIPT_SCHEMA
+    assert layout.semantic_version == ACTION_RECEIPT_SCHEMA_VERSION
+    assert all(
+        leaf.semantic_version == ACTION_RECEIPT_SCHEMA_VERSION for leaf in layout.leaves
+    )
+
+    restored = unflatten_action_receipt(flat, layout)
+    for left, right in zip(
+        jax.tree.leaves(restored),
+        jax.tree.leaves(receipt),
+        strict=True,
+    ):
+        assert left.dtype == right.dtype
+        assert (left == right).all()
 
 
 def test_compact_action_receipt_matches_eventful_result_without_events_field() -> None:

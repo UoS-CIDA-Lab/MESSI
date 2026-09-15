@@ -72,6 +72,7 @@ from footballworld.policies.rule_based.goalkeeper_contact import (
     select_goalkeeper_contact_intent,
 )
 from footballworld.policies.rule_based.keeper_aerial import (
+    AerialContestDecision,
     aerial_arrival_score,
     aerial_contest_decision,
     goalkeeper_cover_decision,
@@ -90,6 +91,7 @@ from footballworld.policies.rule_based.possession import (
     POSSESSION_PASS,
     POSSESSION_SHOT,
     PossessionCandidateTrace,
+    ShotPlan,
     decide_possession,
     plan_shot,
 )
@@ -120,6 +122,7 @@ from footballworld.policies.rule_based.tactics import (
 
 if TYPE_CHECKING:
     from footballworld.environment.api import FootballWorld
+    from footballworld.policies.rule_based.context import RulePolicyContext
 
 
 _CONTROL_BOUNDARY_MARGIN_M = 1.0
@@ -1007,6 +1010,58 @@ def _encode(direction: jax.Array, power: jax.Array) -> jax.Array:
     return linf_radial_encode(direction, power).astype(jnp.float32)
 
 
+def _aerial_contest_if_possible(
+    context: RulePolicyContext,
+    observations: Observation,
+    roster: RosterMetadata,
+    contact_target_xy: jax.Array,
+    flight_time_s: jax.Array,
+    *,
+    half_length_m: float | jax.Array,
+    excluded_player: jax.Array,
+    long_stamina_vmax_floor: float | jax.Array,
+    short_stamina_vmax_floor: float | jax.Array,
+    short_stamina_headroom_knee: float | jax.Array,
+) -> AerialContestDecision:
+    """Skip pairwise aerial assignment when no observer row can use it."""
+
+    possible = jnp.any(
+        context.self_active
+        & context.ball_visible
+        & observations.ball.live
+        & (observations.restart.kind == RK_NONE)
+        & (context.ball_position[:, 2] > jnp.float32(0.19))
+    )
+
+    def decide(_unused: None) -> AerialContestDecision:
+        return aerial_contest_decision(
+            context,
+            observations,
+            roster,
+            contact_target_xy,
+            flight_time_s,
+            half_length_m=half_length_m,
+            excluded_player=excluded_player,
+            long_stamina_vmax_floor=long_stamina_vmax_floor,
+            short_stamina_vmax_floor=short_stamina_vmax_floor,
+            short_stamina_headroom_knee=short_stamina_headroom_knee,
+        )
+
+    def inert(_unused: None) -> AerialContestDecision:
+        observers = context.self_index.shape[0]
+        return AerialContestDecision(
+            target=context.self_position.astype(jnp.float32),
+            direct_runner=jnp.zeros((observers,), dtype=jnp.bool_),
+            cover_runner=jnp.zeros((observers,), dtype=jnp.bool_),
+            team_best_slot=jnp.full((observers,), NO_PLAYER, dtype=jnp.int32),
+            team_best_eta_s=jnp.full((observers,), jnp.inf, dtype=jnp.float32),
+            opponent_best_eta_s=jnp.full((observers,), jnp.inf, dtype=jnp.float32),
+            arrival_score=jnp.zeros((observers,), dtype=jnp.float32),
+        )
+
+    return jax.lax.cond(possible, decide, inert, operand=None)
+
+
 def _select_action_intent(
     normal_contact: jax.Array,
     shoot: jax.Array,
@@ -1069,7 +1124,6 @@ def _finalize_policy_action(
     force_to_ball: jax.Array,
     launch: jax.Array,
     spin: jax.Array,
-    gaze_center: jax.Array,
 ) -> IntentAction:
     """Keep continuous controls independent of the categorical intent.
 
@@ -1085,7 +1139,6 @@ def _finalize_policy_action(
         force_to_ball=force_to_ball.astype(jnp.float32),
         launch=launch.astype(jnp.float32),
         spin=spin.astype(jnp.float32),
-        gaze_center=gaze_center.astype(jnp.float32),
     )
 
 
@@ -1162,7 +1215,6 @@ def make_rule_based_policy(
     # CONTROL power is already normalized against control_request_speed_max_mps.
     # Kick-scale conversion overhit dribbles into unlabelled pseudo-passes.
     control_power = config.dribble_power
-    gaze_limit_radians = math.radians(env.perception.gaze_yaw_limit_degrees)
 
     def action_for_state(
         observations: Observation,
@@ -1267,16 +1319,13 @@ def make_rule_based_policy(
             axis=-1,
         )
 
-        possession_known = observations.possession.known
-        own_team_possession = possession_known & (
-            observations.possession.team == self_team
+        possession_known = observations.valid
+        possessor_flags = observations.players.possessor
+        possession_present = possession_known & (jnp.sum(possessor_flags, axis=-1) == 1)
+        own_team_possession = possession_present & jnp.any(
+            possessor_flags & context.same_team, axis=-1
         )
-        possession_present = observations.possession.team != NO_TEAM
-        opponent_possession = (
-            possession_known
-            & possession_present
-            & (observations.possession.team != self_team)
-        )
+        opponent_possession = possession_present & (~own_team_possession)
 
         # A visible possession flag is the only actor target used for pressure.
         visible_opponent_carrier = observations.players.possessor & opponent
@@ -1871,7 +1920,7 @@ def make_rule_based_policy(
         )
         carrier_received_control = (
             linked_reception
-            & last_contact.known[decision_row]
+            & observations.valid[decision_row]
             & (last_contact.intent[decision_row] == jnp.int32(INTENT_CONTROL))
             & (last_contact.outcome[decision_row] == jnp.int32(OUTCOME_TRAP))
             & observations.players.last_actor[decision_row, carrier_slot]
@@ -2505,21 +2554,21 @@ def make_rule_based_policy(
         active_pressure = nearest_defender & restart_free
         reliable_team_lineage_attack = (
             possession_known
-            & (observations.possession.team == NO_TEAM)
+            & (~possession_present)
             & (_policy_state.possession_age >= 0)
             & (_policy_state.possession_team == self_team)
         )
         last_contact = observations.possession.last_contact
         reliable_pass_flight_attack = (
             reliable_team_lineage_attack
-            & last_contact.known
+            & observations.valid
             & (last_contact.intent == INTENT_PASS)
             & (last_contact.outcome == OUTCOME_RELEASE)
             & last_contact.kick_applied
         )
         reliable_control_lineage_attack = (
             reliable_team_lineage_attack
-            & last_contact.known
+            & observations.valid
             & (last_contact.intent == INTENT_CONTROL)
             & (last_contact.outcome == OUTCOME_TRAP)
             & (~last_contact.kick_applied)
@@ -2629,7 +2678,14 @@ def make_rule_based_policy(
             jnp.where(
                 formation_move.direct_pressure,
                 jnp.maximum(offball_power, jnp.float32(config.support_power)),
-                offball_power,
+                jnp.where(
+                    formation_move.forward_shoulder_support,
+                    jnp.maximum(
+                        offball_power,
+                        jnp.float32(config.forward_shoulder_support_power),
+                    ),
+                    offball_power,
+                ),
             ),
         )
         shape_move = _encode(formation_move.direction, formation_power)
@@ -2727,7 +2783,7 @@ def make_rule_based_policy(
             ),
             axis=-1,
         )
-        aerial = aerial_contest_decision(
+        aerial = _aerial_contest_if_possible(
             context,
             observations,
             roster,
@@ -3128,7 +3184,7 @@ def make_rule_based_policy(
         )
         last_contact_intent = observations.possession.last_contact.intent
         last_contact_deliberate = (
-            observations.possession.last_contact.known
+            observations.valid
             & (observations.possession.last_contact.outcome == OUTCOME_RELEASE)
             & (
                 (last_contact_intent == INTENT_PASS)
@@ -3192,9 +3248,7 @@ def make_rule_based_policy(
             body=env.body,
         )
         previous_team_known = observations.possession.previous_team != NO_TEAM
-        loose_pressure_radius = jnp.float32(
-            env.reach.challenge_radius_m + ball_radius
-        )
+        loose_pressure_radius = jnp.float32(env.reach.challenge_radius_m + ball_radius)
         visible_opponent_can_contest = jnp.any(
             opponent
             & context.participating
@@ -3220,7 +3274,7 @@ def make_rule_based_policy(
             observations.players.last_actor & opponent & roster.is_goalkeeper[None, :],
             axis=-1,
         )
-        goalkeeper_save = last_contact.known & (
+        goalkeeper_save = observations.valid & (
             (
                 (last_contact.mechanism == MECHANISM_GOALKEEPER_HAND)
                 & (last_contact.outcome == OUTCOME_PARRY)
@@ -3233,50 +3287,75 @@ def make_rule_based_policy(
         goalkeeper_rebound = (
             loose_control & last_actor_opponent_goalkeeper & goalkeeper_save
         )
+
         # loose_chaser has one stable winner; selecting only that row avoids
         # vmapping the shot graph over every observer for a rare causal event.
-        # Row zero is evaluated when the mask is empty but can never escape
-        # the goalkeeper_rebound predicate below.
-        rebound_row = jnp.argmax(goalkeeper_rebound.astype(jnp.int32))
-        rebound_opponent = opponent[rebound_row]
-        rebound_goalkeeper = rebound_opponent & roster.is_goalkeeper
-        rebound_pressure = pressure(
-            ball_position[rebound_row, :2],
-            context.player_position[rebound_row],
-            context.player_velocity[rebound_row],
-            rebound_opponent,
-            distance_scale_m=config.pressure_distance_m,
-        )
-        rebound_plan_key = jax.random.fold_in(frame_key, _REBOUND_SHOT_RANDOM_STREAM)
-        rebound_plan = plan_shot(
-            ball_position[rebound_row, :2],
-            context.player_position[rebound_row],
-            rebound_opponent,
-            rebound_goalkeeper,
-            config,
-            half_length=half_length,
-            goal_width=goal_width,
-            current_pressure=rebound_pressure,
-            decision_key=rebound_plan_key,
-            shot_launch_radians_per_action_unit=(
-                0.5
-                * (
-                    env.action_scale.launch_max_radians
-                    + env.action_scale.ground_launch_down_max_radians
-                )
-            ),
-        )
-        rebound_values = jnp.stack((rebound_plan.value, 1.0 - rebound_plan.value))
-        rebound_logits = (
-            jnp.log(jnp.maximum(rebound_values, jnp.float32(1.0e-4)))
-            / config.macro_choice_temperature
-        )
-        rebound_choose_shot = (
-            jax.random.categorical(
-                jax.random.fold_in(frame_key, _REBOUND_CHOICE_RANDOM_STREAM),
-                rebound_logits.astype(jnp.float32),
+        # The expensive shot graph is evaluated only when that sparse row exists;
+        # an empty mask returns an inert fixed-shape plan.
+        def plan_goalkeeper_rebound(_):
+            rebound_row = jnp.argmax(goalkeeper_rebound.astype(jnp.int32))
+            rebound_opponent = opponent[rebound_row]
+            rebound_goalkeeper = rebound_opponent & roster.is_goalkeeper
+            rebound_pressure = pressure(
+                ball_position[rebound_row, :2],
+                context.player_position[rebound_row],
+                context.player_velocity[rebound_row],
+                rebound_opponent,
+                distance_scale_m=config.pressure_distance_m,
             )
-            == 0
+            rebound_plan_key = jax.random.fold_in(
+                frame_key, _REBOUND_SHOT_RANDOM_STREAM
+            )
+            rebound_plan = plan_shot(
+                ball_position[rebound_row, :2],
+                context.player_position[rebound_row],
+                rebound_opponent,
+                rebound_goalkeeper,
+                config,
+                half_length=half_length,
+                goal_width=goal_width,
+                current_pressure=rebound_pressure,
+                decision_key=rebound_plan_key,
+                shot_launch_radians_per_action_unit=(
+                    0.5
+                    * (
+                        env.action_scale.launch_max_radians
+                        + env.action_scale.ground_launch_down_max_radians
+                    )
+                ),
+            )
+            rebound_values = jnp.stack((rebound_plan.value, 1.0 - rebound_plan.value))
+            rebound_logits = (
+                jnp.log(jnp.maximum(rebound_values, jnp.float32(1.0e-4)))
+                / config.macro_choice_temperature
+            )
+            rebound_choose_shot = (
+                jax.random.categorical(
+                    jax.random.fold_in(frame_key, _REBOUND_CHOICE_RANDOM_STREAM),
+                    rebound_logits.astype(jnp.float32),
+                )
+                == 0
+            )
+            return rebound_plan, rebound_choose_shot
+
+        def skip_goalkeeper_rebound(_):
+            return (
+                ShotPlan(
+                    direction=jnp.zeros((2,), dtype=jnp.float32),
+                    power=jnp.float32(0.0),
+                    launch=jnp.float32(-1.0),
+                    spin=jnp.zeros((2,), dtype=jnp.float32),
+                    value=jnp.float32(0.0),
+                    quality=jnp.float32(0.0),
+                ),
+                jnp.bool_(False),
+            )
+
+        rebound_plan, rebound_choose_shot = jax.lax.cond(
+            jnp.any(goalkeeper_rebound),
+            plan_goalkeeper_rebound,
+            skip_goalkeeper_rebound,
+            operand=None,
         )
         # Bind availability before every categorical or continuous override.
         # If SHOT is unavailable, the complete baseline CONTROL action survives.
@@ -3569,7 +3648,7 @@ def make_rule_based_policy(
             relative_ball_horizontal_velocity,
             ball_horizontal_speed,
             self_touched_last,
-            observations.possession.last_contact.known,
+            observations.valid,
             observations.possession.last_contact.intent,
             observations.possession.last_contact.outcome,
         )
@@ -3752,13 +3831,11 @@ def make_rule_based_policy(
 
         # MOVE leaves the force controls physically inert, so the baseline
         # reuses their planar direction as its torso target. A defending team
-        # faces the visible ball and accepts the locomotion model's backward
-        # speed limit. In possession, an off-ball runner instead turns into
-        # the run and uses gaze to keep the ball in view; otherwise the new
-        # body contract would make every overlap and forward support run a
-        # capped back-pedal. Contact intents retain their full impulse
-        # direction, including back-heels. When the selected direction is
-        # zero, locomotion remains the decoder's fallback body target.
+        # faces the ball while an off-ball attacking runner turns into its run.
+        # Body orientation remains relevant to pose and contact geometry but
+        # no longer changes locomotion speed. Contact intents retain their full
+        # impulse direction, including back-heels. When the selected direction
+        # is zero, locomotion remains the decoder's fallback body target.
         move_norm = jnp.linalg.norm(move, axis=-1)
         attacking_run = (
             own_team_possession
@@ -3781,51 +3858,7 @@ def make_rule_based_policy(
             force_to_ball,
         )
 
-        # Gaze is a torso-relative bounded target. Off-ball runners look back
-        # to the ball while their torso follows the run. A carrier executing a
-        # pass, shot, or clearance looks along that intent; while carrying, it
-        # scans the already selected visible service option when one exists.
-        # No hidden teammate row is consulted. atan2(cross, dot) measures the
-        # shortest signed separation without exposing a 0/2pi seam.
-        default_look_delta = jnp.where(
-            ball_visible[:, None],
-            ball_xy,
-            jnp.where((move_norm > GEOMETRY_EPS)[:, None], move, self_body),
-        )
-        carrier_scan = (
-            own_possessor
-            & (carrier_kind == POSSESSION_DRIBBLE)
-            & (possession_decision.target >= 0)
-        )
-        carrier_scan_delta = best_pass_target - self_position
-        carrier_look_delta = jnp.where(
-            carrier_scan[:, None], carrier_scan_delta, carrier_direction
-        )
-        look_delta = jnp.where(
-            own_possessor[:, None], carrier_look_delta, default_look_delta
-        )
-        look_norm = jnp.linalg.norm(look_delta, axis=-1)
-        look_direction = look_delta / jnp.maximum(
-            look_norm[:, None], jnp.float32(GEOMETRY_EPS)
-        )
-        look_direction = jnp.where(
-            (look_norm > GEOMETRY_EPS)[:, None], look_direction, self_body
-        )
-        gaze_cross = (
-            self_body[:, 0] * look_direction[:, 1]
-            - self_body[:, 1] * look_direction[:, 0]
-        )
-        gaze_dot = jnp.sum(self_body * look_direction, axis=-1)
-        gaze_center = jnp.clip(
-            jnp.arctan2(gaze_cross, gaze_dot) / gaze_limit_radians,
-            -1.0,
-            1.0,
-        )
-        gaze_center = jnp.where(valid_actor, gaze_center, 0.0).astype(jnp.float32)
-
-        action = _finalize_policy_action(
-            intent, move, force_to_ball, launch, spin, gaze_center
-        )
+        action = _finalize_policy_action(intent, move, force_to_ball, launch, spin)
         intended_receiver = jnp.where(
             pass_ball,
             possession_decision.target,

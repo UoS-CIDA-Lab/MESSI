@@ -19,7 +19,6 @@ from footballworld.config.contact_timing import ContactTiming
 from footballworld.config.contest import Contest
 from footballworld.config.geometry import Ball, Stadium
 from footballworld.config.gk_holding import GoalkeeperHolding
-from footballworld.config.perception import Perception
 from footballworld.config.player_physics import PlayerPhysics
 from footballworld.config.policies import PolicySelection
 from footballworld.config.reach import Reach
@@ -546,7 +545,6 @@ def _validate_normalized_global_view_host(
         ("players.position", view.state.players.position),
         ("players.velocity", view.state.players.velocity),
         ("players.body_forward", view.state.players.body_forward),
-        ("players.gaze_yaw", view.state.players.gaze_yaw),
         ("players.max_speed", view.state.players.max_speed),
         ("players.reach_height", view.state.players.reach_height),
         ("players.height", view.state.players.height),
@@ -701,9 +699,6 @@ def _validate_normalized_global_view_host(
     body_norm = np.linalg.norm(body_forward, axis=-1)
     if not np.allclose(body_norm, 1.0, rtol=1.0e-5, atol=1.0e-5):
         raise ValueError("players.body_forward must contain unit vectors")
-    gaze_yaw = np.asarray(view.state.players.gaze_yaw)
-    if np.any(np.abs(gaze_yaw) > 1.00001):
-        raise ValueError("players.gaze_yaw must lie in [-1, 1]")
 
     device_restored = denormalize_global_state(source_view.state, context)
     restored = jax.device_get(device_restored)
@@ -850,10 +845,8 @@ class FootballWorld:
     long_stamina: LongStamina = field(default_factory=LongStamina)
     short_stamina: ShortStamina = field(default_factory=ShortStamina)
     ball_physics: BallPhysics = field(default_factory=BallPhysics)
-    perception: Perception = field(default_factory=Perception)
     roster_sampling: RosterSampling = field(default_factory=RosterSampling)
     policies: PolicySelection = field(default_factory=PolicySelection)
-    # Append new public configuration fields to preserve positional callers.
     body_foul: BodyFoul = field(default_factory=BodyFoul)
 
     def __post_init__(self) -> None:
@@ -880,23 +873,11 @@ class FootballWorld:
             long_stamina=self.long_stamina,
             short_stamina=self.short_stamina,
             ball_physics=self.ball_physics,
-            perception=self.perception,
         )
         # Derive the match-clock bounds at construction so an unsupported
         # duration fails on the host, not on the first traced episode step.
         self.match.clock_ticks(self.timebase)
         self.match.maximum_added_time_ticks(self.timebase)
-        if not self.perception.limit_by_view_angle:
-            # Only FOV width is inactive in full-view mode. Gaze still drives
-            # body-relative pose and rendering, so preserve its two settings.
-            object.__setattr__(
-                self,
-                "perception",
-                Perception(
-                    gaze_yaw_limit_degrees=self.perception.gaze_yaw_limit_degrees,
-                    gaze_slew_rate_degrees_s=(self.perception.gaze_slew_rate_degrees_s),
-                ),
-            )
 
     def reset(
         self,
@@ -1035,7 +1016,6 @@ class FootballWorld:
             contest_config=self.contest,
             body_foul_config=self.body_foul,
             player_physics=self.player_physics,
-            perception=self.perception,
             body=self.body,
             long_stamina=self.long_stamina,
             short_stamina=self.short_stamina,
@@ -1076,8 +1056,8 @@ class FootballWorld:
         The receipt is privileged causal telemetry, never a player observation.
 
         An action keeps integer categories at ``[N]`` and continuous controls
-        at ``[N, 8]``. Its batched form is categorical ``[B, N]`` plus
-        continuous ``[B, N, 8]``. The returned event leaves begin with
+        at ``[N, 7]``. Its batched form is categorical ``[B, N]`` plus
+        continuous ``[B, N, 7]``. The returned event leaves begin with
         ``[decimation, ...]`` for one match and
         ``[B, decimation, ...]`` for a batch. Batched rollouts may use either
         one shared setup or a setup with the same leading batch axis.
@@ -1196,7 +1176,6 @@ class FootballWorld:
             contest_config=self.contest,
             body_foul_config=self.body_foul,
             player_physics=self.player_physics,
-            perception=self.perception,
             body=self.body,
             long_stamina=self.long_stamina,
             short_stamina=self.short_stamina,
@@ -1247,7 +1226,6 @@ class FootballWorld:
             restart_timing=self.restart_timing,
             ball_physics=self.ball_physics,
             roster_sampling=self.roster_sampling,
-            perception=self.perception,
         )
 
     @staticmethod
@@ -1347,7 +1325,6 @@ class FootballWorld:
             halftime_tick=halftime_tick,
             fulltime_tick=fulltime_tick,
             halftime_enabled=self.match.halftime_enabled,
-            perception=self.perception,
         )
 
     def observe(self, rollout: Rollout, observer_index: jax.Array) -> Observation:
@@ -1428,7 +1405,6 @@ class FootballWorld:
             halftime_tick=halftime_tick,
             fulltime_tick=fulltime_tick,
             halftime_enabled=self.match.halftime_enabled,
-            perception=self.perception,
         )
 
     def observe_all(self, rollout: Rollout) -> Observation:

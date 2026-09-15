@@ -19,7 +19,6 @@ from footballworld.config.contact_timing import ContactTiming
 from footballworld.config.contest import Contest
 from footballworld.config.geometry import Ball, Stadium
 from footballworld.config.gk_holding import GoalkeeperHolding
-from footballworld.config.perception import Perception
 from footballworld.config.player_physics import PlayerPhysics
 from footballworld.config.reach import Reach
 from footballworld.config.restart_timing import RestartTiming
@@ -452,7 +451,6 @@ def _halftime_state(
         position=position,
         velocity=velocity,
         body_forward=body_forward,
-        gaze_yaw=jnp.where(active, 0.0, state.players.gaze_yaw),
         stamina_short=stamina_short,
         challenge_recovery_substeps=jnp.zeros_like(
             state.players.challenge_recovery_substeps
@@ -595,7 +593,6 @@ def step_episode(
     contest_config: Contest = Contest(),
     body_foul_config: BodyFoul = BodyFoul(),
     player_physics: PlayerPhysics = PlayerPhysics(),
-    perception: Perception = Perception(),
     body: BodyContact = BodyContact(),
     long_stamina: LongStamina = LongStamina(),
     short_stamina: ShortStamina = ShortStamina(),
@@ -669,7 +666,6 @@ def step_episode(
             contest_config=contest_config,
             body_foul_config=body_foul_config,
             player_physics=player_physics,
-            perception=perception,
             body=body,
             long_stamina=long_stamina,
             short_stamina=short_stamina,

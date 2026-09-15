@@ -5,7 +5,7 @@ and ``goalkeeper_claim`` masks must be produced by the authoritative reach and
 rule gates.  Forced replay values replace stochastic draws only; they can
 never add an actor outside those masks or turn an ordinary play into a
 challenge or goalkeeper claim. Policies select one of six intents separately
-from eight continuous controls. The contest produces a tackle outcome only for
+from seven continuous controls. The contest produces a tackle outcome only for
 ``CHALLENGE`` against a verified carrier, and an interception outcome only for
 ``CONTROL`` of an ownerless opponent release. Deflection, catch, and parry also
 remain outcomes rather than requested-action categories.

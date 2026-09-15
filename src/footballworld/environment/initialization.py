@@ -204,7 +204,6 @@ def initialize_state(
         position=position,
         velocity=velocity,
         body_forward=initial_player_body_forward(team_id, attack_direction),
-        gaze_yaw=jnp.zeros(player_count, dtype=jnp.float32),
         team_id=team_id,
         player_id=jnp.asarray(player_id, dtype=jnp.int32),
         on_pitch=jnp.ones(player_count, dtype=jnp.bool_),

@@ -31,7 +31,6 @@ class HostFrame:
     player_position: np.ndarray
     player_velocity: np.ndarray
     player_body_forward: np.ndarray
-    player_gaze_yaw: np.ndarray
     player_height: np.ndarray
     aerial_recovery_substeps: np.ndarray
     team_id: np.ndarray
@@ -441,7 +440,6 @@ def _payload(
         "player_position": p.position,
         "player_velocity": p.velocity,
         "player_body_forward": p.body_forward,
-        "player_gaze_yaw": p.gaze_yaw,
         "player_height": p.height,
         "aerial_recovery_substeps": p.aerial_recovery_substeps,
         "team_id": p.team_id,
@@ -582,7 +580,6 @@ def prepare_host_frames(
                 player_position=np.asarray(x["player_position"], np.float32),
                 player_velocity=np.asarray(x["player_velocity"], np.float32),
                 player_body_forward=np.asarray(x["player_body_forward"], np.float32),
-                player_gaze_yaw=np.asarray(x["player_gaze_yaw"], np.float32),
                 player_height=np.asarray(x["player_height"], np.float32),
                 aerial_recovery_substeps=np.asarray(
                     x["aerial_recovery_substeps"], np.int32

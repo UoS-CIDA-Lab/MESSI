@@ -20,7 +20,6 @@ from footballworld.config.contact_timing import ContactTiming
 from footballworld.config.contest import Contest
 from footballworld.config.geometry import Ball, Stadium
 from footballworld.config.gk_holding import GoalkeeperHolding
-from footballworld.config.perception import Perception
 from footballworld.config.player_physics import PlayerPhysics
 from footballworld.config.reach import Reach
 from footballworld.config.restart_timing import RestartTiming
@@ -107,7 +106,6 @@ from footballworld.dynamics.action import (
     ELIGIBILITY_SPEED,
     PARAMETER_FORCE_DIRECTION,
     PARAMETER_FORCE_POWER,
-    PARAMETER_GAZE,
     PARAMETER_LAUNCH,
     PARAMETER_MOVE,
     PARAMETER_NAMES,
@@ -128,7 +126,6 @@ from footballworld.dynamics.contest import (
     ContestOverride,
     ContestResult,
 )
-from footballworld.dynamics.orientation import step_gaze
 from footballworld.dynamics.passive_contact import detect_between_legs_passage
 from footballworld.dynamics.substep import step_physics_substep
 from footballworld.environment.clock import regulation_elapsed_ticks
@@ -425,9 +422,7 @@ def _reduce_action_receipt(
 
     flags = input_receipt.flags | jnp.bitwise_or.reduce(stacked.flags, axis=0)
     eligibility_seen = jnp.bitwise_or.reduce(stacked.eligibility_seen, axis=0)
-    parameter_consumed = jnp.bitwise_or.reduce(
-        stacked.parameter_consumed, axis=0
-    ) | _bits(entry_active, PARAMETER_GAZE, jnp.uint16)
+    parameter_consumed = jnp.bitwise_or.reduce(stacked.parameter_consumed, axis=0)
     displacement_source = jnp.bitwise_or.reduce(stacked.displacement_source, axis=0)
 
     forced_by_substep = (stacked.flags & jnp.uint32(ACTION_FLAG_FORCED_RELEASE)) != 0
@@ -755,7 +750,6 @@ def step_control_frame(
     contest_config: Contest = Contest(),
     body_foul_config: BodyFoul = BodyFoul(),
     player_physics: PlayerPhysics = PlayerPhysics(),
-    perception: Perception = Perception(),
     body: BodyContact = BodyContact(),
     long_stamina: LongStamina = LongStamina(),
     short_stamina: ShortStamina = ShortStamina(),
@@ -810,14 +804,6 @@ def step_control_frame(
         )
         if _collect_events
         else None
-    )
-    state = state._replace(
-        players=step_gaze(
-            state.players,
-            physics_action.gaze_center,
-            dt_control=timebase.control_dt,
-            perception=perception,
-        )
     )
 
     def normalize_player_mask(

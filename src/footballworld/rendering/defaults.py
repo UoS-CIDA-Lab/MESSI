@@ -54,7 +54,7 @@ class RenderStyle:
     dpi: int = 150
     # One spherical team-coloured marker is deliberately presentation-only.
     # This is the largest marker that stays legible without overrunning the
-    # nearby intent/FOV cues.
+    # nearby intent cues.
     player_size: float = 185.0
     crf: int = 20
     encoder_preset: str = "veryfast"
@@ -66,10 +66,6 @@ class RenderStyle:
     camera_focal_length: float = 820.0
     adjudication_seconds: float = 2.5
     goal_hold_seconds: float = 2.0
-    # Full-view observations have no physical visibility aperture. This
-    # host-only width changes only the visual gaze cue; partial observations
-    # always render the environment's authoritative horizontal FOV.
-    gaze_cue_degrees: float = 160.0
 
     def __post_init__(self) -> None:
         width_px = _integer("width_px", self.width_px, minimum=320)
@@ -96,7 +92,6 @@ class RenderStyle:
             "adjudication_seconds", self.adjudication_seconds
         )
         goal_hold_seconds = _finite_real("goal_hold_seconds", self.goal_hold_seconds)
-        gaze_cue_degrees = _finite_real("gaze_cue_degrees", self.gaze_cue_degrees)
         if not -90.0 <= camera_azimuth <= 90.0:
             raise ValueError("camera_azimuth_degrees must be in [-90, 90]")
         if not 0.0 < camera_elevation < 90.0:
@@ -109,8 +104,6 @@ class RenderStyle:
             raise ValueError("adjudication_seconds must be positive")
         if goal_hold_seconds <= 0.0:
             raise ValueError("goal_hold_seconds must be positive")
-        if not 0.0 < gaze_cue_degrees <= 360.0:
-            raise ValueError("gaze_cue_degrees must be in (0, 360]")
         if crf > 51:
             raise ValueError("crf must be in [0, 51]")
         if type(self.encoder_preset) is not str:

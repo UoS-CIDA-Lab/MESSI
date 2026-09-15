@@ -65,8 +65,6 @@ from footballworld.rendering.integrity import (
 from footballworld.rendering.receipt import render_settings_receipt
 from footballworld.rendering.renderer import (
     _ASYNC_FRAME_BUFFER_COUNT,
-    _FOV_FAN_ALPHA,
-    _FOV_FAN_SAMPLES,
     RenderResult,
     _carry_adjudication,
     _concat_segments,
@@ -392,9 +390,7 @@ def _capture_boundary_terminal(
 ) -> bool:
     """Treat an intentional step-budget cutoff as terminal for watchdogs."""
 
-    return done or (
-        maximum_steps is not None and steps_executed >= maximum_steps
-    )
+    return done or (maximum_steps is not None and steps_executed >= maximum_steps)
 
 
 def _terminal_classification(
@@ -1094,11 +1090,6 @@ class _RenderScheduler:
         halftime_seconds: float,
         fulltime_seconds: float,
         halftime_enabled: bool,
-        environment_view_limited: bool,
-        environment_horizontal_fov_degrees: float,
-        gaze_yaw_limit_degrees: float,
-        gaze_slew_rate_degrees_s: float,
-        horizontal_fov_degrees: float,
         render_fps: float,
     ) -> None:
         self.workers = workers
@@ -1115,11 +1106,6 @@ class _RenderScheduler:
         self.halftime_seconds = halftime_seconds
         self.fulltime_seconds = fulltime_seconds
         self.halftime_enabled = halftime_enabled
-        self.environment_view_limited = environment_view_limited
-        self.environment_horizontal_fov_degrees = environment_horizontal_fov_degrees
-        self.gaze_yaw_limit_degrees = gaze_yaw_limit_degrees
-        self.gaze_slew_rate_degrees_s = gaze_slew_rate_degrees_s
-        self.horizontal_fov_degrees = horizontal_fov_degrees
         self.render_fps = render_fps
         self.samples_per_control = round(render_fps / control_fps)
         self.decimation = round(physics_fps / control_fps)
@@ -1147,7 +1133,6 @@ class _RenderScheduler:
                 self.halftime_seconds,
                 self.fulltime_seconds,
                 self.halftime_enabled,
-                self.horizontal_fov_degrees,
                 self.style,
                 self.render_fps,
             )
@@ -1170,7 +1155,6 @@ class _RenderScheduler:
                 self.halftime_seconds,
                 self.fulltime_seconds,
                 self.halftime_enabled,
-                self.horizontal_fov_degrees,
                 self.style,
                 self.render_fps,
             )
@@ -1501,17 +1485,6 @@ class _WindowSink:
             render_chunk_frame_cap=self.chunk_frames,
             segment_count=segment_count,
             process_start_method="spawn" if workers > 1 else None,
-            environment_view_limited=(self.scheduler.environment_view_limited),
-            environment_horizontal_fov_degrees=(
-                self.scheduler.environment_horizontal_fov_degrees
-            ),
-            gaze_yaw_limit_degrees=self.scheduler.gaze_yaw_limit_degrees,
-            gaze_slew_rate_degrees_s=(self.scheduler.gaze_slew_rate_degrees_s),
-            rendered_fov_degrees=self.scheduler.horizontal_fov_degrees,
-            fov_fan_inner_m=self.scheduler.overlay.fov_inner_radius_m,
-            fov_fan_outer_m=self.scheduler.overlay.fov_outer_radius_m,
-            fov_fan_alpha=_FOV_FAN_ALPHA,
-            fov_fan_samples=_FOV_FAN_SAMPLES,
             intent_ring_ordinary_radius_m=(
                 self.scheduler.overlay.ordinary_ring_radius_m
             ),
@@ -1757,15 +1730,6 @@ def render_event_match(
             halftime_seconds=halftime_tick / control_fps,
             fulltime_seconds=fulltime_tick / control_fps,
             halftime_enabled=env.match.halftime_enabled,
-            environment_view_limited=env.perception.limit_by_view_angle,
-            environment_horizontal_fov_degrees=(env.perception.horizontal_fov_degrees),
-            gaze_yaw_limit_degrees=env.perception.gaze_yaw_limit_degrees,
-            gaze_slew_rate_degrees_s=(env.perception.gaze_slew_rate_degrees_s),
-            horizontal_fov_degrees=(
-                env.perception.horizontal_fov_degrees
-                if env.perception.limit_by_view_angle
-                else style.gaze_cue_degrees
-            ),
             render_fps=render_fps,
         )
         sinks = [
@@ -2126,15 +2090,6 @@ def render_managed_event_match(
             halftime_seconds=halftime_tick / control_fps,
             fulltime_seconds=fulltime_tick / control_fps,
             halftime_enabled=env.match.halftime_enabled,
-            environment_view_limited=env.perception.limit_by_view_angle,
-            environment_horizontal_fov_degrees=(env.perception.horizontal_fov_degrees),
-            gaze_yaw_limit_degrees=env.perception.gaze_yaw_limit_degrees,
-            gaze_slew_rate_degrees_s=(env.perception.gaze_slew_rate_degrees_s),
-            horizontal_fov_degrees=(
-                env.perception.horizontal_fov_degrees
-                if env.perception.limit_by_view_angle
-                else style.gaze_cue_degrees
-            ),
             render_fps=render_fps,
         )
         sinks = [

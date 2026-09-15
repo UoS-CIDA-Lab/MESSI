@@ -1586,9 +1586,6 @@ def _apply_team_substitution_batch(
             players.velocity, jnp.zeros((width, 2), dtype=players.velocity.dtype)
         ),
         body_forward=set_slots(players.body_forward, replacement_body_forward),
-        gaze_yaw=set_slots(
-            players.gaze_yaw, jnp.zeros(width, dtype=players.gaze_yaw.dtype)
-        ),
         player_id=set_slots(players.player_id, incoming_id),
         on_pitch=set_slots(players.on_pitch, jnp.ones(width, dtype=jnp.bool_)),
         sent_off=set_slots(players.sent_off, jnp.zeros(width, dtype=jnp.bool_)),
@@ -1842,7 +1839,6 @@ def _align_goalkeeper_roles(
     position = players.position
     velocity = players.velocity
     body_forward = players.body_forward
-    gaze_yaw = players.gaze_yaw
     anchor = management.formation_anchor
     role = management.formation_role
     reassigned_rows = []
@@ -1893,7 +1889,6 @@ def _align_goalkeeper_roles(
             players.team_id, state.attack_direction
         )
         body_forward = jnp.where(moved_mask[:, None], target_body_forward, body_forward)
-        gaze_yaw = jnp.where(moved_mask, 0.0, gaze_yaw)
         reassigned_rows.append(needs_reassignment)
 
     return (
@@ -1902,7 +1897,6 @@ def _align_goalkeeper_roles(
                 position=position,
                 velocity=velocity,
                 body_forward=body_forward,
-                gaze_yaw=gaze_yaw,
             )
         ),
         management._replace(formation_anchor=anchor, formation_role=role),
@@ -1975,7 +1969,6 @@ def apply_opening_formation(
     position = state.players.position
     velocity = state.players.velocity
     body_forward = state.players.body_forward
-    gaze_yaw = state.players.gaze_yaw
     anchor = management.formation_anchor
     role = management.formation_role
     formation_index = management.formation_index
@@ -2000,7 +1993,6 @@ def apply_opening_formation(
         body_forward = jnp.where(
             selector[:, None], canonical_body_forward, body_forward
         )
-        gaze_yaw = jnp.where(selector, 0.0, gaze_yaw)
         anchor = jnp.where(selector[:, None], selected_anchor, anchor)
         role = jnp.where(
             selector,
@@ -2024,7 +2016,6 @@ def apply_opening_formation(
             position=position,
             velocity=velocity,
             body_forward=body_forward,
-            gaze_yaw=gaze_yaw,
         ),
         restart_layout_ready=state.restart_layout_ready & (~jnp.any(applied)),
     )

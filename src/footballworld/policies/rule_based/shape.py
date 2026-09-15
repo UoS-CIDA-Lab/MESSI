@@ -182,6 +182,7 @@ class ShapeMovement(NamedTuple):
     direction: jax.Array
     distance: jax.Array
     urgent: jax.Array
+    forward_shoulder_support: jax.Array
     direct_pressure: jax.Array
 
 
@@ -1326,6 +1327,9 @@ def shape_movement(
 
     target = jnp.where(context.self_active[:, None], target, context.self_position)
     direction = jnp.where(context.self_active[:, None], direction, jnp.float32(0.0))
+    forward_shoulder_support = forward_shoulder & (
+        central_forward | (ball_xy[:, 0] >= jnp.float32(0.0))
+    )
     return ShapeMovement(
         target=target.astype(jnp.float32),
         direction=direction.astype(jnp.float32),
@@ -1353,13 +1357,7 @@ def shape_movement(
                 # offside.  This changes arrival urgency only; formation,
                 # target, legality, and the environment's offside authority
                 # remain unchanged.
-                | (
-                    forward_shoulder
-                    & (
-                        central_forward
-                        | (ball_xy[:, 0] >= jnp.float32(0.0))
-                    )
-                )
+                | forward_shoulder_support
                 | squeeze
                 | open_field_mark
                 | pressure_cover
@@ -1367,6 +1365,7 @@ def shape_movement(
                 | box_mark
             )
         ),
+        forward_shoulder_support=forward_shoulder_support.astype(jnp.bool_),
         direct_pressure=direct_pressure.astype(jnp.bool_),
     )
 

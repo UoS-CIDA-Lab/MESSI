@@ -17,7 +17,7 @@ state.
 | `env.observe_si(rollout, observer_index)` | one SI-unit observation used by the shipped rule policy |
 | `env.observe_all_si(rollout)` | all SI-unit player observations |
 | `env.restore_observation(observation)` | restores the SI values represented by a normalized observation |
-| `env.player_observation_spec(observation)` | immutable leaf semantics, shapes, dtypes, scales, visibility rules, version, and layout fingerprint |
+| `env.player_observation_spec(observation)` | immutable leaf semantics, shapes, dtypes, scales, sentinel rules, version, and layout fingerprint |
 | `env.flatten_observation(observation)` | typed float, integer, and boolean blocks plus the authoritative layout |
 
 Observation construction is separate from `env.step` and
@@ -41,18 +41,18 @@ Its top-level leaves are:
 | Group | Meaning |
 | --- | --- |
 | `valid` | whether the requested observer index identifies a valid roster slot |
-| `self_state` | observer index, team-local position and velocity, and gaze yaw |
-| `players` | slot-wise relative kinematics, facing, gaze, stamina, recovery locks, discipline, activity, actor roles, visibility, and conservative contact availability |
-| `ball` | observer-relative position, velocity, spin, live state, and visibility |
-| `possession` | current and previous team, control duration, resolvability, and latest possession-producing contact |
+| `self_state` | observer index and team-local position and velocity |
+| `players` | slot-wise relative kinematics, facing, stamina, recovery locks, discipline, activity, actor roles, and conservative contact availability |
+| `ball` | observer-relative position, velocity, spin, and live state |
+| `possession` | previous controlled team, control duration, and latest possession-producing contact |
 | `restart` | public restart kind, team, countdown, and indirect status |
-| `restart_release` | executed-restart provenance and whether its actor remains resolvable |
-| `match` | attack direction, kickoff team, exact score, control tick, handling restrictions, and causal match clock |
+| `restart_release` | executed-restart kind, untouched/indirect state, and release mechanism |
+| `match` | exact score, control tick, law exemptions, handling restrictions, and causal match clock |
 
 The player view never contains bench identities, registered bench role
 preferences, or substitution resources. Those are private manager information
 and are exposed only through manager observations. `env.global_state_view` is a
-separate centralized view and is not filtered through one player's visibility.
+separate centralized view and is a distinct centralized contract.
 
 ## Coordinate frame
 
@@ -69,31 +69,15 @@ and identities as integer or boolean leaves. Full scale definitions and typed
 flattening are documented in the
 [model-output contract](../model-output.md).
 
-## Full and view-limited observation
+## Full-information observation
 
-`Perception.limit_by_view_angle=False` is the default. Every active player and
-the ball are visible, and the unused angle does not create an additional
-compiled configuration family.
+Every valid observer receives every fixed roster slot, the ball, and all public
+causal facts. The top-level `valid` bit alone distinguishes the finite
+invalid-observer sentinel; redundant per-entity `visible` and per-fact `known`
+leaves are absent.
 
-When view limiting is enabled, visibility is an angular horizontal aperture
-around the actual body-forward direction plus gaze yaw. The default configured
-aperture is 160 degrees. It is a documented design prior, not a measured human
-vision constant. The current visibility model is angular only: it has no
-distance limit and no occlusion model.
-
-The observer is always visible to itself. Inactive slots are not visible.
-Hidden kinematics and actor-linked fields are zeroed or replaced by canonical
-sentinels, while explicit `visible` and `known` leaves distinguish hidden facts
-from genuine zero or `NO_*` values.
-
-`known` for possession or restart provenance means that the current causal
-actor can be resolved in the current view. It does not claim that the policy
-observed the original historical event. Perceptual memory belongs in policy
-recurrent state rather than being invented in the environment carry.
-
-The `contact_may_occur_this_frame` affordance deliberately remains
-conservative for hidden slots. It uses public phase, team, activity, and role
-facts without leaking a hidden actor identity or private recovery timer.
+The `contact_may_occur_this_frame` affordance uses current public phase,
+activity, recovery, and role facts without reading future outcomes.
 
 ## Fail-closed subject selection
 
@@ -131,8 +115,8 @@ versioned. At this frozen preview revision:
 
 | Contract | Version |
 | --- | ---: |
-| SI player observation | 10 |
-| normalized player observation | 7 |
+| SI player observation | 13 |
+| normalized player observation | 10 |
 
 Consumers should persist the named schema and the layout fingerprint returned
 by `player_observation_spec`. Hard-coded flat offsets are not a public
@@ -162,9 +146,9 @@ shape summaries (`team_centroid`, `team_spread`).
 
 The structured fixed-shape PyTree, explicit typed flattening, and separate
 manager-only bench view prevent categorical and mask dtype loss, keep private
-substitution information outside player policies, and make unknown values
-distinct from real zeros. Optional angular visibility and its `visible`/`known`
-contract are explicit rather than inferred from one flat token layout. A richer
+substitution information outside player policies. Full-view player observations use the top-level `valid` bit to distinguish
+invalid finite sentinels from real values; no angular visibility or redundant
+per-fact availability bits remain. A richer
 per-player deployment history, if needed by a learned policy, belongs in that
 policy's recurrent state keyed by `player_id`, `slot_generation`, and
 `tactical_epoch`, not in the environment's physics carry.
@@ -174,4 +158,3 @@ policy's recurrent state keyed by `player_id`, `slot_generation`, and
 - [Model output and normalization](../model-output.md)
 - [Action space](../action-space.md)
 - [Match clock](../match-clock.md)
-- [Tracking-view augmentation](../tracking-view-augmentation.md)

@@ -21,7 +21,6 @@ import numpy as np
 
 from footballworld.config.contact_timing import ContactTiming
 from footballworld.config.geometry import Ball, Stadium
-from footballworld.config.perception import Perception
 from footballworld.config.reach import Reach
 from footballworld.core.constants import (
     BALL_EVENT_GOAL,
@@ -91,10 +90,6 @@ SCOREBOARD_SCORE_Y = 0.965
 SCOREBOARD_CLOCK_Y = 0.915
 
 _MARKER_POLYGON_SIDES = 32
-_FOV_FAN_INNER_M = 2.00
-_FOV_FAN_OUTER_M = 3.00
-_FOV_FAN_ALPHA = 0.23
-_FOV_FAN_SAMPLES = 9
 _MINIMAP_RECT = (0.765, 0.035, 0.215, 0.205)
 _PLAYER_MARKER_HEIGHT_M = 0.72
 _PLAYER_HUD_HEIGHT_M = 1.85
@@ -120,8 +115,6 @@ class _InteractionOverlayGeometry:
     ordinary_ring_radius_m: float
     challenge_ring_radius_m: float
     goalkeeper_control_ring_radius_m: float
-    fov_inner_radius_m: float
-    fov_outer_radius_m: float
 
 
 def _interaction_overlay_geometry(
@@ -150,8 +143,6 @@ def _interaction_overlay_geometry(
         ordinary_ring_radius_m=ordinary,
         challenge_ring_radius_m=challenge,
         goalkeeper_control_ring_radius_m=goalkeeper,
-        fov_inner_radius_m=_FOV_FAN_INNER_M,
-        fov_outer_radius_m=_FOV_FAN_OUTER_M,
     )
 
 
@@ -200,7 +191,6 @@ def _intent_ring_world_vertices(
 
 
 def _player_intent_painter_order(
-    field_of_view_fan: Any,
     player_shadow: Any,
     intent_ring_underlay: Any,
     intent_rings: Any,
@@ -209,7 +199,6 @@ def _player_intent_painter_order(
     """Return back-to-front field cues so player figures occlude intent rings."""
 
     return (
-        field_of_view_fan,
         player_shadow,
         intent_ring_underlay,
         intent_rings,
@@ -407,7 +396,6 @@ class _VisualFrame:
     ball_live: bool
     player_position: np.ndarray
     player_body_forward: np.ndarray
-    player_gaze_yaw: np.ndarray
     aerial_progress: np.ndarray
     high_head_contact: np.ndarray
     team_id: np.ndarray
@@ -802,7 +790,6 @@ def _visual_frame(
         ball_live=frame.ball_live,
         player_position=frame.player_position,
         player_body_forward=frame.player_body_forward,
-        player_gaze_yaw=frame.player_gaze_yaw,
         aerial_progress=aerial_progress,
         high_head_contact=_high_head_contact_mask(frame, ball_radius_m=ball_radius_m),
         team_id=frame.team_id,
@@ -1078,7 +1065,6 @@ class ReplayRenderer:
         halftime_seconds: float = 45.0 * 60.0,
         fulltime_seconds: float = 90.0 * 60.0,
         halftime_enabled: bool = True,
-        horizontal_fov_degrees: float = Perception().horizontal_fov_degrees,
         style: RenderStyle | None = None,
         reach: Reach | None = None,
         ball_radius_m: float = Ball().radius,
@@ -1099,7 +1085,6 @@ class ReplayRenderer:
         self.halftime_seconds = (
             float(halftime_seconds) if halftime_enabled else self.fulltime_seconds
         )
-        self.horizontal_fov_degrees = float(horizontal_fov_degrees)
         self.style = RenderStyle() if style is None else style
         self.camera = _PerspectiveCamera(self.style)
         if not np.isfinite(self.control_fps) or self.control_fps <= 0.0:
@@ -1115,11 +1100,6 @@ class ReplayRenderer:
                 "halftime_seconds must be finite, positive, and less than "
                 "fulltime_seconds when halftime is enabled"
             )
-        if (
-            not np.isfinite(self.horizontal_fov_degrees)
-            or not 0.0 < self.horizontal_fov_degrees <= 360.0
-        ):
-            raise ValueError("horizontal_fov_degrees must be in (0, 360]")
 
     def _clock_label(self, frame: _VisualFrame) -> str:
         second_half = self.halftime_enabled and frame.first_half_wall_end_tick >= 0
@@ -1823,15 +1803,6 @@ class ReplayRenderer:
             linewidths=1.5,
             zorder=10,
         )
-        # One translucent collection shows the realized state gaze without
-        # bright boundary rays competing with the player and intent cues.
-        field_of_view_fan = PolyCollection(
-            [np.zeros((2 * _FOV_FAN_SAMPLES, 2))] * count,
-            facecolors=np.zeros((count, 4), dtype=np.float32),
-            edgecolors="none",
-            zorder=5.5,
-        )
-        ax.add_collection(field_of_view_fan)
         number_labels = tuple("GK" if gk[i] else str(i + 1) for i in range(count))
         numbers = [
             ax.text(
@@ -1926,7 +1897,6 @@ class ReplayRenderer:
 
         dynamic_main = [
             *_player_intent_painter_order(
-                field_of_view_fan,
                 player_shadow,
                 intent_ring_underlay,
                 intent_rings,
@@ -1979,10 +1949,6 @@ class ReplayRenderer:
         writer = _AsyncWriter(path, fps, style, faststart=faststart)
         angles = np.linspace(0.0, 2.0 * np.pi, 40)
         ring_unit = np.stack((np.cos(angles), np.sin(angles)), axis=-1)
-        half_fov = np.deg2rad(0.5 * self.horizontal_fov_degrees)
-        fan_angles = np.linspace(-half_fov, half_fov, _FOV_FAN_SAMPLES)
-        fan_cos = np.cos(fan_angles)
-        fan_sin = np.sin(fan_angles)
         cached_team = np.asarray(first.team_id).copy()
         cached_goalkeeper = np.asarray(first.is_goalkeeper).copy()
         cached_sent_off = np.asarray(first.sent_off).copy()
@@ -2042,9 +2008,8 @@ class ReplayRenderer:
                     player_colors[frame.sent_off] = "#7c2834"
                     players.set_facecolors(player_colors)
                     minimap_players.set_facecolors(player_colors)
-                direction = frame.player_body_forward
                 # Contact intent occupies the small turf-space gap between the
-                # player and the FOV fan. Projecting the world-space circle
+                # player and intent cue. Projecting the world-space circle
                 # makes it lie on the pitch under the fixed camera.
                 shown_intent = (
                     active
@@ -2112,52 +2077,6 @@ class ReplayRenderer:
                     aerial_effect.set_linewidths(
                         np.where(frame.high_head_contact, 3.0, 2.0)
                     )
-                gaze_cos = np.cos(frame.player_gaze_yaw)
-                gaze_sin = np.sin(frame.player_gaze_yaw)
-                view_direction = np.column_stack(
-                    (
-                        direction[:, 0] * gaze_cos - direction[:, 1] * gaze_sin,
-                        direction[:, 0] * gaze_sin + direction[:, 1] * gaze_cos,
-                    )
-                )
-                fan_direction = np.stack(
-                    (
-                        view_direction[:, 0, None] * fan_cos
-                        - view_direction[:, 1, None] * fan_sin,
-                        view_direction[:, 0, None] * fan_sin
-                        + view_direction[:, 1, None] * fan_cos,
-                    ),
-                    axis=-1,
-                )
-                outer_fan_xy = (
-                    pos[:, None, :] + self.overlay.fov_outer_radius_m * fan_direction
-                )
-                inner_fan_xy = (
-                    pos[:, None, :]
-                    + self.overlay.fov_inner_radius_m * fan_direction[:, ::-1, :]
-                )
-                fan_xy = np.concatenate((outer_fan_xy, inner_fan_xy), axis=1)
-                fan_world = np.concatenate(
-                    (
-                        fan_xy,
-                        np.full(
-                            (count, 2 * _FOV_FAN_SAMPLES, 1),
-                            0.025,
-                            dtype=np.float32,
-                        ),
-                    ),
-                    axis=2,
-                )
-                _update_polygon_vertices(
-                    field_of_view_fan,
-                    self.camera.project(fan_world.reshape(-1, 3)).reshape(
-                        count, 2 * _FOV_FAN_SAMPLES, 2
-                    ),
-                )
-                if active_changed:
-                    fan_colors = np.ones((count, 4), dtype=np.float32)
-                    fan_colors[:, 3] = np.where(active, _FOV_FAN_ALPHA, 0.0)
-                    field_of_view_fan.set_facecolors(fan_colors)
                 bar_half_width = _STAMINA_BAR_HALF_WIDTH_PX * depth_scale
                 base_y = hud_pos[:, 1] + _STAMINA_BAR_OFFSET_PX * depth_scale
                 left = hud_pos[:, 0] - bar_half_width
@@ -2335,7 +2254,6 @@ def _render_segment(
     halftime_seconds: float,
     fulltime_seconds: float,
     halftime_enabled: bool,
-    horizontal_fov_degrees: float,
     style: RenderStyle,
     fps: float,
 ) -> tuple[str, int]:
@@ -2347,7 +2265,6 @@ def _render_segment(
         halftime_seconds=halftime_seconds,
         fulltime_seconds=fulltime_seconds,
         halftime_enabled=halftime_enabled,
-        horizontal_fov_degrees=horizontal_fov_degrees,
         style=style,
     ).render_frames(frames, path, fps=fps, faststart=False)
     rendered = Path(path)
@@ -2521,14 +2438,6 @@ def render_mp4(
         halftime_seconds = 45.0 * 60.0
         fulltime_seconds = 90.0 * 60.0
     halftime_enabled = env.match.halftime_enabled if env is not None else True
-    perception = env.perception if env is not None else Perception()
-    environment_view_limited = bool(perception.limit_by_view_angle)
-    environment_horizontal_fov_degrees = float(perception.horizontal_fov_degrees)
-    horizontal_fov_degrees = (
-        environment_horizontal_fov_degrees
-        if environment_view_limited
-        else float(style.gaze_cue_degrees)
-    )
     contact_timing = env.contact_timing if env is not None else ContactTiming()
     timebase = env.timebase if env is not None else DEFAULT_TIMEBASE
     max_outfield_aerial_recovery_substeps = max(
@@ -2610,15 +2519,6 @@ def render_mp4(
         render_chunk_frame_cap=planned_chunk_frames,
         segment_count=segment_count,
         process_start_method=("spawn" if used_workers > 1 else None),
-        environment_view_limited=environment_view_limited,
-        environment_horizontal_fov_degrees=(environment_horizontal_fov_degrees),
-        gaze_yaw_limit_degrees=float(perception.gaze_yaw_limit_degrees),
-        gaze_slew_rate_degrees_s=float(perception.gaze_slew_rate_degrees_s),
-        rendered_fov_degrees=horizontal_fov_degrees,
-        fov_fan_inner_m=overlay.fov_inner_radius_m,
-        fov_fan_outer_m=overlay.fov_outer_radius_m,
-        fov_fan_alpha=_FOV_FAN_ALPHA,
-        fov_fan_samples=_FOV_FAN_SAMPLES,
         intent_ring_ordinary_radius_m=overlay.ordinary_ring_radius_m,
         intent_ring_challenge_radius_m=overlay.challenge_ring_radius_m,
         intent_ring_goalkeeper_control_radius_m=(
@@ -2656,7 +2556,6 @@ def render_mp4(
             halftime_seconds=halftime_seconds,
             fulltime_seconds=fulltime_seconds,
             halftime_enabled=halftime_enabled,
-            horizontal_fov_degrees=horizontal_fov_degrees,
             style=style,
         ).render_frames(render_frames, video, fps=render_fps)
     else:
@@ -2687,7 +2586,6 @@ def render_mp4(
                             halftime_seconds,
                             fulltime_seconds,
                             halftime_enabled,
-                            horizontal_fov_degrees,
                             worker_style,
                             render_fps,
                         )

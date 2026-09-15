@@ -1,6 +1,6 @@
 """Deliberate player-ball contact for one physics substep.
 
-Policies use a six-way categorical intent plus eight continuous controls.
+Policies use a six-way categorical intent plus seven continuous controls.
 Contact mechanism and realized outcome are inferred from physical/rules state
 and remain separate from requested intent.
 """
@@ -415,10 +415,7 @@ def _detect_active_contact_requested(
         return jnp.where(valid, entry, jnp.inf)
 
     challenge_speed_needed = (
-        active_row
-        & challenge_recovery
-        & challenge_requested
-        & opposing_carrier
+        active_row & challenge_recovery & challenge_requested & opposing_carrier
     )
     challenge_foot_time = challenge_time(
         challenge_foot,

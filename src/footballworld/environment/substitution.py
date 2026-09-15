@@ -332,7 +332,6 @@ def _apply_substitution(
                 jnp.zeros(2, dtype=current.velocity.dtype)
             ),
             body_forward=current.body_forward.at[safe_outgoing].set(body_forward),
-            gaze_yaw=current.gaze_yaw.at[safe_outgoing].set(0.0),
             player_id=current.player_id.at[safe_outgoing].set(
                 request.incoming_player_id
             ),

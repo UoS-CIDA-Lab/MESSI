@@ -18,7 +18,6 @@ from footballworld.core.constants import (
     ACTION_MIN,
     INTENT_ACTION_CONTINUOUS_DIM,
     INTENT_ACTION_FORCE_TO_BALL,
-    INTENT_ACTION_GAZE_CENTER,
     INTENT_ACTION_LAUNCH,
     INTENT_ACTION_MOVE,
     INTENT_ACTION_SPIN_BACK,
@@ -34,7 +33,7 @@ from footballworld.core.contact import (
     INTENT_SHOT,
 )
 
-ACTION_SCHEMA_VERSION = 3
+ACTION_SCHEMA_VERSION = 4
 ACTION_SCHEMA = f"footballworld.intent-action/{ACTION_SCHEMA_VERSION}"
 
 
@@ -140,11 +139,10 @@ class DecodedIntentAction(NamedTuple):
     force_to_ball: RadialControl
     launch: jax.Array
     spin: jax.Array
-    gaze_center: jax.Array
 
 
 class IntentAction(NamedTuple):
-    """Six-way categorical intent plus eight continuous physical controls.
+    """Six-way categorical intent plus seven continuous physical controls.
 
     The intent is never packed into the float array. Valid codes are exactly
     MOVE, CONTROL, PASS, SHOT, CLEAR, and CHALLENGE. Invalid integer values
@@ -157,7 +155,6 @@ class IntentAction(NamedTuple):
     force_to_ball: jax.Array
     launch: jax.Array
     spin: jax.Array
-    gaze_center: jax.Array
 
     @classmethod
     def from_array(
@@ -165,7 +162,7 @@ class IntentAction(NamedTuple):
         intent: jax.Array,
         continuous: jax.Array,
     ) -> "IntentAction":
-        """Sanitize a categorical intent and a separate trailing 8-vector."""
+        """Sanitize a categorical intent and a separate trailing 7-vector."""
 
         continuous = jnp.asarray(continuous, dtype=jnp.float32)
         if continuous.shape[-1:] != (INTENT_ACTION_CONTINUOUS_DIM,):
@@ -202,11 +199,10 @@ class IntentAction(NamedTuple):
             force_to_ball=controls[..., INTENT_ACTION_FORCE_TO_BALL],
             launch=controls[..., INTENT_ACTION_LAUNCH],
             spin=spin,
-            gaze_center=controls[..., INTENT_ACTION_GAZE_CENTER],
         )
 
     def as_continuous_array(self) -> jax.Array:
-        """Return only the eight continuous controls; intent stays categorical."""
+        """Return only the seven continuous controls; intent stays categorical."""
 
         return jnp.concatenate(
             (
@@ -214,7 +210,6 @@ class IntentAction(NamedTuple):
                 self.force_to_ball,
                 self.launch[..., None],
                 self.spin,
-                self.gaze_center[..., None],
             ),
             axis=-1,
         ).astype(jnp.float32)
@@ -230,7 +225,6 @@ class IntentAction(NamedTuple):
             force_to_ball=linf_radial_decode(sanitized.force_to_ball),
             launch=signed_to_unit(sanitized.launch),
             spin=sanitized.spin,
-            gaze_center=sanitized.gaze_center,
         )
 
     @classmethod

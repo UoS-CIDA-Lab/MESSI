@@ -44,7 +44,6 @@ def _zero_action(player_count):
         force_to_ball=jnp.zeros((player_count, 2), dtype=jnp.float32),
         launch=jnp.full((player_count,), -1.0, dtype=jnp.float32),
         spin=jnp.zeros((player_count, 2), dtype=jnp.float32),
-        gaze_center=jnp.zeros((player_count,), dtype=jnp.float32),
     )
 
 

@@ -22,6 +22,7 @@ import numpy as np
 from footballworld.core.action import ACTION_SCHEMA, ACTION_SCHEMA_VERSION, IntentAction
 from footballworld.dynamics.action import (
     ACTION_RECEIPT_SCHEMA,
+    ACTION_RECEIPT_SCHEMA_VERSION,
     ACTION_TRACE_SCHEMA,
     ActionReceipt,
     ActionTrace,
@@ -356,13 +357,6 @@ def _normalized_scale(
             (context.player_relative_speed_scale_mps,),
             "m/s",
         )
-    if path.endswith("gaze_yaw"):
-        return _scale(
-            "configured gaze yaw limit",
-            (context.gaze_yaw_limit_radians,),
-            "rad",
-            (-1.0, 1.0),
-        )
     if path.endswith("ball.relative_state"):
         return _scale(
             "configured relative ball position/energy envelope",
@@ -456,33 +450,28 @@ def _visibility(contract: str, path: str) -> tuple[str, str]:
         if path == "valid":
             return "observer index validity", "false marks the entire row invalid"
         if path.startswith("players."):
-            if path.endswith(
-                ("on_pitch", "sent_off", "visible", "contact_may_occur_this_frame")
-            ):
+            if path.endswith(("on_pitch", "sent_off", "contact_may_occur_this_frame")):
                 return (
-                    "public roster phase; visible is the FOV mask",
+                    "public roster phase",
                     "invalid observer clears the value",
                 )
             return (
-                "players.visible under partial observation",
-                "hidden slots use zero/false; actor identity uses flags",
+                "full information after observer validation",
+                "invalid observer uses zero/false; actor identity uses flags",
             )
         if path.startswith("ball."):
             return (
-                "ball.visible under partial observation",
-                "hidden kinematics use zero; live stays public",
+                "full information after observer validation",
+                "invalid observer uses zero; live remains explicit",
             )
         if path.startswith("possession.last_contact."):
-            return (
-                "possession.last_contact.known",
-                "unknown contact facts use zero/false",
-            )
+            return "valid observer", "invalid observer uses zero/false"
         if path.startswith("possession."):
-            return "possession.known", "unknown teams use NO_TEAM and counters use zero"
+            return "valid observer", "invalid observer uses NO_TEAM/zero"
         if path.startswith("restart_release."):
-            return "restart_release.known", "unknown provenance uses sentinels/false"
+            return "valid observer", "invalid observer uses sentinels/false"
         if path == "match.gk_handling_restricted_team":
-            return "match.gk_handling_restriction_known", "unknown team uses NO_TEAM"
+            return "valid observer", "invalid observer uses NO_TEAM"
         return (
             "globally public after observer validation",
             "invalid observer uses zero/sentinel",
@@ -514,18 +503,18 @@ def _visibility(contract: str, path: str) -> tuple[str, str]:
         )
     if contract == "global_state":
         return (
-            "global; never FOV-filtered",
+            "globally public",
             "explicit known flags distinguish sentinel channels",
         )
     if contract == "action_trace":
         return (
             "privileged eventful submitted-action telemetry",
-            "terminal frames set executed false; never FOV-filtered",
+            "terminal frames set executed false",
         )
     if contract == "action_receipt":
         return (
             "privileged eventful causal telemetry",
-            "fixed bits and sentinels describe absent or suppressed effects; never FOV-filtered",
+            "fixed bits and sentinels describe absent or suppressed effects",
         )
     return (
         "submitted action slot",
@@ -793,7 +782,11 @@ def action_receipt_spec(value: ActionReceipt) -> TreeSpec:
 
     if not isinstance(value, ActionReceipt):
         raise TypeError("value must be ActionReceipt")
-    return _make_layout(value, contract="action_receipt", semantic_version=1)
+    return _make_layout(
+        value,
+        contract="action_receipt",
+        semantic_version=ACTION_RECEIPT_SCHEMA_VERSION,
+    )
 
 
 def player_observation_spec(

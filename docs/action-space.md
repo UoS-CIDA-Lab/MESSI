@@ -4,8 +4,9 @@ FootballWorld uses exactly six selectable player intents:
 
 `MOVE`, `CONTROL`, `PASS`, `SHOT`, `CLEAR`, and `CHALLENGE`.
 
-The current semantic wire contract is `footballworld.intent-action/3`.
-Version 3 assigns ownerless-ball interception to `CONTROL` and reserves
+The current semantic wire contract is `footballworld.intent-action/4`.
+Version 4 removes gaze control and retains the version-3 intent split, which
+assigns ownerless-ball interception to `CONTROL` and reserves
 `CHALLENGE` for tackles against a physically verified opposing carrier.
 
 This vocabulary is deliberately small. A football phrase describes an intent
@@ -18,7 +19,7 @@ names must not be added as top-level actions.
 
 `IntentAction` is the sole public player-action contract. Its categorical
 values are exposed as the public `ActionIntent` enum, and it contains one
-integer intent per player plus eight continuous controls:
+integer intent per player plus seven continuous controls:
 
 | Control | Shape | Meaning |
 |---|---:|---|
@@ -26,36 +27,25 @@ integer intent per player plus eight continuous controls:
 | `force_to_ball` | 2 | Requested ball-contact direction and magnitude. |
 | `launch` | 1 | Vertical launch control. |
 | `spin` | 2 | Side-spin and back-spin controls. |
-| `gaze_center` | 1 | Target view-centre yaw in the bounded torso-relative interval. |
 
 All continuous controls remain bounded by the public normalized convention.
 Movement is independent of contact: a player may move while requesting any
 of the five contact intents.
 
-The eight continuous controls are accepted and preserved for every intent,
+The seven continuous controls are accepted and preserved for every intent,
 including `MOVE`. Intent selects the attempted football purpose; it does not
 mask a policy's continuous output head. Physics consumes ball-contact values
 only when contact is both requested (or the restart clock forces it) and is
 physically and legally realizable. Unconsumed values are inert rather than
 rewritten to zero.
 
-`gaze_center` is not a periodic world angle. Its normalized scalar `[-1, 1]`
-selects a target inside the configured torso-relative yaw interval, which is
-strictly smaller than a full turn. The realized `gaze_yaw` state slews toward
-that target at a bounded rate and therefore has no 0/2pi action seam. The
-default 540 deg/s bound moves at most 54 degrees per 10 Hz control frame; it is
-a deliberately responsive head-eye-attention prior, not a calibrated neck-only
-biomechanical constant.
-The torso-relative half-range must also remain strictly below 180 degrees: at
-exactly 180, normalized `-1` and `+1` encode the same direction as `-pi` and
-`+pi`, recreating a scalar endpoint seam.
-
 During `MOVE`, a non-zero `force_to_ball` direction instead supplies the body target;
 if it is zero, non-zero `move` supplies the fallback body target. During a
 contact intent, `force_to_ball` remains solely the ball-force direction and the
 body keeps its previously prepared target, preserving backheel and lateral
-contact geometry. Movement, body direction, contact force, and view centre are
-therefore distinct without adding another categorical intent.
+contact geometry. Movement, body direction, and contact force therefore remain
+distinct without adding another categorical intent. Body direction no longer
+changes the speed available to the movement command.
 
 ## Intent availability
 
@@ -67,10 +57,10 @@ touch and continue its run.
 Contact availability is strict and observation-causal. Ordinary contact needs
 the ball inside the configured XY reach and compatible height/speed envelope.
 A goalkeeper may receive `CONTROL` or `CLEAR` through the larger hand envelope
-only in their own penalty area when handling is known to be legal.
+only in their own penalty area when handling is legal.
 `CONTROL` covers own control, a neutral loose-ball trap, an interception of an
 opponent pass/shot/clear or loosened trap, and a legal goalkeeper claim.
-`CHALLENGE` instead requires a visible, physically verified opponent carrier
+`CHALLENGE` instead requires a physically verified opponent carrier
 and uses its own tackle reach with no active challenge-recovery cooldown.
 While that opposing carrier remains verified,
 `CONTROL`, `PASS`, `SHOT`, and `CLEAR` cannot bypass the tackle resolver.
@@ -80,9 +70,9 @@ reach; the attached `GK_HOLD` ball is not spatially exempt.
 The mask excludes impossibility, not tactical quality. A poor long-range shot
 remains available when striking the ball is physically and legally possible;
 the policy's conditional intent distribution must learn not to select it.
-If roster metadata is omitted and a different visible slot is the possessor,
+If roster metadata is omitted and a different slot is the possessor,
 all contact intents fail closed because that slot's team cannot be identified.
-The observer's own possession and a state with no visible possessor remain
+The observer's own possession and a state with no possessor remain
 causally distinguishable without roster metadata.
 
 There is no selectable `UNKNOWN` action. Invalid explicit integers fail closed
@@ -314,14 +304,14 @@ reach gate still applies to release; only the held-pose to foot-punt height and
 speed conversion is a release-specific physical exception.
 
 `step_with_events` additionally returns a fixed-shape per-player
-`ActionReceipt` under schema `footballworld.action-receipt/1`. Policy agency
+`ActionReceipt` under schema `footballworld.action-receipt/2`. Policy agency
 and realized action remain separate. Instead of one ambiguous mask, sanitized
 input, strict observation-causal availability,
 independent contact predicates seen during the frame, attempted and realized
 contact, parameter use, forced release, referee projection, environment
 overwrite, and terminal suppression remain separate flags. `primary_reason` is
 only a display summary. `parameter_consumed` has independent move, force
-direction, force power, launch, spin, and gaze bits; unused values are never
+direction, force power, launch, and spin bits; unused values are never
 presented as training labels merely because the intent was available.
 
 The same receipt contains a non-exhaustive displacement-source bit mask for
@@ -339,18 +329,18 @@ schema. The receipt is privileged logging/evaluation data and is never
 inserted into a player observation.
 
 Host consumers use `footballworld.action-trace/1` and
-`footballworld.action-receipt/1`. Their typed specs and layout fingerprints are
+`footballworld.action-receipt/2`. Their typed specs and layout fingerprints are
 available through `action_trace_spec` and `action_receipt_spec`; corresponding
 `flatten_*` and `unflatten_*` helpers preserve every structured dtype.
 
 The numeric provenance contract is `footballworld.intent-source/2`:
 `NONE=0`, `POLICY=1`, and `ENVIRONMENT_FORCED=2`. Player observations
-carrying `last_contact.intent_source` use SI observation schema version 10.
+carrying `last_contact.intent_source` use SI observation schema version 13.
 Replay events use `footballworld.events/15` and declare the provenance schema
 and ordered names in their header. Tracking rows carrying the same last-contact
-field use `footballworld.tracking/8`.
+field use `footballworld.tracking/9`.
 
-Exact replay capture also retains the eight submitted continuous controls for
+Exact replay capture also retains the seven submitted continuous controls for
 the sparse set of non-`MOVE`, environment-forced, or realized-contact actors.
 This bounded trace supports contact and cross-signature auditing; it is not a
 complete action replay. In particular, omitted `MOVE` controls remain unknown

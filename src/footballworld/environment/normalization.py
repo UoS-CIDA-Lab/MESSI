@@ -21,7 +21,6 @@ from footballworld.config.ball_physics import BallPhysics
 from footballworld.config.contact_timing import ContactTiming
 from footballworld.config.geometry import Ball, Stadium
 from footballworld.config.gk_holding import GoalkeeperHolding
-from footballworld.config.perception import Perception
 from footballworld.config.restart_timing import RestartTiming
 from footballworld.config.roster_sampling import RosterSampling
 from footballworld.core.constants import RK_GK_HOLD, RK_KICKOFF, RK_NONE
@@ -67,8 +66,8 @@ from footballworld.rules.gk_holding import holding_limit_substeps
 from footballworld.rules.offside import OffsideState
 from footballworld.rules.restart_timing import forced_release_delay_substeps
 
-MODEL_OBSERVATION_SCHEMA_VERSION = 7
-MODEL_STATE_SCHEMA_VERSION = 6
+MODEL_OBSERVATION_SCHEMA_VERSION = 10
+MODEL_STATE_SCHEMA_VERSION = 7
 MODEL_MANAGER_OBSERVATION_SCHEMA_VERSION = 10
 MODEL_ROSTER_SCHEMA_VERSION = 1
 MODEL_TACTICAL_OBSERVATION_SCHEMA_VERSION = 2
@@ -103,7 +102,6 @@ class NormalizationContext:
     max_ball_control: float
     min_endurance_factor: float
     max_endurance_factor: float
-    gaze_yaw_limit_radians: float
     contact_lock_substeps: int
     challenge_lock_substeps: int
     aerial_lock_substeps: int
@@ -117,13 +115,10 @@ class NormalizationContext:
 
 
 class NormalizedMatchObservation(NamedTuple):
-    attack_direction: jax.Array
-    kickoff_team: jax.Array
     score: jax.Array
     control_tick: jax.Array
     offside_direct_exempt_team: jax.Array
     gk_handling_restricted_team: jax.Array
-    gk_handling_restriction_known: jax.Array
     clock: NormalizedMatchClock
 
 
@@ -166,7 +161,6 @@ class NormalizedPlayerState(NamedTuple):
     position: jax.Array
     velocity: jax.Array
     body_forward: jax.Array
-    gaze_yaw: jax.Array
     team_id: jax.Array
     player_id: jax.Array
     on_pitch: jax.Array
@@ -287,7 +281,6 @@ def make_normalization_context(
     restart_timing: RestartTiming,
     ball_physics: BallPhysics,
     roster_sampling: RosterSampling,
-    perception: Perception,
 ) -> NormalizationContext:
     """Build all denominators from immutable, serializable environment input."""
 
@@ -349,7 +342,6 @@ def make_normalization_context(
         max_ball_control=roster_sampling.max_ball_control,
         min_endurance_factor=roster_sampling.min_endurance_factor,
         max_endurance_factor=roster_sampling.max_endurance_factor,
-        gaze_yaw_limit_radians=math.radians(perception.gaze_yaw_limit_degrees),
         contact_lock_substeps=ticks(contact_timing.active_contact_interval_s),
         challenge_lock_substeps=ticks(
             contact_timing.challenge_recovery_s
@@ -526,10 +518,6 @@ def normalize_observation(
                 observation.self_state.velocity
                 / jnp.float32(context.player_speed_scale_mps)
             ),
-            gaze_yaw=(
-                observation.self_state.gaze_yaw
-                / jnp.float32(context.gaze_yaw_limit_radians)
-            ),
         ),
         players=players._replace(
             relative_position=players.relative_position / relative_xy,
@@ -537,7 +525,6 @@ def normalize_observation(
                 players.relative_velocity
                 / jnp.float32(context.player_relative_speed_scale_mps)
             ),
-            gaze_yaw=(players.gaze_yaw / jnp.float32(context.gaze_yaw_limit_radians)),
             challenge_recovery_substeps=_counter(
                 players.challenge_recovery_substeps,
                 context.challenge_lock_substeps,
@@ -571,8 +558,6 @@ def normalize_observation(
         ),
         restart_release=observation.restart_release,
         match=NormalizedMatchObservation(
-            attack_direction=observation.match.attack_direction,
-            kickoff_team=observation.match.kickoff_team,
             # Score is a small exact count, not a continuous physical value.
             score=observation.match.score,
             control_tick=_counter(
@@ -580,9 +565,6 @@ def normalize_observation(
             ),
             offside_direct_exempt_team=(observation.match.offside_direct_exempt_team),
             gk_handling_restricted_team=(observation.match.gk_handling_restricted_team),
-            gk_handling_restriction_known=(
-                observation.match.gk_handling_restriction_known
-            ),
             clock=normalize_match_clock(
                 observation.match.clock,
                 fulltime_tick=context.fulltime_tick,
@@ -627,10 +609,6 @@ def denormalize_observation(
                 observation.self_state.velocity
                 * jnp.float32(context.player_speed_scale_mps)
             ),
-            gaze_yaw=(
-                observation.self_state.gaze_yaw
-                * jnp.float32(context.gaze_yaw_limit_radians)
-            ),
         ),
         players=players._replace(
             relative_position=players.relative_position * relative_xy,
@@ -638,7 +616,6 @@ def denormalize_observation(
                 players.relative_velocity
                 * jnp.float32(context.player_relative_speed_scale_mps)
             ),
-            gaze_yaw=(players.gaze_yaw * jnp.float32(context.gaze_yaw_limit_radians)),
             challenge_recovery_substeps=_restore_counter(
                 players.challenge_recovery_substeps,
                 context.challenge_lock_substeps,
@@ -671,17 +648,12 @@ def denormalize_observation(
         ),
         restart_release=observation.restart_release,
         match=MatchObservation(
-            attack_direction=observation.match.attack_direction,
-            kickoff_team=observation.match.kickoff_team,
             score=observation.match.score,
             control_tick=_restore_counter(
                 observation.match.control_tick, context.counter_scale_ticks
             ),
             offside_direct_exempt_team=(observation.match.offside_direct_exempt_team),
             gk_handling_restricted_team=(observation.match.gk_handling_restricted_team),
-            gk_handling_restriction_known=(
-                observation.match.gk_handling_restriction_known
-            ),
             clock=raw_clock,
         ),
     )
@@ -788,7 +760,6 @@ def normalize_global_state(
             position=p.position / xy,
             velocity=p.velocity / context.player_speed_scale_mps,
             body_forward=p.body_forward,
-            gaze_yaw=p.gaze_yaw / jnp.float32(context.gaze_yaw_limit_radians),
             team_id=p.team_id,
             player_id=p.player_id,
             on_pitch=p.on_pitch,
@@ -905,7 +876,6 @@ def denormalize_global_state(
             position=p.position * xy,
             velocity=p.velocity * context.player_speed_scale_mps,
             body_forward=p.body_forward,
-            gaze_yaw=p.gaze_yaw * jnp.float32(context.gaze_yaw_limit_radians),
             team_id=p.team_id,
             player_id=p.player_id,
             on_pitch=p.on_pitch,

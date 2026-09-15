@@ -9,7 +9,6 @@ from footballworld.config.contest import Contest
 from footballworld.config.geometry import Ball, Stadium
 from footballworld.config.gk_holding import GoalkeeperHolding
 from footballworld.config.management import ManagementRules
-from footballworld.config.perception import Perception
 from footballworld.config.player_physics import PlayerPhysics
 from footballworld.config.policies import PolicySelection
 from footballworld.config.reach import Reach
@@ -29,7 +28,6 @@ __all__ = [
     "GoalkeeperHolding",
     "LongStamina",
     "ManagementRules",
-    "Perception",
     "Player",
     "PlayerPhysics",
     "PlayerProfile",

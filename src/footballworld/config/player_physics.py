@@ -11,6 +11,5 @@ class PlayerPhysics:
     lateral_acceleration_mps2: float = 8.46
     braking_deceleration_mps2: float = 10.51
     body_turn_rate_max_radps: float = 8.0
-    backward_speed_ratio: float = 0.65
     collision_normal_restitution: float = 0.05
     separation_iterations: int = 3

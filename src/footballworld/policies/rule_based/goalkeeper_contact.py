@@ -179,9 +179,7 @@ def _validate_shapes(
     if self_index.ndim != 1:
         raise ValueError("observations must have a leading observer axis")
     observers = self_index.shape[0]
-    if observations.players.visible.ndim != 2:
-        raise ValueError("observed player fields must have shape (observers, players)")
-    player_shape = observations.players.visible.shape
+    player_shape = observations.players.on_pitch.shape
     players = player_shape[1]
     if player_shape[0] != observers:
         raise ValueError("player observations must share the observer axis")
@@ -194,7 +192,7 @@ def _validate_shapes(
         ),
     ):
         if value.shape != player_shape:
-            raise ValueError(f"observations.players.{name} must match visible")
+            raise ValueError(f"observations.players.{name} must match on_pitch")
     if observations.self_state.position.shape != (observers, 2):
         raise ValueError("self position must have shape (observers, 2)")
     if observations.self_state.velocity.shape != (observers, 2):
@@ -203,7 +201,6 @@ def _validate_shapes(
         raise ValueError("ball relative_state must have shape (observers, 9)")
     for name, value in (
         ("ball.live", observations.ball.live),
-        ("ball.visible", observations.ball.visible),
         ("restart.kind", observations.restart.kind),
         (
             "match.gk_handling_restricted_team",
@@ -291,14 +288,11 @@ def goalkeeper_contact_intent(
     structural_contact = observations.players.contact_may_occur_this_frame[
         row, safe_self
     ]
-    self_visible = observations.players.visible[row, safe_self]
     open_play = observations.restart.kind == RK_NONE
     base = (
         valid_self
         & self_goalkeeper
         & self_active
-        & self_visible
-        & observations.ball.visible
         & observations.ball.live
         & open_play
         & structural_contact

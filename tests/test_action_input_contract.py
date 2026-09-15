@@ -23,6 +23,11 @@ def _continuous(player_count: int = 1) -> np.ndarray:
     )
 
 
+def test_public_action_has_only_seven_physical_controls() -> None:
+    assert INTENT_ACTION_CONTINUOUS_DIM == 7
+    assert IntentAction.neutral(2).as_continuous_array().shape == (2, 7)
+
+
 def test_host_uint64_intent_is_checked_before_jax_narrowing() -> None:
     raw = np.asarray([2**32 + INTENT_CONTROL], dtype=np.uint64)
 

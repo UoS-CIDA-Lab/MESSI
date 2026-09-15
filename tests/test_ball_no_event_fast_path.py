@@ -95,7 +95,7 @@ def test_clear_substep_reuses_authoritative_smooth_endpoint_exactly():
 def test_active_broadphase_is_conservative_for_nonfinite_requested_path():
     state, _ = _clear_fixture()
     intents = jnp.zeros(_PLAYER_COUNT, dtype=jnp.int32).at[9].set(INTENT_PASS)
-    continuous = jnp.zeros((_PLAYER_COUNT, 8), dtype=jnp.float32)
+    continuous = jnp.zeros((_PLAYER_COUNT, 7), dtype=jnp.float32)
     action = decode_physics_action(state, IntentAction.from_array(intents, continuous))
     possible = active_contact_possible(
         state,

@@ -19,7 +19,6 @@ from footballworld.core.contact import (
     MECHANISM_FOOT,
     OUTCOME_INTERCEPTION,
     OUTCOME_RELEASE,
-    OUTCOME_TRAP,
 )
 from footballworld.dynamics.contact import resolve_contact_step
 from footballworld.dynamics.contact_predicates import evaluate_contact_predicates
@@ -153,9 +152,11 @@ def test_near_verified_opponent_carrier_enables_challenge_alongside_move():
         assert not bool(availability[actor, blocked_intent])
 
     for blocked_intent in (INTENT_CONTROL, INTENT_PASS, INTENT_SHOT, INTENT_CLEAR):
-        intents = jnp.full(
-            state.players.position.shape[0], INTENT_MOVE, dtype=jnp.int32
-        ).at[actor].set(blocked_intent)
+        intents = (
+            jnp.full(state.players.position.shape[0], INTENT_MOVE, dtype=jnp.int32)
+            .at[actor]
+            .set(blocked_intent)
+        )
         predicates = evaluate_contact_predicates(
             state,
             jnp.zeros(state.players.position.shape[0], dtype=jnp.bool_),
@@ -191,12 +192,12 @@ def test_near_verified_opponent_carrier_enables_challenge_alongside_move():
 
     player_count = state.players.position.shape[0]
     pass_action = IntentAction.neutral(player_count)._replace(
-        intent=jnp.full(player_count, INTENT_MOVE, dtype=jnp.int32).at[actor].set(
-            INTENT_PASS
-        ),
-        force_to_ball=jnp.zeros((player_count, 2), dtype=jnp.float32).at[actor].set(
-            jnp.asarray((1.0, 0.0), jnp.float32)
-        ),
+        intent=jnp.full(player_count, INTENT_MOVE, dtype=jnp.int32)
+        .at[actor]
+        .set(INTENT_PASS),
+        force_to_ball=jnp.zeros((player_count, 2), dtype=jnp.float32)
+        .at[actor]
+        .set(jnp.asarray((1.0, 0.0), jnp.float32)),
     )
 
     def resolve_bypass(request):
@@ -254,15 +255,19 @@ def test_opponent_release_is_control_interception_not_challenge():
     )
     rollout = rollout._replace(state=state)
     observation = env.observe_all_si(rollout)
-    availability = intent_availability_hint(observation, env.roster_metadata_si(rollout))
+    availability = intent_availability_hint(
+        observation, env.roster_metadata_si(rollout)
+    )
 
     assert bool(availability[actor, INTENT_MOVE])
     assert bool(availability[actor, INTENT_CONTROL])
     assert not bool(availability[actor, INTENT_CHALLENGE])
 
-    control_intents = jnp.full(
-        state.players.position.shape[0], INTENT_MOVE, dtype=jnp.int32
-    ).at[actor].set(INTENT_CONTROL)
+    control_intents = (
+        jnp.full(state.players.position.shape[0], INTENT_MOVE, dtype=jnp.int32)
+        .at[actor]
+        .set(INTENT_CONTROL)
+    )
     control_predicates = evaluate_contact_predicates(
         state,
         jnp.zeros(state.players.position.shape[0], dtype=jnp.bool_),
@@ -293,12 +298,12 @@ def test_opponent_release_is_control_interception_not_challenge():
 
     player_count = state.players.position.shape[0]
     control_action = IntentAction.neutral(player_count)._replace(
-        intent=jnp.full(player_count, INTENT_MOVE, dtype=jnp.int32).at[actor].set(
-            INTENT_CONTROL
-        ),
-        force_to_ball=jnp.zeros((player_count, 2), dtype=jnp.float32).at[actor].set(
-            jnp.asarray((1.0, 0.0), jnp.float32)
-        ),
+        intent=jnp.full(player_count, INTENT_MOVE, dtype=jnp.int32)
+        .at[actor]
+        .set(INTENT_CONTROL),
+        force_to_ball=jnp.zeros((player_count, 2), dtype=jnp.float32)
+        .at[actor]
+        .set(jnp.asarray((1.0, 0.0), jnp.float32)),
     )
 
     def resolve(request):
@@ -444,32 +449,23 @@ def test_batched_environment_rosters_broadcast_before_observer_axis_under_jit():
     np.testing.assert_array_equal(compiled, eager)
 
 
-def test_unknown_absence_of_possessor_does_not_enable_loose_trap_challenge():
-    env, rollout, actor = _open_play_at_distance(1.0)
-    observations = env.observe_all_si(rollout)
-    roster = env.roster_metadata_si(rollout)
-    opponent = int(np.flatnonzero(np.asarray(roster.team_id) != 0)[0])
-    last_actor = observations.players.last_actor.at[actor, opponent].set(True)
-    last_contact = observations.possession.last_contact._replace(
-        known=observations.possession.last_contact.known.at[actor].set(True),
-        intent=observations.possession.last_contact.intent.at[actor].set(
-            INTENT_CONTROL
-        ),
-        outcome=observations.possession.last_contact.outcome.at[actor].set(
-            OUTCOME_TRAP
-        ),
-        mechanism=observations.possession.last_contact.mechanism.at[actor].set(
-            MECHANISM_FOOT
-        ),
-    )
-    observations = observations._replace(
-        players=observations.players._replace(last_actor=last_actor),
-        possession=observations.possession._replace(
-            known=observations.possession.known.at[actor].set(False),
-            last_contact=last_contact,
-        ),
-    )
+def test_full_view_observation_omits_redundant_public_leaves() -> None:
+    env = FootballWorld()
+    reset = env.reset(_team(1_000), _team(2_000), key=jax.random.key(31))
+    observation = env.observe(reset.rollout, jnp.int32(0))
+    spec = env.player_observation_spec(observation)
 
-    availability = intent_availability_hint(observations, roster)
-
-    assert not bool(availability[actor, INTENT_CHALLENGE])
+    assert "visible" not in observation.players._fields
+    assert "visible" not in observation.ball._fields
+    assert "known" not in observation.possession._fields
+    assert "known" not in observation.possession.last_contact._fields
+    assert "known" not in observation.restart_release._fields
+    assert "gk_handling_restriction_known" not in observation.match._fields
+    assert "team" not in observation.possession._fields
+    assert "team" not in observation.restart_release._fields
+    assert "attack_direction" not in observation.match._fields
+    assert "kickoff_team" not in observation.match._fields
+    assert spec.semantic_version == 10
+    assert spec.float32_size == 288
+    assert spec.int32_size == 39
+    assert spec.boolean_size == 185

@@ -39,9 +39,9 @@ def test_intent_rings_are_flat_on_turf_and_painted_before_player_spheres():
         atol=1e-6,
     )
 
-    fan, shadow, underlay, ring, player = (object() for _ in range(5))
-    order = _player_intent_painter_order(fan, shadow, underlay, ring, player)
-    assert order == (fan, shadow, underlay, ring, player)
+    shadow, underlay, ring, player = (object() for _ in range(4))
+    order = _player_intent_painter_order(shadow, underlay, ring, player)
+    assert order == (shadow, underlay, ring, player)
     assert order.index(underlay) < order.index(player)
     assert order.index(ring) < order.index(player)
     assert _INTENT_RING_UNDERLAY_ZORDER < _PLAYER_MARKER_ZORDER

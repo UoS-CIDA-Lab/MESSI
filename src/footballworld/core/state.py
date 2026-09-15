@@ -24,7 +24,6 @@ class PlayerState(NamedTuple):
     position: jax.Array
     velocity: jax.Array
     body_forward: jax.Array
-    gaze_yaw: jax.Array
     team_id: jax.Array
     player_id: jax.Array
     on_pitch: jax.Array

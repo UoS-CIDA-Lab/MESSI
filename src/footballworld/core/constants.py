@@ -65,14 +65,13 @@ ACTION_MIN = -1.0
 ACTION_MAX = 1.0
 
 # Explicit-intent action layout. The categorical intent is stored separately;
-# these indices address only the eight continuous controls.
-INTENT_ACTION_CONTINUOUS_DIM = 8
+# these indices address only the seven continuous physical controls.
+INTENT_ACTION_CONTINUOUS_DIM = 7
 INTENT_ACTION_MOVE = slice(0, 2)
 INTENT_ACTION_FORCE_TO_BALL = slice(2, 4)
 INTENT_ACTION_LAUNCH = 4
 INTENT_ACTION_SPIN_SIDE = 5
 INTENT_ACTION_SPIN_BACK = 6
-INTENT_ACTION_GAZE_CENTER = 7
 
 
 # Law-level roster limits

@@ -116,26 +116,6 @@ def _rotate_body_forward(
     return jnp.where(valid[:, None], updated, current).astype(jnp.float32)
 
 
-def _limit_self_propelled_target(
-    desired_velocity: jax.Array,
-    speed_limit: jax.Array,
-    body_forward: jax.Array,
-    *,
-    backward_speed_ratio: float,
-) -> jax.Array:
-    """Continuously limit only the requested target when travelling backward."""
-
-    desired_speed = jnp.sqrt(
-        jnp.sum(desired_velocity * desired_velocity, axis=-1) + SAFE_NORM_EPS
-    )
-    direction = desired_velocity / (desired_speed[:, None] + DIV_EPS)
-    backness = jnp.maximum(-jnp.sum(direction * body_forward, axis=-1), 0.0)
-    directional_fraction = 1.0 - (1.0 - backward_speed_ratio) * backness
-    directional_limit = speed_limit * directional_fraction
-    scale = jnp.minimum(directional_limit / (desired_speed + DIV_EPS), 1.0)
-    return desired_velocity * scale[:, None]
-
-
 def _two_largest_speed_sum(speed_support: jax.Array) -> jax.Array:
     """Return the sum of the two largest fixed-roster speed supports."""
 
@@ -413,15 +393,9 @@ def step_players(
             long=long_stamina,
             short=short_stamina,
         )
-        locomotion_target = _limit_self_propelled_target(
-            desired_velocity,
-            speed_limit,
-            body_forward,
-            backward_speed_ratio=physics.backward_speed_ratio,
-        )
         moved = step_player_motion(
             current,
-            locomotion_target,
+            desired_velocity,
             speed_limit,
             locomotion,
             field_half_extent,
@@ -524,15 +498,9 @@ def step_players(
                 long=long_stamina,
                 short=short_stamina,
             )
-            locomotion_target = _limit_self_propelled_target(
-                desired_velocity,
-                speed_limit,
-                body_forward,
-                backward_speed_ratio=physics.backward_speed_ratio,
-            )
             moved = step_player_motion(
                 current,
-                locomotion_target,
+                desired_velocity,
                 speed_limit,
                 locomotion,
                 field_half_extent,

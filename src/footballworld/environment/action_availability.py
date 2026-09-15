@@ -131,9 +131,7 @@ def intent_availability_hint(
         & _observer_slot(observation.players.on_pitch, observer)
         & (~_observer_slot(observation.players.sent_off, observer))
     )
-    observable_candidate = (
-        observer_active & contact_may_occur & observation.ball.visible
-    )
+    observable_candidate = observer_active & contact_may_occur
 
     player_shape = observation.players.on_pitch.shape
     ball_state = jnp.asarray(observation.ball.relative_state)
@@ -188,7 +186,7 @@ def intent_availability_hint(
         & (ball_team_x <= -stadium.half_length + stadium.penalty_area_length)
         & (jnp.abs(ball_team_y) <= 0.5 * stadium.penalty_area_width)
     )
-    handling_known = observation.match.gk_handling_restriction_known
+    handling_known = observation.valid
     hand_restricted = handling_known & (
         observation.match.gk_handling_restricted_team == self_team
     )
@@ -210,9 +208,7 @@ def intent_availability_hint(
     possessor = observation.players.possessor
     last_actor = observation.players.last_actor
     observed_other_possessor = jnp.any(
-        possessor
-        & observation.players.on_pitch
-        & (~observation.players.sent_off),
+        possessor & observation.players.on_pitch & (~observation.players.sent_off),
         axis=-1,
     ) & (~_observer_slot(possessor, observer))
     if roster_known:
@@ -232,12 +228,12 @@ def intent_availability_hint(
             reach_height,
             stature * jnp.asarray(scale.pelvis_height_factor, ball_height.dtype),
         )
+        unique_possessor = jnp.sum(possessor, axis=-1) == 1
         verified_possessor = (
             possessor
+            & unique_possessor[..., None]
             & observation.players.on_pitch
             & (~observation.players.sent_off)
-            & observation.possession.known[..., None]
-            & (observation.possession.team[..., None] == team_id)
             & (observation.possession.control_ticks > 0)[..., None]
             & (player_ball_distance <= reach.carry_radius_m + ball.radius)
             & (ball_height[..., None] <= carrier_height + ball.radius)

@@ -330,7 +330,7 @@ def test_misaligned_carrier_recovers_toward_ball_without_another_control(
         relative_velocity,
         ball_speed,
         self_touched_last,
-        observations.possession.last_contact.known[actor],
+        jnp.bool_(True),
         observations.possession.last_contact.intent[actor],
         observations.possession.last_contact.outcome[actor],
     )

@@ -20,7 +20,6 @@ class PhysicsAction(NamedTuple):
     force_power: jax.Array
     launch: jax.Array
     spin: jax.Array
-    gaze_center: jax.Array
     body_target: jax.Array
     body_target_valid: jax.Array
     requested_intent: jax.Array
@@ -38,7 +37,8 @@ class ActionTrace(NamedTuple):
 # Fixed wire meanings for the eventful-only action receipt.  These are causal
 # telemetry bits, not selectable actions or football coefficients.
 ACTION_TRACE_SCHEMA = "footballworld.action-trace/1"
-ACTION_RECEIPT_SCHEMA = "footballworld.action-receipt/1"
+ACTION_RECEIPT_SCHEMA_VERSION = 2
+ACTION_RECEIPT_SCHEMA = f"footballworld.action-receipt/{ACTION_RECEIPT_SCHEMA_VERSION}"
 
 ACTION_FLAG_INVALID_INTENT = 1 << 0
 ACTION_FLAG_NONFINITE_CONTINUOUS = 1 << 1
@@ -91,14 +91,12 @@ PARAMETER_FORCE_DIRECTION = 1 << 1
 PARAMETER_FORCE_POWER = 1 << 2
 PARAMETER_LAUNCH = 1 << 3
 PARAMETER_SPIN = 1 << 4
-PARAMETER_GAZE = 1 << 5
 PARAMETER_NAMES = (
     "MOVE",
     "FORCE_DIRECTION",
     "FORCE_POWER",
     "LAUNCH",
     "SPIN",
-    "GAZE",
 )
 
 DISPLACEMENT_SELF_MOTION = 1 << 0
@@ -291,7 +289,6 @@ def decode_physics_action(
         force_power=decoded.force_to_ball.power,
         launch=decoded.launch,
         spin=spin,
-        gaze_center=decoded.gaze_center,
         body_target=body_target,
         body_target_valid=body_aim_valid | move_aim_valid,
         requested_intent=decoded.intent,
@@ -305,6 +302,7 @@ __all__ = [
     "ACTION_FLAG_NAMES",
     "ACTION_REASON_NAMES",
     "ACTION_RECEIPT_SCHEMA",
+    "ACTION_RECEIPT_SCHEMA_VERSION",
     "ACTION_TRACE_SCHEMA",
     "DISPLACEMENT_SOURCE_NAMES",
     "ELIGIBILITY_NAMES",

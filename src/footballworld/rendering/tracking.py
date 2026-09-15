@@ -17,7 +17,7 @@ import numpy as np
 
 from footballworld.rendering.transfer import HostFrame, to_jsonable
 
-TRACKING_SCHEMA = "footballworld.tracking/8"
+TRACKING_SCHEMA = "footballworld.tracking/9"
 TRACKING_ARCHIVE_SCHEMA = "footballworld.tracking-npz/1"
 TRACKING_STORAGE_SCHEMA = "footballworld.tracking-storage/2"
 TRACKING_FILENAME = "tracking.npz"
@@ -38,10 +38,8 @@ _PLAYER_VECTOR_FIELDS = (
     ("position", "player_position"),
     ("velocity", "player_velocity"),
     ("body_forward", "player_body_forward"),
-    ("view_forward", "player_view_forward"),
 )
 _PLAYER_FLOAT_FIELDS = (
-    ("gaze_yaw", "player_gaze_yaw"),
     ("height", "player_height"),
     ("stamina_long", "player_stamina_long"),
     ("stamina_short", "player_stamina_short"),
@@ -164,8 +162,6 @@ def _tracking_dtype(
         ("player_position", "<f4", (player_count, 2)),
         ("player_velocity", "<f4", (player_count, 2)),
         ("player_body_forward", "<f4", (player_count, 2)),
-        ("player_view_forward", "<f4", (player_count, 2)),
-        ("player_gaze_yaw", "<f4", (player_count,)),
         ("player_height", "<f4", (player_count,)),
         ("player_stamina_long", "<f4", (player_count,)),
         ("player_stamina_short", "<f4", (player_count,)),
@@ -256,17 +252,6 @@ def build_tracking_table(
         table["player_position"][index] = frame.player_position
         table["player_velocity"][index] = frame.player_velocity
         table["player_body_forward"][index] = frame.player_body_forward
-        gaze_cos = np.cos(frame.player_gaze_yaw)
-        gaze_sin = np.sin(frame.player_gaze_yaw)
-        table["player_view_forward"][index, :, 0] = (
-            frame.player_body_forward[:, 0] * gaze_cos
-            - frame.player_body_forward[:, 1] * gaze_sin
-        )
-        table["player_view_forward"][index, :, 1] = (
-            frame.player_body_forward[:, 0] * gaze_sin
-            + frame.player_body_forward[:, 1] * gaze_cos
-        )
-        table["player_gaze_yaw"][index] = frame.player_gaze_yaw
         table["player_height"][index] = frame.player_height
         table["player_stamina_long"][index] = frame.stamina_long
         table["player_stamina_short"][index] = frame.stamina_short

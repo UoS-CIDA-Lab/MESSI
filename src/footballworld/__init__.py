@@ -212,15 +212,6 @@ from footballworld.specs import (
     unflatten_manager_observation,
     unflatten_observation,
 )
-from footballworld.tracking import (
-    INFERRED_VIEW_SCHEMA,
-    InferredViewTrajectories,
-    ViewInferenceConfig,
-    ViewInferenceProvenance,
-    infer_body_view_trajectories,
-    sequence_start_from_identity,
-    view_inference_config_from_environment,
-)
 
 __all__ = [
     "ACTION_FLAG_NAMES",
@@ -233,7 +224,6 @@ __all__ = [
     "DISPLACEMENT_SOURCE_NAMES",
     "ELIGIBILITY_NAMES",
     "FRAME_EVENTS_SCHEMA",
-    "INFERRED_VIEW_SCHEMA",
     "INTENT_SOURCE_COUNT",
     "INTENT_SOURCE_ENVIRONMENT_FORCED",
     "INTENT_SOURCE_NAMES",
@@ -367,8 +357,6 @@ __all__ = [
     "TransitionResult",
     "TreeSpec",
     "TypedLayout",
-    "ViewInferenceConfig",
-    "ViewInferenceProvenance",
     "acknowledge_manager_boundary",
     "action_receipt_spec",
     "action_spec",
@@ -392,7 +380,6 @@ __all__ = [
     "flatten_observation",
     "frame_random_key",
     "global_state_spec",
-    "infer_body_view_trajectories",
     "initialize_manager_boundary_state",
     "initialize_policy_state",
     "intent_availability_hint",
@@ -418,7 +405,6 @@ __all__ = [
     "refresh_policy_state",
     "render_mp4",
     "schema_versions",
-    "sequence_start_from_identity",
     "unflatten_action",
     "unflatten_action_receipt",
     "unflatten_action_trace",
@@ -427,5 +413,4 @@ __all__ = [
     "unflatten_manager_observation",
     "unflatten_observation",
     "validate_opening_policy_shapes",
-    "view_inference_config_from_environment",
 ]

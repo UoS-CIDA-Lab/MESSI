@@ -67,8 +67,6 @@ def build_rule_policy_context(
         2,
     ):
         raise ValueError("player velocity axes must match player positions")
-    if observations.players.visible.shape != (player_count, player_count):
-        raise ValueError("player visibility must match both player axes")
     if observations.ball.relative_state.shape != (player_count, 9):
         raise ValueError("ball relative_state must have shape (players, 9)")
     if roster.team_id.shape != (player_count,):
@@ -83,7 +81,9 @@ def build_rule_policy_context(
     self_team = roster.team_id[self_index]
     self_goalkeeper = roster.is_goalkeeper[self_index]
 
-    visible = jnp.asarray(observations.players.visible, dtype=jnp.bool_)
+    visible = jnp.broadcast_to(
+        observations.valid[:, None], (player_count, player_count)
+    )
     participating = observations.players.on_pitch & (~observations.players.sent_off)
     self_active = participating[row, self_index]
     same_team = roster.team_id[None, :] == self_team[:, None]
@@ -119,7 +119,7 @@ def build_rule_policy_context(
         ),
         axis=-1,
     )
-    ball_visible = jnp.asarray(observations.ball.visible, dtype=jnp.bool_)
+    ball_visible = jnp.asarray(observations.valid, dtype=jnp.bool_)
     ball_position = jnp.where(
         ball_visible[:, None], ball_position_raw, jnp.float32(0.0)
     ).astype(jnp.float32)

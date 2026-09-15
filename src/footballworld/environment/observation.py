@@ -1,31 +1,24 @@
-"""Agent-facing observations derived without mutating rollout physics.
+"""Full-information agent observations derived without mutating physics.
 
-The default path exposes the complete rollout state.  A static perception
-configuration can instead hide player and ball kinematics and actor-linked
-history outside an observer's horizontal field of view.  Roster metadata is
-deliberately built separately so callers can publish or cache it once rather
-than replicating it inside every per-player observation.
+Roster metadata is deliberately built separately so callers can publish or
+cache it once rather than replicating it inside every per-player observation.
 """
 
 from __future__ import annotations
 
-import math
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from footballworld.config.perception import Perception
 from footballworld.core.constants import (
     NO_PLAYER,
     NO_TEAM,
-    RK_GK_HOLD,
     RK_NONE,
 )
 from footballworld.core.contact import INTENT_SOURCE_NONE
 from footballworld.core.state import State
-from footballworld.dynamics.orientation import view_forward
 from footballworld.environment.clock import MatchClockTicks, match_clock_ticks
 from footballworld.rules.gk_handling_restriction import (
     goalkeeper_hand_restricted_team,
@@ -38,7 +31,7 @@ from footballworld.rules.restart_legality import (
 from footballworld.rules.restart_timing import restart_may_release_within_frame
 
 ROSTER_METADATA_SCHEMA_VERSION = 2
-PLAYER_OBSERVATION_SCHEMA_VERSION = 10
+PLAYER_OBSERVATION_SCHEMA_VERSION = 13
 
 
 class RosterMetadata(NamedTuple):
@@ -61,7 +54,6 @@ class SelfObservation(NamedTuple):
     player_index: jax.Array
     position: jax.Array
     velocity: jax.Array
-    gaze_yaw: jax.Array
 
 
 class PlayerObservations(NamedTuple):
@@ -71,7 +63,6 @@ class PlayerObservations(NamedTuple):
     relative_velocity: jax.Array
     facing_sin: jax.Array
     facing_cos: jax.Array
-    gaze_yaw: jax.Array
     stamina_long: jax.Array
     stamina_short: jax.Array
     challenge_recovery_substeps: jax.Array
@@ -86,7 +77,6 @@ class PlayerObservations(NamedTuple):
     restart_taker: jax.Array
     release_taker: jax.Array
     last_actor: jax.Array
-    visible: jax.Array
     contact_may_occur_this_frame: jax.Array
 
 
@@ -95,7 +85,6 @@ class BallObservation(NamedTuple):
 
     relative_state: jax.Array
     live: jax.Array
-    visible: jax.Array
 
 
 class LastContactObservation(NamedTuple):
@@ -108,16 +97,13 @@ class LastContactObservation(NamedTuple):
     restart_kind: jax.Array
     law11_effect: jax.Array
     kick_applied: jax.Array
-    known: jax.Array
 
 
 class PossessionObservation(NamedTuple):
     """Possession state; player identity is the per-slot ``possessor`` flag."""
 
-    team: jax.Array
     previous_team: jax.Array
     control_ticks: jax.Array
-    known: jax.Array
     last_contact: LastContactObservation
 
 
@@ -136,23 +122,18 @@ class RestartReleaseObservation(NamedTuple):
     active: jax.Array
     untouched: jax.Array
     kind: jax.Array
-    team: jax.Array
     indirect: jax.Array
     law11_direct_exempt: jax.Array
     release_mechanism: jax.Array
-    known: jax.Array
 
 
 class MatchObservation(NamedTuple):
     """Globally public phase and score state."""
 
-    attack_direction: jax.Array
-    kickoff_team: jax.Array
     score: jax.Array
     control_tick: jax.Array
     offside_direct_exempt_team: jax.Array
     gk_handling_restricted_team: jax.Array
-    gk_handling_restriction_known: jax.Array
     clock: MatchClockTicks
 
 
@@ -255,41 +236,6 @@ def _safe_subject_index(value, size: int) -> tuple[jax.Array, jax.Array]:
     return jnp.clip(array, 0, size - 1).astype(jnp.int32), valid
 
 
-def _view_visibility(
-    state: State,
-    observer_index: jax.Array,
-    *,
-    perception: Perception,
-) -> tuple[jax.Array, jax.Array]:
-    player_count = state.players.position.shape[0]
-    if not perception.limit_by_view_angle:
-        return (
-            jnp.ones(player_count, dtype=jnp.bool_),
-            jnp.asarray(True, dtype=jnp.bool_),
-        )
-
-    fov_degrees = float(perception.horizontal_fov_degrees)
-    if not math.isfinite(fov_degrees) or not (0.0 < fov_degrees <= 360.0):
-        raise ValueError("horizontal_fov_degrees must be finite and in (0, 360]")
-    observer_position = state.players.position[observer_index]
-    forward = view_forward(state.players)[observer_index]
-    threshold = jnp.asarray(
-        math.cos(math.radians(0.5 * fov_degrees)),
-        dtype=state.players.position.dtype,
-    )
-
-    def in_view(relative_xy: jax.Array) -> jax.Array:
-        distance = jnp.linalg.norm(relative_xy, axis=-1)
-        projection = jnp.sum(relative_xy * forward, axis=-1)
-        return (distance <= 1.0e-6) | (projection >= threshold * distance)
-
-    player_relative = state.players.position - observer_position
-    player_visible = state.players.active & in_view(player_relative)
-    player_visible = player_visible.at[observer_index].set(True)
-    ball_visible = in_view(state.ball.position[:2] - observer_position)
-    return player_visible, ball_visible
-
-
 def observe(
     state: State,
     offside_state: OffsideState,
@@ -301,9 +247,8 @@ def observe(
     halftime_tick: int,
     fulltime_tick: int,
     halftime_enabled: bool,
-    perception: Perception = Perception(),
 ) -> Observation:
-    """Build one full or view-limited observation without touching physics.
+    """Build one full-information observation without touching physics.
 
     ``decimation`` is the fixed number of physics substeps in the upcoming
     control frame.  The contact affordance uses only hard state that can make
@@ -326,11 +271,8 @@ def observe(
     observer_position = players.position[safe_observer]
     observer_velocity = players.velocity[safe_observer]
 
-    player_visible, ball_visible = _view_visibility(
-        state, safe_observer, perception=perception
-    )
-    player_visible = player_visible & observer_valid
-    ball_visible = ball_visible & observer_valid
+    player_visible = jnp.ones(player_count, dtype=jnp.bool_) & observer_valid
+    ball_visible = jnp.asarray(True, dtype=jnp.bool_) & observer_valid
     local_relative_position = (players.position - observer_position) * direction
     local_relative_velocity = (players.velocity - observer_velocity) * direction
     local_body_forward = players.body_forward * direction
@@ -367,22 +309,7 @@ def observe(
         restart_actor_mask(state) & restart_fires_this_frame,
         state.ball.live & players.active,
     )
-    hidden_structural_phase = jnp.where(
-        restart_active,
-        players.active
-        & (players.team_id == state.restart.team)
-        & restart_fires_this_frame
-        & ((state.restart.kind != RK_GK_HOLD) | players.is_goalkeeper),
-        state.ball.live & players.active,
-    )
-    contact_may_occur = (
-        jnp.where(
-            player_visible,
-            structural_phase & (~full_frame_locked),
-            hidden_structural_phase,
-        )
-        & observer_valid
-    )
+    contact_may_occur = structural_phase & (~full_frame_locked) & observer_valid
 
     ball_relative_position = jnp.concatenate(
         (
@@ -406,28 +333,10 @@ def observe(
         ball_visible, ball_relative_state, jnp.zeros_like(ball_relative_state)
     )
 
-    full_information = jnp.asarray(not perception.limit_by_view_angle, dtype=jnp.bool_)
     handling_team = goalkeeper_hand_restricted_team(state)
-    handling_goalkeeper = (
-        players.active & players.is_goalkeeper & (players.team_id == handling_team)
-    )
-    handling_known = (
-        (full_information & observer_valid)
-        | (handling_team == observer_team)
-        | jnp.any(player_visible & handling_goalkeeper)
-    ) & observer_valid
-    observed_handling_team = jnp.where(handling_known, handling_team, NO_TEAM).astype(
+    observed_handling_team = jnp.where(observer_valid, handling_team, NO_TEAM).astype(
         jnp.int32
     )
-    possession_actor_visible = jnp.any(possessor)
-    visible_free_ball = ball_visible & (state.possession.team == NO_TEAM)
-    possession_known = observer_valid & (
-        full_information | possession_actor_visible | visible_free_ball
-    )
-    release_actor_visible = jnp.any(release_taker)
-    release_known = observer_valid & (full_information | release_actor_visible)
-    last_actor_visible = jnp.any(last_actor_flag)
-    last_contact_known = observer_valid & (full_information | last_actor_visible)
     last_contact = state.possession.last_contact
 
     return Observation(
@@ -436,14 +345,12 @@ def observe(
             player_index=jnp.where(observer_valid, safe_observer, NO_PLAYER),
             position=jnp.where(observer_valid, observer_position * direction, 0.0),
             velocity=jnp.where(observer_valid, observer_velocity * direction, 0.0),
-            gaze_yaw=jnp.where(observer_valid, players.gaze_yaw[safe_observer], 0.0),
         ),
         players=PlayerObservations(
             relative_position=_mask_float(local_relative_position, player_visible),
             relative_velocity=_mask_float(local_relative_velocity, player_visible),
             facing_sin=_mask_float(local_facing_sin, player_visible),
             facing_cos=_mask_float(local_facing_cos, player_visible),
-            gaze_yaw=_mask_float(players.gaze_yaw, player_visible),
             stamina_long=_mask_float(players.stamina_long, player_visible),
             stamina_short=_mask_float(players.stamina_short, player_visible),
             challenge_recovery_substeps=jnp.where(
@@ -466,43 +373,31 @@ def observe(
             restart_taker=restart_taker,
             release_taker=release_taker,
             last_actor=last_actor_flag,
-            visible=player_visible,
             contact_may_occur_this_frame=contact_may_occur,
         ),
         ball=BallObservation(
             relative_state=ball_relative_state,
             live=state.ball.live & observer_valid,
-            visible=ball_visible,
         ),
         possession=PossessionObservation(
-            team=jnp.where(possession_known, state.possession.team, NO_TEAM),
-            # Historical provenance stays hidden unless its actor is visible.
             previous_team=jnp.where(
-                observer_valid & (full_information | last_actor_visible),
+                observer_valid,
                 state.possession.previous_team,
                 NO_TEAM,
             ),
-            control_ticks=jnp.where(
-                possession_known, state.possession.control_ticks, 0
-            ),
-            known=possession_known,
+            control_ticks=jnp.where(observer_valid, state.possession.control_ticks, 0),
             last_contact=LastContactObservation(
-                mechanism=jnp.where(last_contact_known, last_contact.mechanism, 0),
-                intent=jnp.where(last_contact_known, last_contact.intent, 0),
+                mechanism=jnp.where(observer_valid, last_contact.mechanism, 0),
+                intent=jnp.where(observer_valid, last_contact.intent, 0),
                 intent_source=jnp.where(
-                    last_contact_known,
+                    observer_valid,
                     last_contact.intent_source,
                     INTENT_SOURCE_NONE,
                 ),
-                outcome=jnp.where(last_contact_known, last_contact.outcome, 0),
-                restart_kind=jnp.where(
-                    last_contact_known, last_contact.restart_kind, 0
-                ),
-                law11_effect=jnp.where(
-                    last_contact_known, last_contact.law11_effect, 0
-                ),
-                kick_applied=last_contact.kick_applied & last_contact_known,
-                known=last_contact_known,
+                outcome=jnp.where(observer_valid, last_contact.outcome, 0),
+                restart_kind=jnp.where(observer_valid, last_contact.restart_kind, 0),
+                law11_effect=jnp.where(observer_valid, last_contact.law11_effect, 0),
+                kick_applied=last_contact.kick_applied & observer_valid,
             ),
         ),
         restart=RestartObservation(
@@ -514,29 +409,24 @@ def observe(
             indirect=state.restart.indirect & observer_valid,
         ),
         restart_release=RestartReleaseObservation(
-            active=state.restart_release.active & release_known,
-            untouched=state.restart_release.untouched & release_known,
-            kind=jnp.where(release_known, state.restart_release.kind, RK_NONE),
-            team=jnp.where(release_known, state.restart_release.team, NO_TEAM),
-            indirect=state.restart_release.indirect & release_known,
+            active=state.restart_release.active & observer_valid,
+            untouched=state.restart_release.untouched & observer_valid,
+            kind=jnp.where(observer_valid, state.restart_release.kind, RK_NONE),
+            indirect=state.restart_release.indirect & observer_valid,
             law11_direct_exempt=(
-                state.restart_release.law11_direct_exempt & release_known
+                state.restart_release.law11_direct_exempt & observer_valid
             ),
             release_mechanism=jnp.where(
-                release_known, state.restart_release.release_mechanism, 0
+                observer_valid, state.restart_release.release_mechanism, 0
             ),
-            known=release_known,
         ),
         match=MatchObservation(
-            attack_direction=jnp.where(observer_valid, state.attack_direction, 0),
-            kickoff_team=jnp.where(observer_valid, state.kickoff_team, NO_TEAM),
             score=jnp.where(observer_valid, state.score, 0),
             control_tick=jnp.where(observer_valid, state.control_tick, 0),
             offside_direct_exempt_team=jnp.where(
                 observer_valid, offside_state.direct_exempt_team, NO_TEAM
             ),
             gk_handling_restricted_team=observed_handling_team,
-            gk_handling_restriction_known=handling_known,
             clock=jax.tree.map(
                 lambda value: jnp.where(observer_valid, value, jnp.zeros_like(value)),
                 match_clock_ticks(
@@ -560,7 +450,6 @@ def observe_all(
     halftime_tick: int,
     fulltime_tick: int,
     halftime_enabled: bool,
-    perception: Perception = Perception(),
 ) -> Observation:
     """Vectorize ``observe`` over every fixed roster slot."""
 
@@ -576,7 +465,6 @@ def observe_all(
             halftime_tick=halftime_tick,
             fulltime_tick=fulltime_tick,
             halftime_enabled=halftime_enabled,
-            perception=perception,
         )
     )(jnp.arange(player_count, dtype=jnp.int32))
 

@@ -16,7 +16,7 @@ from footballworld.core.contact import (
 from footballworld.rendering.transfer import to_jsonable
 
 SPARSE_EVENT_ENCODING = "footballworld.occurred-events/2"
-SPARSE_ACTION_ENCODING = "footballworld.contact-actions/3"
+SPARSE_ACTION_ENCODING = "footballworld.contact-actions/4"
 
 _GROUP_ORDER = {
     "deliberate_contact": 0,
@@ -183,7 +183,6 @@ def sparse_action_trace(
         force_to_ball = np.asarray(submitted_action.force_to_ball, dtype=np.float32)
         launch = np.asarray(submitted_action.launch, dtype=np.float32)
         spin = np.asarray(submitted_action.spin, dtype=np.float32)
-        gaze_center = np.asarray(submitted_action.gaze_center, dtype=np.float32)
         expected_vector = (requested.size, 2)
         if (
             submitted_intent.shape != requested.shape
@@ -191,12 +190,11 @@ def sparse_action_trace(
             or force_to_ball.shape != expected_vector
             or launch.shape != requested.shape
             or spin.shape != expected_vector
-            or gaze_center.shape != requested.shape
         ):
             raise ValueError("submitted action fields do not share one player axis")
         if not np.array_equal(submitted_intent, requested):
             raise ValueError("submitted action intent disagrees with action trace")
-        controls = (move, force_to_ball, launch, spin, gaze_center)
+        controls = (move, force_to_ball, launch, spin)
 
     receivers = None
     if intended_receiver_ids is not None:
@@ -218,14 +216,13 @@ def sparse_action_trace(
                 else None
             )
         if controls is not None:
-            move, force_to_ball, launch, spin, gaze_center = controls
+            move, force_to_ball, launch, spin = controls
             row.update(
                 {
                     "move": to_jsonable(move[player]),
                     "force_to_ball": to_jsonable(force_to_ball[player]),
                     "launch": to_jsonable(launch[player]),
                     "spin": to_jsonable(spin[player]),
-                    "gaze_center": to_jsonable(gaze_center[player]),
                 }
             )
         rows.append(row)

@@ -354,9 +354,7 @@ def test_pass_macro_uses_the_service_that_would_actually_be_executed(monkeypatch
             return jnp.int32(1), jnp.bool_(True)
         return original_masked_categorical(values, eligible, key, temperature)
 
-    monkeypatch.setattr(
-        possession_module, "_masked_categorical", select_weak_service
-    )
+    monkeypatch.setattr(possession_module, "_masked_categorical", select_weak_service)
     decision = decide_possession(
         context,
         jnp.zeros((4,), dtype=jnp.bool_),
@@ -924,12 +922,7 @@ def test_visible_onside_shoulder_target_is_urgent_forward_support():
         ball_visible=jnp.ones((player_count,), dtype=jnp.bool_),
     )
     state = state._replace(
-        role=(
-            state.role.at[4]
-            .set(ROLE_CENTRE_FORWARD)
-            .at[5]
-            .set(ROLE_WIDE_FORWARD)
-        ),
+        role=(state.role.at[4].set(ROLE_CENTRE_FORWARD).at[5].set(ROLE_WIDE_FORWARD)),
         current_possessor=jnp.asarray((1, 1, 1, 3, 1, 1), dtype=jnp.int32),
     )
     result = _shape_call(
@@ -941,9 +934,12 @@ def test_visible_onside_shoulder_target_is_urgent_forward_support():
 
     assert bool(result.urgent[4])
     assert bool(result.urgent[5])
+    assert bool(result.forward_shoulder_support[4])
+    assert bool(result.forward_shoulder_support[5])
     assert float(result.target[4, 0]) > float(ball[4, 0])
     assert float(result.target[5, 0]) > float(ball[5, 0])
     assert not bool(result.urgent[1])
+    assert not bool(result.forward_shoulder_support[1])
 
     build_ball = ball.at[:, 0].set(jnp.float32(-8.0))
     build_context = context._replace(ball_position=build_ball)
@@ -1140,6 +1136,12 @@ def test_new_scalar_inputs_fail_closed_before_tracing():
             phase=jnp.float32(0.5),
             lateral_shift=jnp.ones((player_count,), dtype=jnp.float32),
         )
+
+
+@pytest.mark.parametrize("value", (-0.01, 1.01))
+def test_forward_shoulder_support_power_fails_closed_outside_unit_interval(value):
+    with pytest.raises(ValueError, match="forward_shoulder_support_power must be in"):
+        replace(RulePolicyConfig(), forward_shoulder_support_power=value)
 
 
 @pytest.mark.parametrize("field", ("turnover_shot_settle_s", "kickoff_path_window_s"))

@@ -259,24 +259,6 @@ from the historical 1,280x720 default changes only host drawing, RGBA transfer,
 and encoding cost. It does not add a state or event field and changes no JAX
 trace, executable, HLO operation, or environment rollout result.
 
-Each active player has a translucent white field-of-view fan centred on the
-actual current `rotate(body_forward, gaze_yaw)` state, not the requested gaze
-action. Under the default reach and ball configuration, the turf-level cue
-begins 2.00 m from the player and ends at 3.00 m. The fan remains compact while
-the independently scaled action rings retain their physical interference
-meaning. A goalkeeper `CONTROL` ring may overlap the fan slightly because its
-default maximum reach is 2.11 m. Bright
-boundary rays and a separate body-direction needle remain omitted because they
-compete with player and intent cues. One update-in-place `PolyCollection` owns
-all fans after the vertices pass through the same projection as the players;
-there are no per-player patches, trails, or camera changes.
-
-When partial observation is enabled, the fan uses the environment's exact
-horizontal observation aperture. Under the default global observation it is
-only a gaze-direction cue and uses host-only `RenderStyle.gaze_cue_degrees`;
-it must not be read as a visibility mask. This distinction, both angles, and
-the resolved radii are recorded in render-settings `/3`.
-
 Requested intent is shown independently from realized contact. Each ring is a
 world-space circle projected onto the turf, so it foreshortens with the fixed
 camera. Every vertex remains on the turf plane, and the shared ring collections
@@ -397,7 +379,7 @@ auditing; the file is privately staged and published only after ZIP close.
 Use `with footballworld.rendering.open_tracking(path) as reader:` for both NPZ
 and plain/gzip JSONL. `reader.iter_chunks()` exposes the efficient NumPy path
 for NPZ, `reader.iter_rows()` reconstructs the stable
-`footballworld.tracking/8` semantic dictionaries, and `reader.row(frame)`
+`footballworld.tracking/9` semantic dictionaries, and `reader.row(frame)`
 performs indexed chunk access.
 All NPZ loads set `allow_pickle=False`. Interoperability tooling can call
 `export_tracking_jsonl(source, destination)` explicitly; canonical capture
@@ -436,8 +418,7 @@ the formation catalog. It records the selected frame rate, requested
 resolution/codec/pixel format,
 effective host-clamped encoder settings, requested/effective worker counts,
 process start method, chunk and segment counts, fixed camera azimuth,
-elevation, distance and focal length, environment partial-view state, exact
-environment aperture, host gaze-cue aperture, gaze limits, event chunk size
+elevation, distance and focal length, event chunk size
 when applicable, the host-only render-worker backend, the two owned
 asynchronous RGBA handoff buffers per worker, and installed renderer dependency
 versions. It
@@ -456,10 +437,8 @@ full-match CLI supplies that value automatically for an authoritative run;
 diagnostic previews may omit that cold-path cost or request it explicitly with
 `--verify-video`.
 
-Tracking schema `footballworld.tracking/8` stores seam-free `body_forward`,
-bounded `gaze_yaw`, and the derived `view_forward` for every player. Those are
-authoritative environment-state values, unlike the separately labelled host
-inferences described in [tracking-view-augmentation.md](tracking-view-augmentation.md).
+Tracking schema `footballworld.tracking/9` stores the authoritative
+`body_forward` for every player. View-angle and gaze fields are absent.
 
 Managed exact-event capture generates replay provenance rather than accepting
 it as a user claim. It includes the exact PRNG key representation,
@@ -481,7 +460,7 @@ fixed event tree from a canonical template.
 
 Ordinary visualization retains sparse non-MOVE/contact-relevant action rows.
 Set `exact_actions=True` on capture or `render_mp4` to retain all players'
-categorical intent plus move, force, launch, spin, and gaze controls on every
+categorical intent plus move, force, launch, and spin controls on every
 frame. The header then declares complete reconstruction only when no submitted
 action frame is missing. This is a host serialization choice and adds neither
 JAX leaves nor a second transition graph.
@@ -502,10 +481,10 @@ identifier and cannot by itself define goals per shot.
 Action traces use `MOVE` and policy provenance as defaults and store only
 categorical exceptions. `restore_sparse_action_trace` reconstructs the full
 categorical player axis. Exact capture additionally uses
-`footballworld.contact-actions/3`: a row retained for a non-`MOVE` request or
+`footballworld.contact-actions/4`: a row retained for a non-`MOVE` request or
 a realized deliberate contact carries the submitted `move`, `force_to_ball`,
-`launch`, `spin`, and `gaze_center` controls. This is sufficient to audit pass,
-cross, shot, control, clearance, challenge, and contact-time view signatures
+`launch`, and `spin` controls. This is sufficient to audit pass,
+cross, shot, control, clearance, and challenge signatures
 without duplicating every player's movement on every frame. Retained `PASS`
 rows also carry the registered `intended_receiver_player_id` from the rule
 policy's capture-only action receipt, or `null` when the policy exposes no such
@@ -516,7 +495,7 @@ training rollout results, recurrent policy state, or tracking storage.
 This bounded continuous trace is intentionally not a rollout-replay contract.
 Omitted `MOVE` rows often contain non-zero movement controls, so those values
 are unknown and `complete_action_reconstruction` is false. Categorical intent
-and provenance come from the authoritative action trace; the eight continuous
+and provenance come from the authoritative action trace; the seven continuous
 values are the submitted policy action. Realized contact intent, provenance,
 and outcome remain authoritative in the exact frame-event rows.
 
@@ -557,8 +536,8 @@ diagnostic-capture rules.
 The renderer uses a fixed oblique pinhole projection, stands, 3D goals and
 nets, a minimap, a host-only boundary, lazy dependencies, a bounded encoder
 queue, and FFmpeg encoding. One spherical marker represents each player, while
-authoritative `body_forward` and `gaze_yaw` produce a translucent fan without
-boundary rays. Fixed eventful device chunks, bounded two-pass sidecar spooling,
+body direction remains represented by the player pose without a view cone.
+Fixed eventful device chunks, bounded two-pass sidecar spooling,
 managed-boundary interruption, sparse exact events, and atomic directory
 publication keep capture causal and bounded. Renderer variants,
 moving-camera state, historical-frame effects, ball trails, historical feeds,

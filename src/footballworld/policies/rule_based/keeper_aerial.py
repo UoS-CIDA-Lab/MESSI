@@ -381,7 +381,7 @@ def aerial_contest_decision(
 
     last_contact = observations.possession.last_contact
     deliberate = (
-        last_contact.known
+        observations.valid
         & (last_contact.outcome == OUTCOME_RELEASE)
         & (
             (last_contact.intent == INTENT_PASS)

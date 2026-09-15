@@ -15,7 +15,6 @@ from footballworld.config.contact_timing import ContactTiming
 from footballworld.config.contest import Contest
 from footballworld.config.geometry import Ball, Stadium
 from footballworld.config.gk_holding import GoalkeeperHolding
-from footballworld.config.perception import Perception
 from footballworld.config.player_physics import PlayerPhysics
 from footballworld.config.reach import Reach
 from footballworld.config.restart_timing import RestartTiming
@@ -135,7 +134,6 @@ _FIELD_SPECS = {
             _POSITIVE,
             "forward_acceleration_mps2 lateral_acceleration_mps2 braking_deceleration_mps2 body_turn_rate_max_radps",
         ),
-        ((0.0, 1.0, True, False), "backward_speed_ratio"),
         (_UNIT, "collision_normal_restitution"),
     ),
     LongStamina: (
@@ -167,11 +165,6 @@ _FIELD_SPECS = {
             "ground_settle_vz air_density_kgpm3 drag_coefficient_high_re drag_crisis_drop spin_drag_scale spin_drag_min_parameter air_spin_decay c_ground_curl ground_slide_friction ground_spin_decay bounce_spin_vmin goal_frame_radius goal_frame_mu",
         ),
         (_UNIT, "e_rest bounce_tangential_e bounce_h_keep goal_frame_e_rest"),
-    ),
-    Perception: (
-        ((0.0, 360.0, True, False), "horizontal_fov_degrees"),
-        ((0.0, 180.0, True, True), "gaze_yaw_limit_degrees"),
-        (_POSITIVE, "gaze_slew_rate_degrees_s"),
     ),
 }
 
@@ -603,7 +596,6 @@ def validate_environment_configuration(
     long_stamina: LongStamina,
     short_stamina: ShortStamina,
     ball_physics: BallPhysics,
-    perception: Perception,
 ) -> None:
     """Validate static public configuration once, outside traced rollout."""
 
@@ -623,7 +615,6 @@ def validate_environment_configuration(
         "long_stamina": (long_stamina, LongStamina),
         "short_stamina": (short_stamina, ShortStamina),
         "ball_physics": (ball_physics, BallPhysics),
-        "perception": (perception, Perception),
     }
     for name, (value, expected) in configs.items():
         if type(value) is not expected:
@@ -657,8 +648,6 @@ def validate_environment_configuration(
         action_scale.ground_launch_down_reference_height_m,
         (ball.radius, None, True, False),
     )
-    if type(perception.limit_by_view_angle) is not bool:
-        raise TypeError("perception.limit_by_view_angle must be a bool")
     if reach.goalkeeper_standing_radius_m > reach.goalkeeper_radius_m:
         raise ValueError(
             "reach.goalkeeper_standing_radius_m must not exceed goalkeeper_radius_m"

@@ -23,7 +23,6 @@ def _frame(control_tick: int, adjudication: _Adjudication | None) -> _VisualFram
         ball_live=True,
         player_position=np.zeros((2, 2), dtype=np.float32),
         player_body_forward=np.zeros((2, 2), dtype=np.float32),
-        player_gaze_yaw=np.zeros(2, dtype=np.float32),
         aerial_progress=np.zeros(2, dtype=np.float32),
         high_head_contact=np.zeros(2, dtype=bool),
         team_id=np.asarray((0, 1), dtype=np.int32),
