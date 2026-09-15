@@ -384,6 +384,19 @@ def _host_control_tick(rollout: Rollout) -> int:
     return int(np.asarray(jax.device_get(rollout.state.control_tick)))
 
 
+def _capture_boundary_terminal(
+    *,
+    done: bool,
+    maximum_steps: int | None,
+    steps_executed: int,
+) -> bool:
+    """Treat an intentional step-budget cutoff as terminal for watchdogs."""
+
+    return done or (
+        maximum_steps is not None and steps_executed >= maximum_steps
+    )
+
+
 def _terminal_classification(
     env: FootballWorld,
     rollout: Rollout,
@@ -1860,8 +1873,13 @@ def render_event_match(
                     else result.final_rollout
                 )
                 executed = chunk_end
-                watchdog.check(final_rollout, done=done)
-                if done or (maximum_steps is not None and executed >= maximum_steps):
+                boundary_terminal = _capture_boundary_terminal(
+                    done=done,
+                    maximum_steps=maximum_steps,
+                    steps_executed=executed,
+                )
+                watchdog.check(final_rollout, done=boundary_terminal)
+                if boundary_terminal:
                     break
                 current = result.final_rollout
                 current_policy_state = result.final_policy_state
@@ -2368,8 +2386,13 @@ def render_managed_event_match(
                             render_groups=render_groups,
                         )
                 executed = chunk_end
-                watchdog.check(current.rollout, done=done)
-                if done or (maximum_steps is not None and executed >= maximum_steps):
+                boundary_terminal = _capture_boundary_terminal(
+                    done=done,
+                    maximum_steps=maximum_steps,
+                    steps_executed=executed,
+                )
+                watchdog.check(current.rollout, done=boundary_terminal)
+                if boundary_terminal:
                     break
                 if progressed == 0:
                     zero_progress_boundaries += 1

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from footballworld.rendering.capture import (
+    _capture_boundary_terminal,
     _managed_capture_chunk_kernel,
     _replace_last_render_sample,
     _WindowSink,
@@ -26,6 +27,18 @@ class _FakeSpool:
         for path in paths:
             path.write_bytes(b"x")
         return paths
+
+
+def test_step_budget_is_terminal_for_capture_boundary_watchdogs():
+    assert not _capture_boundary_terminal(
+        done=False, maximum_steps=9_000, steps_executed=8_999
+    )
+    assert _capture_boundary_terminal(
+        done=False, maximum_steps=9_000, steps_executed=9_000
+    )
+    assert _capture_boundary_terminal(
+        done=True, maximum_steps=None, steps_executed=123
+    )
 
 
 def test_report_only_managed_kernel_omits_visual_samples(monkeypatch):
