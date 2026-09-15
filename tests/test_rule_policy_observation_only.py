@@ -8,6 +8,10 @@ import numpy as np
 
 from footballworld import FootballWorld, Player, PlayerProfile, initialize_policy_state
 from footballworld.policies import make_rule_based_policy
+from footballworld.policies.rule_based.manager import (
+    RuleManagerState,
+    make_rule_based_manager,
+)
 
 _FORMATION = (
     (-50.0, 0.0),
@@ -95,3 +99,30 @@ def test_previous_dynamic_policy_state_cannot_change_eager_or_jit_decision():
     jit_stale = compiled_step(observations, roster, stale, match_key)
     _assert_tree_equivalent(jit_clean, jit_stale)
     _assert_tree_equivalent(eager_clean, jit_clean, exact=False)
+
+
+def test_previous_manager_state_cannot_change_eager_or_jit_command():
+    env = FootballWorld()
+    key = jax.random.key(74)
+    reset = env.reset(_team(3_000), _team(4_000), key=key)
+    initialized = env.initialize_management(reset.rollout, (), ())
+    observations = env.observe_managers(
+        reset.rollout, initialized.squad, initialized.state
+    )
+    manager = make_rule_based_manager(env)
+    clean = manager.initialize(observations)
+    stale = RuleManagerState(
+        processed_restart_tick=jnp.asarray([123, 456], dtype=jnp.int32),
+        processed_restart_kind=jnp.asarray([7, 8], dtype=jnp.int32),
+        formation_change_tick=jnp.asarray([789, 987], dtype=jnp.int32),
+    )
+
+    eager_clean = manager.step(observations, key, clean)
+    eager_stale = manager.step(observations, key, stale)
+    _assert_tree_equivalent(eager_clean.command, eager_stale.command)
+
+    compiled = jax.jit(manager.step)
+    jit_clean = compiled(observations, key, clean)
+    jit_stale = compiled(observations, key, stale)
+    _assert_tree_equivalent(jit_clean.command, jit_stale.command)
+    _assert_tree_equivalent(eager_clean.command, jit_clean.command, exact=False)

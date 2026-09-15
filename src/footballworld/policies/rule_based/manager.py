@@ -244,7 +244,12 @@ class RuleManagerConfig:
 
 
 class RuleManagerState(NamedTuple):
-    """Small policy memory kept only in the rare manager executable."""
+    """Compatibility receipt for the latest observation-only decision.
+
+    The reference manager no longer reads these values when choosing a command.
+    Boundary idempotence belongs to ``ManagerBoundaryState`` and accepted
+    formation timing is already present in the normalized manager observation.
+    """
 
     processed_restart_tick: jax.Array
     processed_restart_kind: jax.Array
@@ -444,14 +449,13 @@ class RuleBasedManager:
         restart_tick = jnp.rint(
             observations.restart_opened_control_tick * counter_scale
         ).astype(jnp.int32)
+        # The host scheduler invokes the policy once for each unseen boundary.
+        # Do not make the command depend on duplicate private restart memory:
+        # the same public observation and match key must produce the same label.
         new_restart = (
             observations.valid
             & (observations.restart_kind > RK_NONE)
             & (restart_tick >= 0)
-            & (
-                (restart_tick != state.processed_restart_tick)
-                | (observations.restart_kind != state.processed_restart_kind)
-            )
         )
 
         substitutions = ManagerSubstitutionCommand.empty(self.max_simultaneous)
@@ -681,7 +685,7 @@ class RuleBasedManager:
             observations.control_tick * jnp.float32(self.context.counter_scale_ticks)
         ).astype(jnp.int32)
         formation_change_tick = _effective_formation_change_tick(
-            state.formation_change_tick,
+            jnp.zeros(2, dtype=jnp.int32),
             observations.tactical_epoch,
             observations.formation_changed_control_tick,
             self.context.counter_scale_ticks,
@@ -890,13 +894,9 @@ class RuleBasedManager:
             )
 
         next_state = RuleManagerState(
-            processed_restart_tick=jnp.where(
-                new_restart, restart_tick, state.processed_restart_tick
-            ),
+            processed_restart_tick=jnp.where(new_restart, restart_tick, jnp.int32(-1)),
             processed_restart_kind=jnp.where(
-                new_restart,
-                observations.restart_kind,
-                state.processed_restart_kind,
+                new_restart, observations.restart_kind, jnp.int32(RK_NONE)
             ),
             formation_change_tick=jnp.where(
                 formations.requested,

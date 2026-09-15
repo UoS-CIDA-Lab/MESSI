@@ -374,9 +374,12 @@ The same match key and restart facts reproduce the same result exactly.
 
 Use `env.observe_managers(...)` to obtain the two private normalized manager
 rows, then call `manager.step(observations, match_key, manager_state)`. The
-policy state records the last restart identity and last requested formation
-change, making repeated calls during one stoppage idempotent and enforcing a
-small hold interval. Candidate formation scores respond smoothly to score,
+shipped rule manager's command is a function only of that current observation,
+the immutable match key, and static configuration. Its returned
+`RuleManagerState` is a compatibility receipt and is not read by the next
+decision. Restart idempotence belongs to the separate `ManagerBoundaryState`;
+the formation hold uses the environment-observed accepted tactical epoch and
+change tick. Candidate formation scores respond smoothly to score,
 regulation progress, numerical balance, fitness, width, and the registered
 prior. Attack depth, defender fraction, and width are ranked on the eligible
 registered catalog range before those dimensionless terms are combined. This
@@ -384,12 +387,11 @@ keeps arbitrary pitch-scale catalogs responsive without adding a
 rollout-dependent normalizer or a new coefficient. Every response weight and
 the default five-minute hold are explicit design priors: DFL event feeds do not
 identify tactical formation changes.
-The rule manager reconciles its private last-request tick with the environment's
-`formation_changed_control_tick` whenever `tactical_epoch > 0`. An externally
-accepted change or a restored checkpoint therefore restarts the hold interval
-even when the rule-manager memory is fresh or stale. Epoch zero deliberately
-leaves the initial policy boundary unchanged because no in-match layout change
-has yet been accepted.
+An externally accepted change or a restored checkpoint therefore restarts the
+hold interval from `formation_changed_control_tick`. A rejected proposal does
+not create hidden policy history, and epoch zero deliberately leaves the
+initial policy boundary unchanged because no in-match layout change has yet
+been accepted.
 
 For an actual rollout, `make_managed_advance` detects that boundary without
 putting the manager in `env.step`; `make_management_decision` then performs
