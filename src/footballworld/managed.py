@@ -494,7 +494,8 @@ def make_managed_runner(
             )
         elif custom_roster_refresh is not None:
             refreshed_state = custom_roster_refresh(
-                env, rollout, previous_roster, roster, policy_state)
+                env, rollout, previous_roster, roster, policy_state
+            )
         return _RosterRefreshResult(
             roster=roster,
             player_policy_state=refreshed_state,
@@ -511,8 +512,7 @@ def make_managed_runner(
                 policy_state,
             )
         if custom_tactics is not None:
-            return custom_tactics(
-                env, rollout, management, roster, policy_state)
+            return custom_tactics(env, rollout, management, roster, policy_state)
         return policy_state
 
     opening_decide = None

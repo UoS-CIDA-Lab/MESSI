@@ -175,10 +175,12 @@ def test_managed_runner_delegates_external_tactical_state_updates():
         initialize = staticmethod(lambda *_args: jnp.int32(0))
         step = staticmethod(lambda *_args: None)
         apply_management_tactics = staticmethod(
-            lambda _env, _rollout, _management, _roster, state: state + 7)
+            lambda _env, _rollout, _management, _roster, state: state + 7
+        )
 
     runner = managed.make_managed_runner(
-        FootballWorld(), TacticalPolicy(), chunk_steps=1)
+        FootballWorld(), TacticalPolicy(), chunk_steps=1
+    )
 
     assert int(runner._apply_tactics(None, None, None, jnp.int32(3))) == 10
 
@@ -197,7 +199,8 @@ def test_managed_runner_rejects_noncallable_external_state_hook():
         TypeError, "apply_management_tactics must be callable"
     ):
         managed_batch.make_managed_batch_runner(
-            FootballWorld(), malformed, chunk_steps=1)
+            FootballWorld(), malformed, chunk_steps=1
+        )
 
 
 def test_functional_manager_adapters_reject_noncallable_functions():
