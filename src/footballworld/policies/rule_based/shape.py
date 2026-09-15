@@ -1343,6 +1343,23 @@ def shape_movement(
                 | switch_setup_support
                 | switch_release_support
                 | designated_forward_support
+                # The target already keeps forwards on the observable
+                # Law-11 shoulder.  Treat reaching that existing target as
+                # active support. One centre forward prepares that run before
+                # halfway; the other forwards join after the ball enters the
+                # opposition half. The contextual 25-match audit found that
+                # most direct-back final-third releases had no teammate
+                # physically ahead, rather than an ahead runner excluded for
+                # offside.  This changes arrival urgency only; formation,
+                # target, legality, and the environment's offside authority
+                # remain unchanged.
+                | (
+                    forward_shoulder
+                    & (
+                        central_forward
+                        | (ball_xy[:, 0] >= jnp.float32(0.0))
+                    )
+                )
                 | squeeze
                 | open_field_mark
                 | pressure_cover

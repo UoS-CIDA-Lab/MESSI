@@ -46,6 +46,9 @@ class RulePolicyConfig:
     # so its ordinary cruise value is an independent transfer prior.
     offball_cruise_power: float = 0.15
     offball_surge_cap: float = 0.28
+    # Policy-only arrival power for a forward already assigned the observable
+    # onside shoulder. This is a design prior, not a measured football constant.
+    forward_shoulder_support_power: float = 0.40
     # Four-seed role distance divided into the seven-match DFL target.
     # Goalkeepers use their dedicated movement branch and retain scale 1.0.
     offball_cb_power_scale: float = 1.05
@@ -256,6 +259,7 @@ class RulePolicyConfig:
             "offball_walk_power",
             "offball_cruise_power",
             "offball_surge_cap",
+            "forward_shoulder_support_power",
         )
         distance_names = (
             "approach_slow_radius_m",

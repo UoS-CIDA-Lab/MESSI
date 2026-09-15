@@ -884,6 +884,79 @@ def test_attacking_shape_advances_by_phase_and_establishes_width_before_service(
     assert not bool(progression.urgent[5])
 
 
+def test_visible_onside_shoulder_target_is_urgent_forward_support():
+    context, state = _shape_fixture()
+    player_count = context.self_index.shape[0]
+    team_id = jnp.asarray((0, 0, 1, 1, 0, 0), dtype=jnp.int32)
+    same_team = team_id[None, :] == team_id[:, None]
+    eye = jnp.eye(player_count, dtype=jnp.bool_)
+    positions = jnp.asarray(
+        (
+            (-45.0, 0.0),
+            (8.0, 0.0),
+            (5.0, 20.0),
+            (25.0, -5.0),
+            (7.0, 0.0),
+            (6.0, -18.0),
+        ),
+        dtype=jnp.float32,
+    )
+    player_position = jnp.broadcast_to(
+        positions,
+        (player_count, player_count, 2),
+    )
+    # A second visible opponent makes x=23 m the observable offside line,
+    # while the ball at x=18 m leaves a meaningful legal forward pocket.
+    player_position = player_position.at[:, 3, 0].set(25.0)
+    player_position = player_position.at[:, 2, 0].set(23.0)
+    ball = jnp.broadcast_to(
+        jnp.asarray((18.0, 0.0, 0.11), dtype=jnp.float32),
+        (player_count, 3),
+    )
+    context = context._replace(
+        self_team=team_id,
+        same_team=same_team,
+        teammate=same_team & (~eye),
+        opponent=(~same_team),
+        self_position=positions,
+        player_position=player_position,
+        ball_position=ball,
+        ball_visible=jnp.ones((player_count,), dtype=jnp.bool_),
+    )
+    state = state._replace(
+        role=(
+            state.role.at[4]
+            .set(ROLE_CENTRE_FORWARD)
+            .at[5]
+            .set(ROLE_WIDE_FORWARD)
+        ),
+        current_possessor=jnp.asarray((1, 1, 1, 3, 1, 1), dtype=jnp.int32),
+    )
+    result = _shape_call(
+        context,
+        state,
+        phase=jnp.float32(0.0),
+        own_possession=team_id == 0,
+    )
+
+    assert bool(result.urgent[4])
+    assert bool(result.urgent[5])
+    assert float(result.target[4, 0]) > float(ball[4, 0])
+    assert float(result.target[5, 0]) > float(ball[5, 0])
+    assert not bool(result.urgent[1])
+
+    build_ball = ball.at[:, 0].set(jnp.float32(-8.0))
+    build_context = context._replace(ball_position=build_ball)
+    build = _shape_call(
+        build_context,
+        state,
+        phase=jnp.float32(0.0),
+        own_possession=team_id == 0,
+    )
+    assert bool(build.urgent[4])
+    assert not bool(build.urgent[5])
+
+
 def test_tactical_profiles_allocate_bounded_direct_pressers_and_keep_cover():
     context, state = _shape_fixture()
     player_count = context.self_index.shape[0]
