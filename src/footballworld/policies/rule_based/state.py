@@ -1,10 +1,10 @@
-"""Small recurrent state for the observation-only rule policy.
+"""Fixed-shape configuration and compatibility state for the rule policy.
 
-The policy owns tactical memory, not environment truth.  Every recurrent
-quantity therefore has an observer axis: a view-limited actor may remember
-what it previously observed, but it cannot inherit another actor's current
-possession observation.  Formation anchors are fixed slot semantics captured
-from each slot's own observation row at policy initialization.
+Formation anchors, roles, and the currently applied tactical plan are explicit
+policy configuration.  The remaining fields are retained for rollout API and
+checkpoint compatibility, but :class:`RuleBasedPolicy` rebuilds them from the
+current public observation before every decision.  A previous policy step can
+therefore never influence the next action through these dynamic fields.
 """
 
 from __future__ import annotations
@@ -225,6 +225,7 @@ def initialize_rule_policy_state(
         if team_tactical_plan is None
         else jnp.asarray(team_tactical_plan, dtype=jnp.int32)
     )
+
     if team_tactical_plan.shape != (2,):
         raise ValueError("team_tactical_plan must have shape (2,)")
     return RulePolicyState(
@@ -250,6 +251,110 @@ def initialize_rule_policy_state(
         current_possessor=current_possessor,
         previous_possessor=jnp.full((player_count,), NO_PLAYER, dtype=jnp.int32),
         counterpress_age=jnp.full((player_count,), INACTIVE_AGE, dtype=jnp.int32),
+        loose_chaser=jnp.full((player_count,), NO_PLAYER, dtype=jnp.int32),
+        planned_receiver=jnp.full((player_count,), NO_PLAYER, dtype=jnp.int32),
+        planned_receiver_id=jnp.full((player_count,), NO_PLAYER, dtype=jnp.int32),
+        planned_arrival=jnp.zeros((player_count, 2), dtype=jnp.float32),
+        planned_eta_ticks=jnp.zeros((player_count,), dtype=jnp.int32),
+        service_opportunity=jnp.zeros((player_count,), dtype=jnp.bool_),
+        secure_control_age=jnp.full((player_count,), INACTIVE_AGE, dtype=jnp.int32),
+        last_control_tick=jnp.asarray(observations.match.control_tick, dtype=jnp.int32),
+    )
+
+
+def observation_only_rule_policy_state(
+    static_state: RulePolicyState,
+    observations: Observation,
+    roster: RosterMetadata,
+) -> RulePolicyState:
+    """Rebuild every decision-time dynamic field from the current observation.
+
+    The existing state container remains an API-compatible home for the latest
+    explicit formation/tactical command. No earlier policy decision, planned
+    receiver, claimant, or elapsed-age latch is retained in the returned
+    decision input.
+    """
+
+    fresh = initialize_rule_policy_state(
+        observations,
+        roster,
+        team_tactical_plan=static_state.team_tactical_plan,
+    )
+    player_count = _player_count(observations, roster)
+    known = jnp.asarray(observations.possession.known, dtype=jnp.bool_)
+    possession_team = jnp.asarray(observations.possession.team, dtype=jnp.int32)
+    controlled = known & (possession_team != NO_TEAM)
+    control_age = jnp.maximum(
+        jnp.asarray(observations.possession.control_ticks, dtype=jnp.int32)
+        - jnp.int32(1),
+        jnp.int32(0),
+    )
+    possessor_flag = jnp.asarray(observations.players.possessor, dtype=jnp.bool_)
+    possessor_known = controlled & (jnp.sum(possessor_flag, axis=-1) == 1)
+    current_possessor = jnp.argmax(possessor_flag, axis=-1).astype(jnp.int32)
+
+    last_actor_flag = jnp.asarray(observations.players.last_actor, dtype=jnp.bool_)
+    last_actor_known = jnp.sum(last_actor_flag, axis=-1) == 1
+    last_actor = jnp.argmax(last_actor_flag, axis=-1).astype(jnp.int32)
+    last_actor_team = roster.team_id[last_actor]
+    last_contact = observations.possession.last_contact
+    pass_flight = (
+        known
+        & (~controlled)
+        & observations.ball.live
+        & (observations.restart.kind == RK_NONE)
+        & last_contact.known
+        & (last_contact.intent == INTENT_PASS)
+        & (last_contact.outcome == OUTCOME_RELEASE)
+        & last_contact.kick_applied
+        & last_actor_known
+        & (last_actor_team != NO_TEAM)
+    )
+    control_lineage = (
+        known
+        & (~controlled)
+        & observations.ball.live
+        & (observations.restart.kind == RK_NONE)
+        & last_contact.known
+        & (last_contact.intent == INTENT_CONTROL)
+        & (last_contact.outcome == OUTCOME_TRAP)
+        & (~last_contact.kick_applied)
+        & last_actor_known
+        & (last_actor_team != NO_TEAM)
+    )
+    visible_episode = controlled | pass_flight | control_lineage
+    episode_team = jnp.where(controlled, possession_team, last_actor_team).astype(
+        jnp.int32
+    )
+    episode_actor = jnp.where(
+        possessor_known,
+        current_possessor,
+        jnp.where(pass_flight, last_actor, jnp.int32(NO_PLAYER)),
+    ).astype(jnp.int32)
+
+    observer = observations.self_state.player_index.astype(jnp.int32)
+    own_team = roster.team_id[observer]
+    counterpress = (
+        known
+        & controlled
+        & (possession_team != own_team)
+        & (observations.possession.previous_team == own_team)
+    )
+    return fresh._replace(
+        formation_anchor=static_state.formation_anchor,
+        role=static_state.role,
+        team_tactical_plan=static_state.team_tactical_plan,
+        team_slot_index=static_state.team_slot_index,
+        team_slot_valid=static_state.team_slot_valid,
+        possession_team=jnp.where(visible_episode, episode_team, jnp.int32(NO_TEAM)),
+        possession_age=jnp.where(visible_episode, control_age, jnp.int32(INACTIVE_AGE)),
+        carrier_age=jnp.where(possessor_known, control_age, jnp.int32(INACTIVE_AGE)),
+        attack_phase=jnp.where(visible_episode, jnp.int32(0), jnp.int32(INACTIVE_AGE)),
+        current_possessor=jnp.where(
+            visible_episode, episode_actor, jnp.int32(NO_PLAYER)
+        ),
+        previous_possessor=jnp.full((player_count,), NO_PLAYER, dtype=jnp.int32),
+        counterpress_age=jnp.where(counterpress, control_age, jnp.int32(INACTIVE_AGE)),
         loose_chaser=jnp.full((player_count,), NO_PLAYER, dtype=jnp.int32),
         planned_receiver=jnp.full((player_count,), NO_PLAYER, dtype=jnp.int32),
         planned_receiver_id=jnp.full((player_count,), NO_PLAYER, dtype=jnp.int32),

@@ -102,7 +102,7 @@ from footballworld.policies.rule_based.state import (
     RulePolicyState,
     apply_tactical_observation,
     initialize_rule_policy_state,
-    update_rule_policy_state,
+    observation_only_rule_policy_state,
 )
 from footballworld.policies.rule_based.tactical_plan import (
     gather_tactical_profile,
@@ -454,7 +454,11 @@ def _service_decision_due(
     current_opportunity,
     previous_opportunity,
 ):
-    """Wake on ordinary cadence or one eligible service rising edge."""
+    """Return the legacy edge trigger for isolated compatibility tests.
+
+    The strict observation-only policy does not call this helper because
+    ``previous_opportunity`` is historical input.
+    """
 
     regular_due = jnp.asarray(regular_due, dtype=jnp.bool_)
     current_opportunity = jnp.asarray(current_opportunity, dtype=jnp.bool_)
@@ -842,12 +846,16 @@ class RuleBasedPolicy:
         *,
         with_pass_diagnostic: bool = False,
     ) -> PolicyEventStep | PolicyPassDiagnosticStep:
-        """Advance memory through either the lean or explicit diagnostic path."""
+        """Evaluate one frame without reading prior dynamic decision memory."""
 
         if type(with_pass_diagnostic) is not bool:
             raise TypeError("with_pass_diagnostic must be a static bool")
         _require_si_policy_inputs(observations, roster)
-        next_state = update_rule_policy_state(state, observations, roster)
+        # Only immutable formation/role configuration and the currently
+        # applied tactical command are read from ``state``. Every dynamic
+        # decision input is reconstructed from this observation, so stale or
+        # deliberately corrupted history cannot alter the emitted action.
+        next_state = observation_only_rule_policy_state(state, observations, roster)
         bounded_counterpress_age = jnp.where(
             (next_state.counterpress_age >= 0)
             & (next_state.counterpress_age < self.counterpress_window_ticks),
@@ -1615,15 +1623,20 @@ def make_rule_based_policy(
             carrier_tenure_ticks % dribble_touch_interval_ticks == 0
         )
 
-        # restart_age is recurrent observation-only memory. Subtracting it
-        # from the public clock reconstructs a chunk-invariant episode anchor;
-        # a fresh mid-restart initialization necessarily anchors "now" instead.
-        restart_age = jnp.maximum(_policy_state.restart_age[decision_row], 0)
-        restart_episode_start_tick = jnp.maximum(absolute_tick - restart_age, 0)
+        # The public countdown supplies a history-free restart identity. Its
+        # ceiling in control ticks stays fixed while an opened countdown falls
+        # by one physics decimation per policy frame. Before it opens, only
+        # approach movement is relevant and anchoring at the current frame is
+        # intentionally fail-closed.
+        restart_controls_remaining = (
+            observations.restart.substeps_remaining[decision_row]
+            + jnp.int32(env.timebase.decimation - 1)
+        ) // jnp.int32(env.timebase.decimation)
+        restart_release_tick = absolute_tick + restart_controls_remaining
         restart_decision_key = _stable_decision_key(
             base_key,
             _RESTART_DECISION_RANDOM_STREAM,
-            restart_episode_start_tick,
+            restart_release_tick,
             observations.restart.kind[decision_row],
             carrier_slot,
             roster.player_id[carrier_slot],
@@ -1803,15 +1816,10 @@ def make_rule_based_policy(
             & foot_contact_reachable[decision_row]
             & (progressive_ground_opportunity | cross_opportunity)
         )
-        # Keep the ordinary touch cadence, but wake once on the rising edge of
-        # a newly completion-qualified progressive pass or cross. The latch is
-        # observer-local and current-frame causal; a persistent option cannot
-        # turn this into a release on every control step.
-        carrier_decision_due = _service_decision_due(
-            carrier_regular_decision_due,
-            current_service_opportunity,
-            _policy_state.service_opportunity[decision_row],
-        )
+        # A rising-edge latch would require a previous frame. In the strict
+        # observation-only policy, service decisions use the ordinary public
+        # control-tenure cadence instead.
+        carrier_decision_due = carrier_regular_decision_due
         service_opportunity_by_row = (
             jnp.zeros((player_count,), dtype=jnp.bool_)
             .at[decision_row]

@@ -544,8 +544,8 @@ def test_controlled_possessor_gets_physical_space_without_retasking_others():
     assert float(np.dot(move[receiver], positions[receiver] - ball_xy)) < 0.0
 
 
-def test_loose_chaser_inside_control_reach_is_not_replaced_by_second_teammate():
-    """A slowing ground contest keeps one team claimant near the ball."""
+def test_loose_chaser_is_recomputed_from_current_frame_not_stale_claimant():
+    """Current interception geometry, not a previous claimant, owns the ball."""
 
     env = FootballWorld()
     reset, replacement, actor = _controlled_open_play(env)
@@ -554,9 +554,9 @@ def test_loose_chaser_inside_control_reach_is_not_replaced_by_second_teammate():
     team_rows = jnp.asarray(np.asarray(state.players.team_id) == team, dtype=jnp.bool_)
     positions = np.array(state.players.position, copy=True)
     velocities = np.zeros_like(np.asarray(state.players.velocity))
-    # Reproduce the relative geometry from seed 3 at 54:01.2. The retained
-    # claimant is 0.295 m from a slowing ground ball and moving away after the
-    # preceding contest; a second teammate is 0.228 m away on another side.
+    # Reproduce the relative geometry from seed 3 at 54:01.2. The stale
+    # claimant is 0.295 m from a slowing ground ball and moving away; a second
+    # teammate is 0.228 m away on another side.
     positions[actor] = (-5.321, -16.692)
     velocities[actor] = (-1.568, 0.676)
     positions[replacement] = (-5.596, -16.633)
@@ -605,16 +605,11 @@ def test_loose_chaser_inside_control_reach_is_not_replaced_by_second_teammate():
 
     np.testing.assert_array_equal(
         np.asarray(result.state.loose_chaser)[np.asarray(team_rows)],
-        np.full(np.count_nonzero(np.asarray(team_rows)), actor, dtype=np.int32),
+        np.full(np.count_nonzero(np.asarray(team_rows)), replacement, dtype=np.int32),
     )
-    assert int(np.asarray(result.action.intent[actor])) == INTENT_CONTROL
-    assert int(np.asarray(result.action.intent[replacement])) == INTENT_MOVE
-    decoded = result.action.decode()
-    replacement_ball_delta = np.asarray(
-        env.observe_all_si(rollout).ball.relative_state[replacement, :2]
-    )
-    replacement_move = np.asarray(decoded.move.direction[replacement])
-    assert float(np.dot(replacement_move, replacement_ball_delta)) < 0.0
+    intents = np.asarray(result.action.intent)
+    assert intents[replacement] == INTENT_CONTROL
+    assert np.count_nonzero(intents[np.asarray(team_rows)] == INTENT_CONTROL) == 1
 
 
 def test_stationary_loose_ball_is_challenged_only_when_opponent_can_contest():
