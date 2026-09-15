@@ -1081,9 +1081,26 @@ def decide_possession(
         1.0,
     )
     # Receiver and service selection above retain their completion-aware
-    # ordering. Scale only the macro utility so abundant safe outlets do not
-    # suppress every viable shot or carry in settled possession.
-    best_pass_value = best_pass_value * jnp.float32(config.pass_macro_value_scale)
+    # ordering. Scale only the macro utility so abundant ordinary outlets do
+    # not suppress every viable shot or carry in settled possession. Smoothly
+    # retain the prior scale for an exceptional progressive service: fourth-
+    # power completion makes this negligible for marginal lanes, and current
+    # target geometry supplies all progression evidence.
+    selected_progress_m = jnp.maximum(selected_service_target[0] - source[0], 0.0)
+    progressive_service_quality = jnp.power(best_pass_lane, 4.0) * jnp.clip(
+        selected_progress_m / progress_scale,
+        0.0,
+        1.0,
+    )
+    base_pass_scale = jnp.float32(config.pass_macro_value_scale)
+    retained_pass_scale = jnp.maximum(
+        base_pass_scale,
+        jnp.float32(config.high_quality_progressive_pass_macro_scale),
+    )
+    effective_pass_scale = base_pass_scale + progressive_service_quality * (
+        retained_pass_scale - base_pass_scale
+    )
+    best_pass_value = best_pass_value * effective_pass_scale
     dribble_key = (
         None
         if decision_key is None

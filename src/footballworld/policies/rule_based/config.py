@@ -79,9 +79,19 @@ class RulePolicyConfig:
     # Macro-action calibration priors. The pass scale changes only the
     # PASS-vs-SHOT/DRIBBLE choice after legal receiver/service ranking; it
     # does not make unsafe passes eligible or alter completion physics.
-    # The defaults are conservative tuning responses to the seed-29 matrix's
-    # high pass cadence and low shot cadence, not measured football constants.
-    pass_macro_value_scale: float = 0.80
+    # The observation-only seed-29 matrix produced 14.06 pass contacts per
+    # team-live-minute against the descriptive seven-match DFL guideline's
+    # 7.09. Smoke candidates at 0.65, 0.40, and 0.30 produced cadence 13.30,
+    # 10.99, and 9.20. The 0.30 candidate materially degraded box-shot and
+    # on-target shares, so 0.40 is the retained score-only calibration prior.
+    # It preserves the already completion-ranked receiver set and is not a
+    # measured football constant.
+    pass_macro_value_scale: float = 0.40
+    # Retain the previous 0.80 macro scale only at the smooth limit of a
+    # completion-certain, meaningfully progressive service. This prevents the
+    # cadence calibration from suppressing an exceptional forward outlet.
+    # The interpolation is a DESIGN_PRIOR, not a measured completion curve.
+    high_quality_progressive_pass_macro_scale: float = 0.80
     shot_value_gain: float = 1.15
     # Concentrate extra macro-choice weight on chances already rated highly by
     # the observation-only shot model. This is a DESIGN_PRIOR, not fitted xG.
@@ -312,6 +322,7 @@ class RulePolicyConfig:
             "advanced_backward_pass_penalty_gain",
             "progressive_pass_value_gain",
             "pass_macro_value_scale",
+            "high_quality_progressive_pass_macro_scale",
             "solo_carry_value_decay",
             "dribble_shape_drift_penalty",
             "turnover_shot_value_scale",
