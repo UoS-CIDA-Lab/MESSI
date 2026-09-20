@@ -7,6 +7,7 @@ point; this page routes readers to implemented environment and policy behavior.
 | Area | Entry point | Implementation owner |
 | --- | --- | --- |
 | Environment observations | [`environment/`](environment/) | `src/footballworld/environment/` |
+| Environment goal reward | [`environment/reward.md`](environment/reward.md) | `src/footballworld/environment/api.py` |
 | Player actions | [`action-space.md`](action-space.md) | `src/footballworld/core/`, `dynamics/`, `rules/` |
 | Model projection | [`model-output.md`](model-output.md) | `src/footballworld/environment/normalization.py` |
 | Match clock | [`match-clock.md`](match-clock.md) | `src/footballworld/environment/episode.py` |

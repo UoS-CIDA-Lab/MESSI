@@ -289,9 +289,11 @@ It presents each delta independently and preserves source cautions in
 descriptive; coefficient decisions require held-out multi-seed intervals.
 
 The initial report does not calculate xG, xT, PPDA, policy utility/logits,
-reward, pass completion, or role-fit scores. Those require an explicit model or
-a separately versioned inference contract; naming them from weaker evidence
-would overstate what the raw replay proves.
+dense shaped reward, pass completion, or role-fit scores. Those require an
+explicit model or a separately versioned inference contract; naming them from
+weaker evidence would overstate what the raw replay proves. The environment's
+zero-sum goal reward is already present in step telemetry, but this report does
+not aggregate it into a separate metric because it is identical to score delta.
 
 ## Producing a replay
 

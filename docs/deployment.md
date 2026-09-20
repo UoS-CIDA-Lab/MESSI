@@ -41,6 +41,12 @@ Choose the smallest transition that provides the required output.
 | Replay capture | `make_event_rollout` | Actions and exact eventful results |
 | Managed match | managed rollout interfaces | Low-frequency manager transactions |
 
+All player-step profiles expose `reward` as a fixed `float32[2]` zero-sum team
+vector. A goal gives the scoring team `+1` and the conceding team `-1`; all
+other transitions return zero. `make_rollout` stacks this as `[T, 2]`.
+The complete semantics and compatibility notes are in the
+[reward contract](environment/reward.md).
+
 Manager policy work, rendering, encoding, dataset conversion, and validation
 remain outside the 80 Hz physics transition. This separation prevents optional
 host work from enlarging the training executable.

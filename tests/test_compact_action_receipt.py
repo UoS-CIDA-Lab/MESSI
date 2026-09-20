@@ -79,6 +79,9 @@ def test_compact_action_receipt_matches_eventful_result_without_events_field() -
 
     assert isinstance(compact, StepWithActionReceiptResult)
     assert "events" not in compact._fields
+    assert compact.reward.shape == (2,)
+    assert compact.reward.dtype.name == "float32"
+    assert (compact.reward == eventful.reward).all()
     assert compact.action_trace._fields == eventful.action_trace._fields
     assert compact.action_receipt._fields == eventful.action_receipt._fields
     for left, right in zip(

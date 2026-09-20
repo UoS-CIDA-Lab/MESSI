@@ -399,6 +399,11 @@ the observation, stochastic decision, and authoritative transaction in a
 separate low-frequency graph. Its output state is the one supplied to the next
 managed chunk.
 
+`execute_step_command(...).reward` forwards the player transition's fixed
+zero-sum team goal reward unchanged. The management boundary does not invent,
+reshape, discount, or attribute player reward; see the
+[reward contract](environment/reward.md).
+
 ## Rule-based substitutions
 
 The shipped manager also proposes low-frequency substitutions. Its scheduling

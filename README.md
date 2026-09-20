@@ -140,6 +140,7 @@ env = FootballWorld(match=MatchConfig(minimum_team_players=(2, 2)))
 reset = env.reset(home, away, key=jax.random.key(0))
 action = neutral_action(player_count=4)
 result = env.step(reset.rollout, reset.setup, action, jax.random.key(1))
+team_rewards = result.reward  # float32[2]: scorer +1, conceding team -1
 
 observations = env.observe_all(result.rollout)
 ```
@@ -147,7 +148,9 @@ observations = env.observe_all(result.rollout)
 `env.step` is the compact training transition. Use
 `env.step_with_events` only when exact substep telemetry is required for
 evaluation, replay, or sampled logging. The two paths share the authoritative
-transition and are compiled separately.
+transition and are compiled separately. Every player-step interface returns the
+same zero-sum goal reward: `[+1, -1]` for a team-0 goal, `[-1, +1]` for a
+team-1 goal, and `[0, 0]` otherwise.
 
 </details>
 

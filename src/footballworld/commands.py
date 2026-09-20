@@ -39,6 +39,12 @@ class TransitionResult:
     manager: ManagerCommandStepResult
 
     @property
+    def reward(self) -> jax.Array:
+        """Return the player transition's zero-sum per-team goal reward."""
+
+        return self.player.reward
+
+    @property
     def rollout(self) -> Rollout:
         """Return the authoritative post-management rollout."""
 

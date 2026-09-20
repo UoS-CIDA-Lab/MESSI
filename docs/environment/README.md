@@ -13,6 +13,7 @@ elsewhere.
 | Player action semantics and legality | [Action space](../action-space.md) | [`action.py`](../../src/footballworld/core/action.py), [`action.py`](../../src/footballworld/dynamics/action.py), [`action_legality.py`](../../src/footballworld/rules/action_legality.py) |
 | Manager observation, commands, and timing | [Manager command](../manager-command.md) | [`management.py`](../../src/footballworld/environment/management.py), [`manager.py`](../../src/footballworld/policies/manager.py), [`managed.py`](../../src/footballworld/managed.py) |
 | Player observations, visibility, and normalization boundary | [Observation](observation.md) | [`observation.py`](../../src/footballworld/environment/observation.py), [`normalization.py`](../../src/footballworld/environment/normalization.py) |
+| Zero-sum team goal reward | [Reward](reward.md) | [`api.py`](../../src/footballworld/environment/api.py), [`episode.py`](../../src/footballworld/environment/episode.py) |
 
 The next environment areas will be migrated here one at a time: episode and
 clock semantics, action availability, initialization, roster sampling,

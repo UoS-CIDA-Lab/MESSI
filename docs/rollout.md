@@ -23,8 +23,10 @@ path. The compiled rollout has no per-agent dictionary adapter:
 <code>SIObservation</code> and <code>IntentAction</code> remain fixed-shape
 PyTrees, avoiding Python dict assembly and preserving categorical intent as a
 separate integer leaf.
-Reward calculation, checkpoint loading, and MARL framework adapters remain
-outside this environment rollout contract.
+The environment supplies only the default zero-sum goal reward in every stored
+step (`steps.reward` has shape `[T,2]`). Dense shaping, discounting, per-player
+credit assignment, checkpoint loading, and MARL framework adapters remain
+outside this rollout contract; see the [reward contract](environment/reward.md).
 
 The low-frequency <code>refresh_policy_state</code> and
 <code>apply_management_tactics</code> helpers are still explicitly

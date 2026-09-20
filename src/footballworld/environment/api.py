@@ -218,6 +218,7 @@ class StepResult(NamedTuple):
 
     rollout: Rollout
     outcome: RuleOutcome
+    reward: jax.Array
     contact_attempted: jax.Array
     kick_applied: jax.Array
     restart_opened: jax.Array
@@ -235,6 +236,7 @@ class StepWithEventsResult(NamedTuple):
 
     rollout: Rollout
     outcome: RuleOutcome
+    reward: jax.Array
     contact_attempted: jax.Array
     kick_applied: jax.Array
     restart_opened: jax.Array
@@ -259,6 +261,7 @@ class StepWithActionReceiptResult(NamedTuple):
 
     rollout: Rollout
     outcome: RuleOutcome
+    reward: jax.Array
     contact_attempted: jax.Array
     kick_applied: jax.Array
     restart_opened: jax.Array
@@ -278,6 +281,7 @@ class _StepWithEventsAndRenderSamplesResult(NamedTuple):
 
     rollout: Rollout
     outcome: RuleOutcome
+    reward: jax.Array
     contact_attempted: jax.Array
     kick_applied: jax.Array
     restart_opened: jax.Array
@@ -292,6 +296,18 @@ class _StepWithEventsAndRenderSamplesResult(NamedTuple):
     action_receipt: ActionReceipt
     events: FrameEvents
     render_samples: Rollout
+
+
+def _goal_reward(outcome: RuleOutcome) -> jax.Array:
+    """Return the default zero-sum per-team goal reward.
+
+    The rule engine remains authoritative for scoring. This adapter only
+    derives a fixed-shape float32 reward from its integer score delta. A goal
+    gives the scoring team ``+1`` and the conceding team ``-1`` by default.
+    """
+
+    scored = jnp.asarray(outcome.score_delta, dtype=jnp.float32)
+    return scored - jnp.flip(scored, axis=0)
 
 
 class SubstitutionStepResult(NamedTuple):
@@ -1026,6 +1042,7 @@ class FootballWorld:
         return StepResult(
             rollout=Rollout(state=frame.state, offside=frame.offside_state),
             outcome=episode.outcome,
+            reward=_goal_reward(episode.outcome),
             contact_attempted=frame.contact_attempted,
             kick_applied=frame.kick_applied,
             restart_opened=frame.restart_opened,
@@ -1130,6 +1147,7 @@ class FootballWorld:
         return StepWithActionReceiptResult(
             rollout=result.rollout,
             outcome=result.outcome,
+            reward=result.reward,
             contact_attempted=result.contact_attempted,
             kick_applied=result.kick_applied,
             restart_opened=result.restart_opened,
@@ -1188,6 +1206,7 @@ class FootballWorld:
         fields = {
             "rollout": Rollout(state=frame.state, offside=frame.offside_state),
             "outcome": episode.outcome,
+            "reward": _goal_reward(episode.outcome),
             "contact_attempted": frame.contact_attempted,
             "kick_applied": frame.kick_applied,
             "restart_opened": frame.restart_opened,
