@@ -94,7 +94,25 @@ def canonical_restart_spot(
     x_sign = jnp.where(incident_position[0] >= 0.0, 1.0, -1.0)
     y_sign = jnp.where(incident_position[1] >= 0.0, 1.0, -1.0)
 
-    ordinary = incident_position.at[2].set(radius)
+    # Law 13 locates a free kick at the offence. An offence can occur with the
+    # offender past a boundary line, and an unclamped spot then leaves the ball
+    # off the field of play -- which the restart layout audit cannot satisfy,
+    # because the one allowance for a taker standing off the pitch
+    # (``external_taker``) is itself gated on the ball being inside it. The
+    # audit then rejects every candidate layout and fails closed, the taker
+    # never approaches, the forced-release countdown never starts, and the
+    # match hangs with no recovery. Every other restart kind already lands on
+    # or inside the field; bringing the free kick to the nearest point on the
+    # boundary restores that invariant and matches how an off-field offence is
+    # actually restarted.
+    ordinary = jnp.asarray(
+        [
+            jnp.clip(incident_position[0], -half_length, half_length),
+            jnp.clip(incident_position[1], -half_width, half_width),
+            radius,
+        ],
+        dtype=dtype,
+    )
     centre = jnp.asarray([0.0, 0.0, radius], dtype=dtype)
     throw_in = jnp.asarray(
         [

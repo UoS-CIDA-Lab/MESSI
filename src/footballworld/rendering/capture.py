@@ -428,12 +428,32 @@ def _terminal_classification(
     dead = int(np.asarray(state.dead_ball_control_ticks))
     first_half_extension = int(np.asarray(state.first_half_live_extension_ticks))
     regulation_elapsed = max(control - dead - first_half_extension, 0)
-    fulltime_tick, _ = env.match.clock_ticks(env.timebase)
+    fulltime_tick, halftime_tick = env.match.clock_ticks(env.timebase)
     penalty_incomplete = kind == RK_PENALTY or bool(
         np.asarray(state.penalty_completion_active)
     )
     regulation_complete = regulation_elapsed >= fulltime_tick and not penalty_incomplete
     wall_clock_exhausted = control >= MAX_WALL_CONTROL_TICKS
+
+    # A period runs past its regulation length only by the statutory added
+    # time, and ends when that budget is gone. This mirrors the environment's
+    # own `added_time_limit_reached` predicate in episode.py; without it, a
+    # match that ended exactly as the laws require was recorded as
+    # "unknown_environment_done", which asserts the cause is unknown when the
+    # environment knows it precisely. A policy that cannot accumulate ninety
+    # minutes of live play inside the added-time ceiling reaches this ending
+    # every match, so the distinction is not hypothetical.
+    maximum_added_ticks = env.match.maximum_added_time_ticks(env.timebase)
+    first_half_wall_end = int(np.asarray(state.first_half_wall_end_tick))
+    if env.match.halftime_enabled:
+        second_half_wall = control - max(first_half_wall_end, 0)
+        added_time_limit_reached = (
+            first_half_wall_end >= 0
+            and second_half_wall >= fulltime_tick - halftime_tick + maximum_added_ticks
+        )
+    else:
+        added_time_limit_reached = control >= fulltime_tick + maximum_added_ticks
+    added_time_limit_reached = added_time_limit_reached and not penalty_incomplete
 
     # Match the environment status families, but prefer fail-closed causes if
     # more than one predicate becomes true on the same terminal frame.
@@ -445,6 +465,8 @@ def _terminal_classification(
         basis = "wall_clock_exhausted"
     elif regulation_complete:
         basis = "regulation_complete"
+    elif added_time_limit_reached:
+        basis = "added_time_limit_reached"
     else:
         basis = "unknown_environment_done"
     return basis, basis == "regulation_complete"
@@ -564,9 +586,9 @@ class _RestartWatchdog:
         controls = (delay + env.timebase.decimation - 1) // env.timebase.decimation
         return cls(ordinary_control_steps=max(1, controls) + 1)
 
-    def check(self, rollout: Rollout, *, done: bool) -> None:
+    def violation(self, rollout: Rollout, *, done: bool) -> str | None:
         if done:
-            return
+            return None
         state = rollout.state
         tick, kind, team, taker, opened, remaining, ready = jax.device_get(
             (
@@ -581,7 +603,7 @@ class _RestartWatchdog:
         )
         kind = int(np.asarray(kind))
         if kind <= RK_NONE or kind >= RESTART_COUNT:
-            return
+            return None
         tick = int(np.asarray(tick))
         opened = int(np.asarray(opened))
         remaining = int(np.asarray(remaining))
@@ -592,14 +614,18 @@ class _RestartWatchdog:
             f"remaining={remaining}, layout_ready={ready}"
         )
         if remaining <= 0 and not ready:
-            raise RuntimeError(f"expired restart has no legal layout: {detail}")
+            return f"expired restart has no legal layout: {detail}"
         if opened < 0:
-            raise RuntimeError(f"active restart has no opening tick: {detail}")
+            return f"active restart has no opening tick: {detail}"
         limit = 1 if kind == RK_KICKOFF else self.ordinary_control_steps
         if tick - opened > limit:
-            raise RuntimeError(
-                f"restart did not release by its configured gate: {detail}"
-            )
+            return f"restart did not release by its configured gate: {detail}"
+        return None
+
+    def check(self, rollout: Rollout, *, done: bool) -> None:
+        violation = self.violation(rollout, done=done)
+        if violation is not None:
+            raise RuntimeError(violation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1954,6 +1980,7 @@ def render_managed_event_match(
     render_video: bool = True,
     exact_actions: bool = False,
     match_index: int = 0,
+    record_restart_watchdog_violations: bool = False,
 ) -> ManagedEventMatchRenderResult:
     """Render one managed match from fixed exact-event chunks until done.
 
@@ -1998,6 +2025,8 @@ def render_managed_event_match(
         raise ValueError("report-only capture cannot verify a video")
     if type(exact_actions) is not bool:
         raise TypeError("exact_actions must be bool")
+    if type(record_restart_watchdog_violations) is not bool:
+        raise TypeError("record_restart_watchdog_violations must be bool")
     if style is not None and type(style) is not RenderStyle:
         raise TypeError("style must be RenderStyle or None")
 
@@ -2073,6 +2102,8 @@ def render_managed_event_match(
     decisions = 0
     done = False
     zero_progress_boundaries = 0
+    restart_watchdog_violations: list[str] = []
+    seen_restart_watchdog_violations: set[str] = set()
 
     with (
         staged_output_directory(destination) as staging,
@@ -2346,7 +2377,18 @@ def render_managed_event_match(
                     maximum_steps=maximum_steps,
                     steps_executed=executed,
                 )
-                watchdog.check(current.rollout, done=boundary_terminal)
+                if record_restart_watchdog_violations:
+                    violation = watchdog.violation(
+                        current.rollout, done=boundary_terminal
+                    )
+                    if (
+                        violation is not None
+                        and violation not in seen_restart_watchdog_violations
+                    ):
+                        seen_restart_watchdog_violations.add(violation)
+                        restart_watchdog_violations.append(violation)
+                else:
+                    watchdog.check(current.rollout, done=boundary_terminal)
                 if boundary_terminal:
                     break
                 if progressed == 0:
@@ -2382,6 +2424,15 @@ def render_managed_event_match(
             completion["event_budget_exhausted_count"] = event_budget_exhausted_count
             completion["event_budget_exhausted_records"] = (
                 event_budget_exhausted_records
+            )
+            completion["restart_watchdog_mode"] = (
+                "record" if record_restart_watchdog_violations else "raise"
+            )
+            completion["restart_watchdog_violation_count"] = len(
+                restart_watchdog_violations
+            )
+            completion["restart_watchdog_violations"] = (
+                restart_watchdog_violations
             )
             source_receipt = _source_stability_receipt(provenance)
             completion["production_source"] = source_receipt

@@ -126,6 +126,7 @@ def intent_availability_hint(
         observer,
     )
     restart_taker = _observer_slot(observation.players.restart_taker, observer)
+    release_taker = _observer_slot(observation.players.release_taker, observer)
     observer_active = (
         observer_valid
         & _observer_slot(observation.players.on_pitch, observer)
@@ -274,7 +275,12 @@ def intent_availability_hint(
     kind = observation.restart.kind
     open_play = kind == RK_NONE
     valid_restart = (kind > RK_NONE) & (kind < RESTART_COUNT)
-    open_contact = observable_candidate & open_play
+    retouch_prohibited = (
+        observation.restart_release.active
+        & observation.restart_release.untouched
+        & release_taker
+    )
+    open_contact = observable_candidate & open_play & (~retouch_prohibited)
     restart_release = observable_candidate & valid_restart & restart_taker
     ordinary_kick_restart = (
         restart_release & (kind != RK_THROWIN) & (kind != RK_GK_HOLD)

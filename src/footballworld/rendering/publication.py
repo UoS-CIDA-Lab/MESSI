@@ -282,9 +282,26 @@ def open_published_replay(
         sample_fps=sample_fps,
     )
     expected_video = (expected_samples + sample_every - 1) // sample_every
+    # A goal adds presentation frames after the sampled grid. The spooler that
+    # writes the video already accounts for them and records the count, so a
+    # publication check that omits the term rejects every match that scores --
+    # which is most full matches, and made the match report unobtainable for
+    # exactly the population the closed-loop criterion is read from.
+    #
+    # The term is added only to the frame-count comparison. The playback rate
+    # is still required to preserve the sampled duration, so the fps check
+    # below keeps reading the grid rather than the published total.
+    presentation_delta = metadata.get("presentation_frame_delta", 0)
+    if (
+        isinstance(presentation_delta, bool)
+        or type(presentation_delta) is not int
+        or presentation_delta < 0
+    ):
+        raise ValueError("published replay metadata has invalid presentation delta")
+    expected_published = expected_video + presentation_delta
     if metadata.get("video_sample_frame_count") != expected_samples:
         raise ValueError("published video sample count disagrees with source duration")
-    if output["video_frame_count"] != expected_video:
+    if output["video_frame_count"] != expected_published:
         raise ValueError("published video frame count disagrees with its sample grid")
     expected_video_fps = expected_video * sample_fps / expected_samples
     if not math.isclose(

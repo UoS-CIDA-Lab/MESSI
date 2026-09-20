@@ -8,7 +8,7 @@ import numpy as np
 
 from footballworld import FootballWorld, Player, PlayerProfile, intent_availability_hint
 from footballworld.core.action import IntentAction
-from footballworld.core.constants import NO_PLAYER, NO_TEAM, RK_NONE
+from footballworld.core.constants import NO_PLAYER, NO_TEAM, RK_KICKOFF, RK_NONE
 from footballworld.core.contact import (
     INTENT_CHALLENGE,
     INTENT_CLEAR,
@@ -427,6 +427,40 @@ def test_goalkeeper_hand_envelope_only_opens_control_and_clear_beyond_carry_reac
     assert not bool(availability[INTENT_PASS])
     assert not bool(availability[INTENT_SHOT])
     assert not bool(availability[INTENT_CHALLENGE])
+
+
+def test_release_taker_cannot_request_prohibited_second_contact_eager_and_jit():
+    env, rollout, actor = _open_play_at_distance(1.0)
+    state = rollout.state._replace(
+        restart_release=rollout.state.restart_release._replace(
+            active=jnp.bool_(True),
+            untouched=jnp.bool_(True),
+            kind=jnp.int32(RK_KICKOFF),
+            team=rollout.state.players.team_id[actor],
+            taker=jnp.int32(actor),
+        )
+    )
+    rollout = rollout._replace(state=state)
+    observations = env.observe_all_si(rollout)
+    roster = env.roster_metadata_si(rollout)
+
+    eager = intent_availability_hint(observations, roster)
+    compiled = jax.jit(intent_availability_hint)(observations, roster)
+
+    np.testing.assert_array_equal(
+        eager[actor], np.arange(eager.shape[-1]) == INTENT_MOVE
+    )
+    np.testing.assert_array_equal(compiled, eager)
+
+    touched = rollout._replace(
+        state=state._replace(
+            restart_release=state.restart_release._replace(untouched=jnp.bool_(False))
+        )
+    )
+    after_touch = intent_availability_hint(
+        env.observe_all_si(touched), env.roster_metadata_si(touched)
+    )
+    assert bool(after_touch[actor, INTENT_CONTROL])
 
 
 def test_batched_environment_rosters_broadcast_before_observer_axis_under_jit():

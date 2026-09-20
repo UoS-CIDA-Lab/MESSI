@@ -1,11 +1,16 @@
+import inspect
 import json
 from pathlib import Path
+
+import pytest
 
 from footballworld.rendering.capture import (
     _capture_boundary_terminal,
     _managed_capture_chunk_kernel,
     _replace_last_render_sample,
+    _RestartWatchdog,
     _WindowSink,
+    render_managed_event_match,
 )
 from footballworld.rendering.window import ReplayWindow
 
@@ -121,3 +126,21 @@ def test_report_only_sink_skips_mp4_and_preserves_source_grid(tmp_path):
     assert sink.spool.receipt["video_fps"] == 10.0
     assert sink.spool.receipt["sample_every"] == 1
     assert sink.spool.receipt["video_verification"] == "not_requested"
+
+
+def test_restart_watchdog_remains_fail_closed_by_default(monkeypatch):
+    watchdog = _RestartWatchdog(ordinary_control_steps=1)
+    marker = object()
+    monkeypatch.setattr(
+        _RestartWatchdog,
+        "violation",
+        lambda self, rollout, *, done: "restart violation",
+    )
+
+    with pytest.raises(RuntimeError, match="restart violation"):
+        watchdog.check(marker, done=False)
+
+    parameter = inspect.signature(render_managed_event_match).parameters[
+        "record_restart_watchdog_violations"
+    ]
+    assert parameter.default is False
