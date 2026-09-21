@@ -360,6 +360,15 @@ so a small group near a corner is not placed at one edge of a nominal
 sixteen-player semicircle. The third candidate is a deterministic all-movable
 emergency layout. Its displacement cost keeps it unselected whenever either
 local candidate is valid; its purpose is bounded liveness, not tactical style.
+Kick-off is the narrow exception to the displacement preference: if projecting
+the current post-goal positions into the lawful halves creates player
+collisions, the environment selects one spread emergency team shape atomically
+instead of accepting centre-line rows separated only by the 0.60 m collision
+spacing. The goalkeeper, defensive, midfield, and forward depths and widths
+are derived from the goal area, penalty area, and centre circle. The 4-3-3
+slot split is an authored emergency-layout prior, not a measured football
+constant and not a replacement for the manager's current formation. A legal
+authored opening or half-time formation remains unchanged.
 At a goal- or touch-line restart, the designated taker may stand just outside
 the field only at the exact ball-relative release pose. The ball must itself
 be on or inside the field boundary, so malformed remote actors or replay balls
@@ -393,8 +402,9 @@ and identity checks to bound compilation and avoid hidden shared plans.
 Restart projections must repair the collision component they create. The hot
 graph uses a fixed candidate set rather than iterative global free-position
 search, and it never revives a dead ball without the mandatory kick when a
-timer expires. The candidate count,
-recurrent state, and release timing therefore remain unchanged.
+timer expires. The kick-off shape changes only candidate selection and the
+coordinates of the existing third candidate; the candidate count, recurrent
+state, and release timing therefore remain unchanged.
 
 ## Management and roster identity
 

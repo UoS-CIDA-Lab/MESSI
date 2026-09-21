@@ -866,59 +866,91 @@ def _project_one(
 def _kickoff_global_layout(
     state: State,
     position: jax.Array,
-    actor: jax.Array,
     pinned: jax.Array,
-    restart_team: jax.Array,
-    restart_direction: jax.Array,
     stadium: Stadium,
     body: BodyContact,
 ) -> jax.Array:
-    """Pack a whole kickoff deterministically when local projection collides."""
+    """Return a legal geometry-derived 4-3-3 emergency kick-off shape.
+
+    This remains the final fixed-shape liveness candidate, but it must not
+    collapse both teams into collision-clearance rows around the centre mark.
+    The line depths and widths below come only from the represented pitch
+    markings.  The 4-3-3 slot split is an authored emergency-layout prior, not
+    a measured football constant or the manager's current formation.
+    """
 
     active = state.players.active
     movable = active & (~pinned)
-    same_team = state.players.team_id == restart_team
-    restart_subject = movable & same_team
-    opponent_subject = movable & (~same_team)
-    restart_rank = jnp.cumsum(restart_subject.astype(jnp.int32)) - jnp.int32(1)
-    opponent_rank = jnp.cumsum(opponent_subject.astype(jnp.int32)) - jnp.int32(1)
-    rank = jnp.where(same_team, restart_rank, opponent_rank)
-    slot = jnp.mod(rank, jnp.int32(_KICKOFF_PACKING_LANES)).astype(position.dtype)
-    layer = (rank // jnp.int32(_KICKOFF_PACKING_LANES)).astype(position.dtype)
+    outfield = movable & (~state.players.is_goalkeeper)
+    team_0_rank = jnp.cumsum(
+        (outfield & (state.players.team_id == TEAM_0)).astype(jnp.int32)
+    ) - jnp.int32(1)
+    team_1_rank = jnp.cumsum(
+        (outfield & (state.players.team_id == TEAM_1)).astype(jnp.int32)
+    ) - jnp.int32(1)
+    rank = jnp.where(state.players.team_id == TEAM_0, team_0_rank, team_1_rank)
 
-    spacing = jnp.asarray(
-        body.shoulder_width_m + 0.5 * body.torso_depth_m,
-        dtype=position.dtype,
-    )
+    defender = rank < jnp.int32(4)
+    midfielder = (rank >= jnp.int32(4)) & (rank < jnp.int32(7))
+    line_slot = jnp.where(
+        defender,
+        rank,
+        jnp.where(midfielder, rank - jnp.int32(4), rank - jnp.int32(7)),
+    ).astype(position.dtype)
+
+    dtype = position.dtype
     maximum_support = jnp.asarray(
         0.5 * body.shoulder_width_m,
-        dtype=position.dtype,
+        dtype=dtype,
     )
-    actor_depth = jnp.sum(
-        jnp.where(
-            actor,
-            -restart_direction * position[:, 0],
-            jnp.zeros(position.shape[0], dtype=position.dtype),
+    front_depth = (
+        jnp.asarray(stadium.center_circle_radius, dtype=dtype)
+        + maximum_support
+        + jnp.asarray(
+            body.shoulder_width_m + 0.5 * body.torso_depth_m,
+            dtype=dtype,
         )
     )
-    restart_base_depth = (
-        actor_depth + jnp.asarray(body.shoulder_width_m, dtype=position.dtype) + spacing
+    midfield_depth = jnp.maximum(
+        jnp.asarray(2.0 * stadium.center_circle_radius, dtype=dtype),
+        front_depth,
     )
-    opponent_base_depth = (
-        jnp.asarray(stadium.center_circle_radius, dtype=position.dtype)
-        + maximum_support
-        + spacing
+    defender_depth = jnp.maximum(
+        jnp.asarray(stadium.half_length - stadium.penalty_area_length, dtype=dtype),
+        midfield_depth,
     )
     depth = jnp.where(
-        same_team,
-        restart_base_depth + layer * spacing,
-        opponent_base_depth + layer * spacing,
+        defender,
+        defender_depth,
+        jnp.where(midfielder, midfield_depth, front_depth),
     )
+
+    # Four defenders span the penalty-area width; the two three-player lines
+    # span twice the centre-circle radius. Both widths are already represented
+    # stadium geometry rather than additional football coefficients.
+    defender_lateral = (line_slot - jnp.asarray(1.5, dtype=dtype)) * jnp.asarray(
+        stadium.penalty_area_width / 3.0, dtype=dtype
+    )
+    three_player_lateral = (line_slot - jnp.asarray(1.0, dtype=dtype)) * jnp.asarray(
+        2.0 * stadium.center_circle_radius, dtype=dtype
+    )
+    lateral = jnp.where(defender, defender_lateral, three_player_lateral)
+
     team_direction = state.attack_direction[state.players.team_id]
-    lateral = (
-        slot - 0.5 * jnp.asarray(_KICKOFF_PACKING_LANES - 1, position.dtype)
-    ) * spacing
-    packed = jnp.stack((-team_direction * depth, lateral), axis=-1)
+    outfield_position = jnp.stack((-team_direction * depth, lateral), axis=-1)
+    goalkeeper_depth = jnp.asarray(
+        stadium.half_length - stadium.goal_area_length,
+        dtype=dtype,
+    )
+    goalkeeper_position = jnp.stack(
+        (-team_direction * goalkeeper_depth, jnp.zeros_like(team_direction)),
+        axis=-1,
+    )
+    packed = jnp.where(
+        state.players.is_goalkeeper[:, None],
+        goalkeeper_position,
+        outfield_position,
+    )
     return jnp.where(movable[:, None], packed, position)
 
 
@@ -1162,10 +1194,7 @@ def _resolve_restart_constraints(
         kickoff_layout = _kickoff_global_layout(
             state,
             position,
-            actor,
             pinned,
-            restart_team,
-            restart_direction,
             stadium,
             body,
         )
@@ -1265,7 +1294,21 @@ def _resolve_restart_constraints(
         )
     )(layouts)
     cost = jnp.sum((layouts - state.players.position[None, :, :]) ** 2, axis=(1, 2))
-    choice = jnp.argmin(jnp.where(layout_valid, cost, jnp.inf))
+    # A post-goal half-space projection can put many previously separated
+    # players onto the halfway line.  Treating the smallest subsequent
+    # displacement as the best layout then produces legal but visibly packed
+    # rows around the centre mark.  When that kick-off projection collided and
+    # the geometry-derived team shape is valid, prefer it as one atomic repair.
+    kickoff_shape_required = (state.restart.kind == RK_KICKOFF) & jnp.any(
+        colliding & active & (~pinned)
+    )
+    prefer_special = kickoff_shape_required & layout_valid[2]
+    preferred_cost = jnp.where(
+        prefer_special,
+        jnp.where(jnp.arange(layouts.shape[0]) == 2, cost, jnp.inf),
+        cost,
+    )
+    choice = jnp.argmin(jnp.where(layout_valid, preferred_cost, jnp.inf))
     valid = jnp.any(layout_valid)
     return jnp.where(valid, layouts[choice], position), valid
 

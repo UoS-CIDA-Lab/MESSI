@@ -387,6 +387,7 @@ the 22 public stamina fields as the complete model.
 | General half-turn slots | 16 | NUMERICAL | KEEP | Static compiled angular resolution. |
 | Corner quadrant slots | 8 | NUMERICAL | KEEP | Static compiled angular resolution. |
 | Both slot offsets | 0.5 slot | NUMERICAL | KEEP | Avoids exact sector boundaries. |
+| Kick-off emergency line split | 4-3-3 | DESIGN_PRIOR | KEEP | Used only when lawful-half projection creates collisions. Depths and widths reuse represented goal-area, penalty-area, and centre-circle geometry; this is not a measured formation constant or the manager's current shape. |
 | Reprojection/wall tolerance | 8e-6 m | NUMERICAL | KEEP | `8*GEOMETRY_EPS`; audit tolerance, not law slack. |
 | Contact/aerial/loss timers | nearest substep, min 1 | NUMERICAL | KEEP | `max(1,round(seconds/dt))`. |
 | Challenge recovery | nearest substep, min 1 | NUMERICAL | KEEP | `rint` after distance interpolation; not floor. |
@@ -493,8 +494,10 @@ These substitution settings are runtime compatibility priors. Their source decis
   data; provider duel rates are not simulator attempt rates.
 - All public short-stamina fields plus hidden saturation caps require one
   repeated-sprint trajectory fit.
-- Restart packing spacing/radius/step require adversarial formation fixtures
-  plus compile/runtime profiling.
+- Non-kick-off restart packing spacing/radius/step still require broader
+  adversarial formation fixtures. Kick-off collision projection now has a
+  focused 11-v-11 adversarial fixture and compile/runtime profiling, but its
+  emergency 4-3-3 split remains an authored design prior.
 
 Immediate provenance work: serialize the complete config and an
 evidence-manifest digest with every experiment, and require field-addressed,
