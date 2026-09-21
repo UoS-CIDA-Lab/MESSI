@@ -1,0 +1,52 @@
+{
+  "schema": "messi.readme-highlight/1",
+  "source_revision": "2c1ba21736d15ab5ccb44c5e94f3423d29ab0a99",
+  "source_clean_and_stable_during_capture": true,
+  "full_duration_complete": true,
+  "terminal_basis": "regulation_complete",
+  "steps_executed": 57216,
+  "seed": 29,
+  "team_0_plan": "catenaccio",
+  "team_1_plan": "salida_lavolpiana",
+  "physics_hz": 80,
+  "decision_hz": 10,
+  "render_hz": 20,
+  "render_window_simulation_seconds": [
+    947.2,
+    957.2
+  ],
+  "source_render": {
+    "width_px": 1920,
+    "height_px": 1080,
+    "frame_count": 239,
+    "duration_seconds": 11.95,
+    "goal_presentation_pause_included": true,
+    "fully_decoded_before_publication": true,
+    "sha256": "f4028f1083ea8d37246ffd52d2796d54df776b6cf41ec5eab8f434022ac8772c"
+  },
+  "final_trim": {
+    "source_frame_start_inclusive": 39,
+    "source_frame_end_exclusive": 239,
+    "frame_count": 200,
+    "duration_seconds": 10.0
+  },
+  "outputs": {
+    "latest-match-10s.mp4": {
+      "codec": "h264",
+      "width_px": 1920,
+      "height_px": 1080,
+      "frame_count": 200,
+      "fps": 20,
+      "sha256": "80da91f013ea03e61d7de556db57b2ff53e35938d9cfa92db277b0e5c6d7c968"
+    },
+    "latest-match-10s.gif": {
+      "codec": "gif",
+      "width_px": 1920,
+      "height_px": 1080,
+      "frame_count": 200,
+      "fps": 20,
+      "palette_max_colors": 64,
+      "sha256": "e1da53edcf8a3b541050e43ea2561d54de1fec7d4d767531ad602d4f26292d9b"
+    }
+  }
+}
