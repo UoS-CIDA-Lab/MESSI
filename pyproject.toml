@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "messi"
+version = "0.0.1"
+description = "JAX-based football match environment with built-in rule-based policies"
+requires-python = ">=3.11"
+dependencies = [
+    "jax>=0.4.38",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+render = ["imageio-ffmpeg>=0.5", "matplotlib>=3.8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["messi*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+  "performance: compile, rollout, memory 또는 profiler 기반 성능 계측 test",
+]
+
+[tool.ruff.lint]
+ignore = ["B008"]
